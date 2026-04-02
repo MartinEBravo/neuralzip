@@ -3,6 +3,8 @@ import gc
 import os
 from pathlib import Path
 
+from tqdm.auto import tqdm
+
 from constants import DEFAULT_METHODS, MODEL_PRESETS, PLOTS_DIR, RESULTS_CSV
 from results import format_row, print_presets, print_summary, save_results_csv
 
@@ -124,45 +126,45 @@ def main() -> None:
             summary = experiment.scan()
 
             if "ZipNN" in methods:
-                rows.append(
-                    format_row(
-                        model_name,
-                        "ZipNN",
-                        summary.zipnn_bits,
-                        summary.original_bits,
-                        summary.loader,
-                        summary.dtype_summary,
-                        summary.num_tensors,
-                    )
+                row = format_row(
+                    model_name,
+                    "ZipNN",
+                    summary.zipnn_bits,
+                    summary.original_bits,
+                    summary.loader,
+                    summary.dtype_summary,
+                    summary.num_tensors,
                 )
+                rows.append(row)
+                tqdm.write(f"  {row['label']} ZipNN done: {row['percent_original']:.2f}%")
             if "ZipNN+" in methods:
-                rows.append(
-                    format_row(
-                        model_name,
-                        "ZipNN+",
-                        summary.zipnn_plus_bits,
-                        summary.original_bits,
-                        summary.loader,
-                        summary.dtype_summary,
-                        summary.num_tensors,
-                    )
+                row = format_row(
+                    model_name,
+                    "ZipNN+",
+                    summary.zipnn_plus_bits,
+                    summary.original_bits,
+                    summary.loader,
+                    summary.dtype_summary,
+                    summary.num_tensors,
                 )
+                rows.append(row)
+                tqdm.write(f"  {row['label']} ZipNN+ done: {row['percent_original']:.2f}%")
             if "ZipNN++" in methods:
-                rows.append(
-                    format_row(
-                        model_name,
-                        "ZipNN++",
-                        experiment.zipnn_plusplus_bits(
-                            summary=summary,
-                            ngram=args.ngram,
-                            cluster_threshold=args.cluster_threshold,
-                        ),
-                        summary.original_bits,
-                        summary.loader,
-                        summary.dtype_summary,
-                        summary.num_tensors,
-                    )
+                row = format_row(
+                    model_name,
+                    "ZipNN++",
+                    experiment.zipnn_plusplus_bits(
+                        summary=summary,
+                        ngram=args.ngram,
+                        cluster_threshold=args.cluster_threshold,
+                    ),
+                    summary.original_bits,
+                    summary.loader,
+                    summary.dtype_summary,
+                    summary.num_tensors,
                 )
+                rows.append(row)
+                tqdm.write(f"  {row['label']} ZipNN++ done: {row['percent_original']:.2f}%")
         except Exception as exc:
             failures.append((model_name, str(exc)))
             if not args.continue_on_error:

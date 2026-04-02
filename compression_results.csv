@@ -1,0 +1,4 @@
+model,label,loader,dtype_summary,num_tensors,method,total_bits,mbits,mbytes,percent_original
+deepseek-ai/DeepSeek-R1-Distill-Qwen-7B,DeepSeek-R1-Qwen 7B,safetensors,bfloat16:7615616512,339,ZipNN,81682288538,81682.288538,10210.28606725,67.03519046134711
+deepseek-ai/DeepSeek-R1-Distill-Qwen-7B,DeepSeek-R1-Qwen 7B,safetensors,bfloat16:7615616512,339,ZipNN+,81201853260,81201.85326,10150.2316575,66.64090583806434
+deepseek-ai/DeepSeek-R1-Distill-Qwen-7B,DeepSeek-R1-Qwen 7B,safetensors,bfloat16:7615616512,339,ZipNN++,80681431317,80681.431317,10085.178914625,66.21380487537475

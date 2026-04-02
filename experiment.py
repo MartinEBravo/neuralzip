@@ -2,7 +2,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from tqdm.auto import tqdm
 
+from constants import MODEL_LABELS
 from entropy import PackedSequenceStats, cluster_layers, huffman_weighted_length
 from loaders import (
     SafetensorEntries,
@@ -12,7 +14,7 @@ from loaders import (
     resolve_safetensor_source,
 )
 from schemas import LayerInfo, ScanSummary
-from tensors import summarize_dtypes, tensor_exponent_stats, tensor_exponent_stream
+from tensors import FLOAT_LAYOUTS, iter_tensor_exponent_chunks, summarize_dtypes, tensor_exponent_stats
 
 
 class ModelCompressionExperiment:
@@ -62,6 +64,20 @@ class ModelCompressionExperiment:
             trust_remote_code=self.trust_remote_code,
         )
 
+    def _tensor_progress(self, desc: str):
+        total = None
+        if self.loader_name == "safetensors" and self.loader_details is not None:
+            _, entries = self.loader_details
+            total = sum(len(keys) for _, keys in entries)
+        model_label = MODEL_LABELS.get(self.model_name, self.model_name)
+        return tqdm(
+            self.iter_tensors(),
+            total=total,
+            desc=f"{model_label} | {desc}",
+            unit="tensor",
+            dynamic_ncols=True,
+        )
+
     def scan(self) -> ScanSummary:
         global_exponent_counts = np.zeros(256, dtype=np.int64)
         payload_bits = 0
@@ -70,22 +86,25 @@ class ModelCompressionExperiment:
         dtype_weights: dict[str, int] = defaultdict(int)
         layer_infos: list[LayerInfo] = []
 
-        for name, tensor in self.iter_tensors():
-            stats = tensor_exponent_stats(tensor)
-            if stats is None:
-                continue
-            counts, num_weights, body_bits, tensor_original_bits, dtype_name = stats
-            payload_bits += body_bits
-            original_bits += tensor_original_bits
-            zipnn_plus_bits += huffman_weighted_length(counts) + body_bits
-            global_exponent_counts += counts
-            dtype_weights[dtype_name] += num_weights
+        with self._tensor_progress("ZipNN / ZipNN+") as progress:
+            for name, tensor in progress:
+                stats = tensor_exponent_stats(tensor)
+                if stats is None:
+                    del tensor
+                    continue
+                counts, num_weights, body_bits, tensor_original_bits, dtype_name = stats
+                payload_bits += body_bits
+                original_bits += tensor_original_bits
+                zipnn_plus_bits += huffman_weighted_length(counts) + body_bits
+                global_exponent_counts += counts
+                dtype_weights[dtype_name] += num_weights
 
-            histogram = counts.astype(np.float64)
-            total = histogram.sum()
-            if total > 0:
-                histogram = histogram / total
-            layer_infos.append(LayerInfo(name=name, exponent_histogram=histogram))
+                histogram = counts.astype(np.float64)
+                total = histogram.sum()
+                if total > 0:
+                    histogram = histogram / total
+                layer_infos.append(LayerInfo(name=name, exponent_histogram=histogram))
+                del tensor
 
         if not layer_infos:
             raise RuntimeError(f"No supported floating-point tensors were found in {self.model_name}.")
@@ -115,13 +134,15 @@ class ModelCompressionExperiment:
         }
         packed_stats = [PackedSequenceStats(ngram=ngram) for _ in clusters]
 
-        for name, tensor in self.iter_tensors():
-            stats = tensor_exponent_stats(tensor)
-            if stats is None:
-                continue
-            cluster_idx = cluster_membership[name]
-            exponents = tensor_exponent_stream(tensor)
-            packed_stats[cluster_idx].update_exponents(exponents)
+        with self._tensor_progress("ZipNN++") as progress:
+            for name, tensor in progress:
+                if tensor.numel() == 0 or not tensor.is_floating_point() or tensor.dtype not in FLOAT_LAYOUTS:
+                    del tensor
+                    continue
+                cluster_idx = cluster_membership[name]
+                for exponents in iter_tensor_exponent_chunks(tensor):
+                    packed_stats[cluster_idx].update_exponents(exponents)
+                del tensor
 
         total_exp_bits = sum(cluster.bit_length() for cluster in packed_stats)
         return int(round(total_exp_bits + summary.payload_bits))

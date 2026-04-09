@@ -1,0 +1,3 @@
+[submodule "external/zipnn"]
+	path = external/zipnn
+	url = https://github.com/zipnn/zipnn

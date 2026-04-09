@@ -76,6 +76,19 @@ def iter_tensors_from_safetensors(
                 yield key, handle.get_tensor(key)
 
 
+def _hf_kwargs(
+    hf_token: str | None,
+    trust_remote_code: bool,
+    **extra: object,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = dict(extra)
+    if hf_token:
+        kwargs["token"] = hf_token
+    if trust_remote_code:
+        kwargs["trust_remote_code"] = True
+    return kwargs
+
+
 def iter_tensors_from_transformers(
     model_name: str,
     hf_token: str | None,
@@ -83,23 +96,16 @@ def iter_tensors_from_transformers(
 ) -> Iterator[tuple[str, torch.Tensor]]:
     from transformers import AutoConfig, AutoModel
 
-    config_kwargs = {}
-    if hf_token:
-        config_kwargs["token"] = hf_token
-    if trust_remote_code:
-        config_kwargs["trust_remote_code"] = True
-
-    config = AutoConfig.from_pretrained(model_name, **config_kwargs)
+    config = AutoConfig.from_pretrained(
+        model_name, **_hf_kwargs(hf_token, trust_remote_code)
+    )
     if hasattr(config, "add_pooling_layer"):
         config.add_pooling_layer = False
 
-    model_kwargs = {"config": config, "low_cpu_mem_usage": True}
-    if hf_token:
-        model_kwargs["token"] = hf_token
-    if trust_remote_code:
-        model_kwargs["trust_remote_code"] = True
-
-    model = AutoModel.from_pretrained(model_name, **model_kwargs)
+    model = AutoModel.from_pretrained(
+        model_name,
+        **_hf_kwargs(hf_token, trust_remote_code, config=config, low_cpu_mem_usage=True),
+    )
     try:
         for name, param in model.named_parameters():
             yield name, param.detach().cpu()

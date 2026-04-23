@@ -2,121 +2,14 @@
 # Install once in the environment before running this script:
 #   python -m pip install zstandard
 
+import argparse
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM
 from tqdm import tqdm
-from collections import Counter
 import heapq
-import matplotlib.pyplot as plt
 import zstandard as zstd
-from tqdm import tqdm
 from scipy.spatial.distance import jensenshannon
-
-EXPERIMENTS = [
-    {
-        "label": "GPT-2",
-        "model_id": "gpt2",
-        "zipnn_percent_original": 83.31,
-        "neuralzip_percent_original": 83.16,
-    },
-    {
-        "label": "GPT-2 Nano",
-        "model_id": "sshleifer/tiny-gpt2",
-        "zipnn_percent_original": 83.13,
-        "neuralzip_percent_original": 83.02,
-    },
-    {
-        "label": "Gemma 4 E2B",
-        "model_id": "google/gemma-4-E2B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Gemma 4 E2B IT",
-        "model_id": "google/gemma-4-E2B-it",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Gemma 4 E4B",
-        "model_id": "google/gemma-4-E4B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Gemma 4 E4B IT",
-        "model_id": "google/gemma-4-E4B-it",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 1B",
-        "model_id": "meta-llama/Llama-3.2-1B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 1B Instruct",
-        "model_id": "meta-llama/Llama-3.2-1B-Instruct",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 3B",
-        "model_id": "meta-llama/Llama-3.2-3B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 3B Instruct",
-        "model_id": "meta-llama/Llama-3.2-3B-Instruct",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 11B Vision",
-        "model_id": "meta-llama/Llama-3.2-11B-Vision",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Llama 3.2 11B Vision Instruct",
-        "model_id": "meta-llama/Llama-3.2-11B-Vision-Instruct",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Phi-4-mini",
-        "model_id": "microsoft/Phi-4-mini-instruct",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Qwen 3.5 0.8B",
-        "model_id": "Qwen/Qwen3.5-0.8B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Qwen 3.5 2B",
-        "model_id": "Qwen/Qwen3.5-2B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Qwen 3.5 4B",
-        "model_id": "Qwen/Qwen3.5-4B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-    {
-        "label": "Qwen 3.5 9B",
-        "model_id": "Qwen/Qwen3.5-9B",
-        "zipnn_percent_original": None,
-        "neuralzip_percent_original": None,
-    },
-]
 
 # implementation: https://www.geeksforgeeks.org/dsa/huffman-coding-in-python/
 class Node:
@@ -399,17 +292,129 @@ class HuggingFaceModel:
             self.log_bits(f"Zstd/level={level}", bits)
         return bits
 
-for experiment in EXPERIMENTS:
-    print(f"\nRunning {experiment['label']} ({experiment['model_id']})")
-    model = HuggingFaceModel(experiment["model_id"])
-
-    base = model.print_model_size()
-
-    model.zipnn_compress()
-    model.neuralzip_compress(
-        method="arith",
-        ngram=3,
-        cluster=True,
-        direct_block=4096,
-        exp="cluster-arith-trigram-direct",
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run compression experiments.")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help="Model ids or labels to run. Defaults to all experiments.",
     )
+    return parser.parse_args()
+
+
+def select_experiments(model_selectors, experiments):
+    if not model_selectors:
+        return experiments
+
+    lookup = {}
+    for experiment in experiments:
+        lookup[experiment["model_id"].lower()] = experiment
+        lookup[experiment["label"].lower()] = experiment
+
+    selected = []
+    missing = []
+    for selector in model_selectors:
+        experiment = lookup.get(selector.lower())
+        if experiment is None:
+            missing.append(selector)
+            continue
+        if experiment not in selected:
+            selected.append(experiment)
+
+    if missing:
+        raise ValueError(f"Unknown model selectors: {', '.join(missing)}")
+
+    return selected
+
+
+def main():
+    args = parse_args()
+    experiments = [
+        {
+            "label": "GPT-2",
+            "model_id": "gpt2",
+        },
+        {
+            "label": "GPT-2 Nano",
+            "model_id": "sshleifer/tiny-gpt2",
+        },
+        {
+            "label": "Gemma 4 E2B",
+            "model_id": "google/gemma-4-E2B",
+        },
+        {
+            "label": "Gemma 4 E2B IT",
+            "model_id": "google/gemma-4-E2B-it",
+        },
+        {
+            "label": "Gemma 4 E4B",
+            "model_id": "google/gemma-4-E4B",
+        },
+        {
+            "label": "Gemma 4 E4B IT",
+            "model_id": "google/gemma-4-E4B-it",
+        },
+        {
+            "label": "Llama 3.2 1B",
+            "model_id": "meta-llama/Llama-3.2-1B",
+        },
+        {
+            "label": "Llama 3.2 1B Instruct",
+            "model_id": "meta-llama/Llama-3.2-1B-Instruct",
+        },
+        {
+            "label": "Llama 3.2 3B",
+            "model_id": "meta-llama/Llama-3.2-3B",
+        },
+        {
+            "label": "Llama 3.2 3B Instruct",
+            "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+        },
+        {
+            "label": "Llama 3.2 11B Vision",
+            "model_id": "meta-llama/Llama-3.2-11B-Vision",
+        },
+        {
+            "label": "Llama 3.2 11B Vision Instruct",
+            "model_id": "meta-llama/Llama-3.2-11B-Vision-Instruct",
+        },
+        {
+            "label": "Phi-4-mini",
+            "model_id": "microsoft/Phi-4-mini-instruct",
+        },
+        {
+            "label": "Qwen 3.5 0.8B",
+            "model_id": "Qwen/Qwen3.5-0.8B",
+        },
+        {
+            "label": "Qwen 3.5 2B",
+            "model_id": "Qwen/Qwen3.5-2B",
+        },
+        {
+            "label": "Qwen 3.5 4B",
+            "model_id": "Qwen/Qwen3.5-4B",
+        },
+        {
+            "label": "Qwen 3.5 9B",
+            "model_id": "Qwen/Qwen3.5-9B",
+        },
+    ]
+
+    for experiment in select_experiments(args.models, experiments):
+        print(f"\nRunning {experiment['label']} ({experiment['model_id']})")
+        model = HuggingFaceModel(experiment["model_id"])
+
+        model.print_model_size()
+        model.zipnn_compress()
+        model.neuralzip_compress(
+            method="arith",
+            ngram=3,
+            cluster=True,
+            direct_block=4096,
+            exp="cluster-arith-trigram-direct",
+        )
+
+
+if __name__ == "__main__":
+    main()

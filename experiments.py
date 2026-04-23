@@ -59,7 +59,7 @@ class HuggingFaceModel:
         self._model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32
         )
-        self._params = [p.detach().cpu().numpy().flatten()
+        self._params = [p.detach().to(torch.float32).cpu().numpy().flatten()
                         for p in self._model.parameters()]
         self._weights = np.concatenate(self._params)
 
@@ -82,6 +82,8 @@ class HuggingFaceModel:
 
     def compute_arithmetic_bits(self, arr, order=1):
         """Adaptive arithmetic coding bits estimation (order-1)."""
+        if arr.size < 2:
+            return 0.0
         A = 256
         eps = 1
         arr = arr.astype(np.uint8)
@@ -135,6 +137,8 @@ class HuggingFaceModel:
         - 'arith'   : modelo aritmético adaptativo (orden-1)
         - 'sigma'   : σ-Huffman (orden-1 con Huffman por contexto)
         """
+        if arr.size == 0:
+            return 0.0
         if method == "arith":
             return self.compute_arithmetic_bits(arr)
         if method == "sigma":
@@ -232,7 +236,7 @@ class HuggingFaceModel:
     def neuralzip_compress(self, verbose=5, ngram=1, method="huffman",
                           cluster=False, direct_block=0, exp=""):
         total_bits = 0
-        layer_arrays = [p.detach().cpu().numpy().flatten()
+        layer_arrays = [p.detach().to(torch.float32).cpu().numpy().flatten()
                         for _, p in self._model.named_parameters()]
 
         if cluster:
@@ -251,8 +255,13 @@ class HuggingFaceModel:
                     else:
                         exps_model = (self.pack_ngrams_uint(exps_raw, n=ngram)
                                       if ngram > 1 else exps_raw)
+                    if exps_model.size == 0:
+                        continue
                     all_exps_model.append(exps_model)
 
+                if not all_exps_model:
+                    total_bits += total_floats_cluster * (23 + 1)
+                    continue
                 exps_all = np.concatenate(all_exps_model)
 
                 bits_exp = self.compute_zipnn_bits(exps_all, method=method)
@@ -261,7 +270,7 @@ class HuggingFaceModel:
         else:
             for name, param in tqdm(self._model.named_parameters(),
                                     desc="NeuralZip", total=len(layer_arrays)):
-                arr = param.detach().cpu().numpy().flatten()
+                arr = param.detach().to(torch.float32).cpu().numpy().flatten()
                 if arr.size == 0:
                     continue
                 sign, exps, mant = extract_fp32_parts(arr)

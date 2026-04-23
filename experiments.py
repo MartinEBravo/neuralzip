@@ -3,6 +3,7 @@
 #   python -m pip install zstandard
 
 import argparse
+import ctypes
 import torch
 import numpy as np
 from transformers import AutoModelForCausalLM
@@ -10,6 +11,39 @@ from tqdm import tqdm
 import heapq
 import zstandard as zstd
 from scipy.spatial.distance import jensenshannon
+from dataclasses import dataclass
+from pathlib import Path
+
+
+FLOAT_FORMATS = {
+    torch.float16: {
+        "view_dtype": torch.uint16,
+        "sign_shift": 15,
+        "exp_shift": 10,
+        "exp_mask": 0x1F,
+        "mantissa_mask": 0x3FF,
+        "total_bits": 16,
+        "mantissa_bits": 10,
+    },
+    torch.bfloat16: {
+        "view_dtype": torch.uint16,
+        "sign_shift": 15,
+        "exp_shift": 7,
+        "exp_mask": 0xFF,
+        "mantissa_mask": 0x7F,
+        "total_bits": 16,
+        "mantissa_bits": 7,
+    },
+    torch.float32: {
+        "view_dtype": torch.uint32,
+        "sign_shift": 31,
+        "exp_shift": 23,
+        "exp_mask": 0xFF,
+        "mantissa_mask": 0x7FFFFF,
+        "total_bits": 32,
+        "mantissa_bits": 23,
+    },
+}
 
 # implementation: https://www.geeksforgeeks.org/dsa/huffman-coding-in-python/
 class Node:
@@ -47,21 +81,199 @@ def generate_huffman_codes(node, code="", huffman_codes={}):
 
     return huffman_codes
 
-def extract_fp32_parts(arr):
-    bits = arr.view(np.uint32)
-    sign = (bits >> 31) & 0x1
-    exponents = (bits >> 23) & 0xFF
-    mantissa = bits & 0x7FFFFF
+def get_float_format(dtype):
+    try:
+        return FLOAT_FORMATS[dtype]
+    except KeyError as exc:
+        raise TypeError(f"Unsupported floating dtype: {dtype}") from exc
+
+
+def extract_float_parts(tensor):
+    tensor = tensor.detach().cpu().contiguous().flatten()
+    fmt = get_float_format(tensor.dtype)
+    bits = tensor.view(fmt["view_dtype"]).numpy().astype(np.uint32, copy=False)
+    sign = (bits >> fmt["sign_shift"]) & 0x1
+    exponents = (bits >> fmt["exp_shift"]) & fmt["exp_mask"]
+    mantissa = bits & fmt["mantissa_mask"]
     return sign.astype(np.uint32), exponents.astype(np.uint32), mantissa.astype(np.uint32)
 
-class HuggingFaceModel:
-    def __init__(self, model_name):
-        self._model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float32
+
+def bits_required(value_count):
+    if value_count <= 1:
+        return 0
+    return (value_count - 1).bit_length()
+
+
+def packed_byte_length(value_count, bits_per_value):
+    return (value_count * bits_per_value + 7) // 8
+
+
+class BitWriter:
+    def __init__(self):
+        self._bytes = bytearray()
+        self._current = 0
+        self._bits_filled = 0
+
+    def write_bit(self, bit):
+        self._current = (self._current << 1) | int(bit)
+        self._bits_filled += 1
+        if self._bits_filled == 8:
+            self._bytes.append(self._current)
+            self._current = 0
+            self._bits_filled = 0
+
+    def write_bits(self, value, bit_count):
+        for shift in range(bit_count - 1, -1, -1):
+            self.write_bit((value >> shift) & 1)
+
+    def to_bytes(self):
+        if self._bits_filled:
+            self._bytes.append(self._current << (8 - self._bits_filled))
+            self._current = 0
+            self._bits_filled = 0
+        return bytes(self._bytes)
+
+
+class BitReader:
+    def __init__(self, data):
+        self._data = data
+        self._byte_index = 0
+        self._bit_index = 0
+
+    def read_bit(self):
+        if self._byte_index >= len(self._data):
+            return 0
+        byte = self._data[self._byte_index]
+        bit = (byte >> (7 - self._bit_index)) & 1
+        self._bit_index += 1
+        if self._bit_index == 8:
+            self._bit_index = 0
+            self._byte_index += 1
+        return bit
+
+    def read_bits(self, bit_count):
+        value = 0
+        for _ in range(bit_count):
+            value = (value << 1) | self.read_bit()
+        return value
+
+
+def pack_values(values, bits_per_value):
+    writer = BitWriter()
+    for value in values:
+        writer.write_bits(int(value), bits_per_value)
+    return writer.to_bytes()
+
+
+def unpack_values(data, value_count, bits_per_value):
+    reader = BitReader(data)
+    values = np.zeros(value_count, dtype=np.uint32)
+    for idx in range(value_count):
+        values[idx] = reader.read_bits(bits_per_value)
+    return values
+
+
+class NativeArithmeticCoder:
+    def __init__(self, library_path):
+        self._lib = ctypes.CDLL(str(library_path))
+        self._lib.arithmetic_encode.argtypes = [
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        self._lib.arithmetic_encode.restype = ctypes.c_int
+        self._lib.arithmetic_decode.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_uint32)),
+        ]
+        self._lib.arithmetic_decode.restype = ctypes.c_int
+        self._lib.arithmetic_free.argtypes = [ctypes.c_void_p]
+        self._lib.arithmetic_free.restype = None
+
+    def encode(self, symbols, counts):
+        symbol_arr = np.ascontiguousarray(symbols, dtype=np.uint32)
+        count_arr = np.ascontiguousarray(counts, dtype=np.uint32)
+        out_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        out_size = ctypes.c_size_t()
+        rc = self._lib.arithmetic_encode(
+            symbol_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+            symbol_arr.size,
+            count_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+            count_arr.size,
+            ctypes.byref(out_ptr),
+            ctypes.byref(out_size),
         )
-        self._params = [p.detach().to(torch.float32).cpu().numpy().flatten()
-                        for p in self._model.parameters()]
-        self._weights = np.concatenate(self._params)
+        if rc != 0:
+            raise RuntimeError(f"Native arithmetic encode failed with code {rc}.")
+        try:
+            return ctypes.string_at(out_ptr, out_size.value)
+        finally:
+            self._lib.arithmetic_free(out_ptr)
+
+    def decode(self, data, counts, symbol_count):
+        byte_arr = np.frombuffer(data, dtype=np.uint8)
+        count_arr = np.ascontiguousarray(counts, dtype=np.uint32)
+        out_ptr = ctypes.POINTER(ctypes.c_uint32)()
+        rc = self._lib.arithmetic_decode(
+            byte_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            byte_arr.size,
+            count_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32)),
+            count_arr.size,
+            symbol_count,
+            ctypes.byref(out_ptr),
+        )
+        if rc != 0:
+            raise RuntimeError(f"Native arithmetic decode failed with code {rc}.")
+        try:
+            result = np.ctypeslib.as_array(out_ptr, shape=(symbol_count,)).copy()
+        finally:
+            self._lib.arithmetic_free(out_ptr)
+        return result.astype(np.uint32, copy=False)
+
+
+def load_arithmetic_coder():
+    library_path = Path(__file__).with_name("arithmetic_coder.so")
+    if not library_path.exists():
+        raise FileNotFoundError(
+            f"Missing native arithmetic coder: {library_path}. "
+            "Build arithmetic_coder.so before running experiments."
+        )
+    return NativeArithmeticCoder(library_path)
+
+
+ARITHMETIC_CODER = load_arithmetic_coder()
+
+
+@dataclass
+class ClusterPayload:
+    values: np.ndarray
+    counts: np.ndarray
+    encoded: bytes
+
+
+class HuggingFaceModel:
+    def __init__(self, model_name, dtype="auto"):
+        dtype_map = {
+            "auto": "auto",
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        self._model = AutoModelForCausalLM.from_pretrained(
+            model_name, dtype=dtype_map[dtype]
+        )
+        self._named_params = list(self._model.named_parameters())
+        self._original_bits = sum(
+            param.numel() * get_float_format(param.dtype)["total_bits"]
+            for _, param in self._named_params
+        )
 
         self._exp_offsets = None
         self._exp_codes = None
@@ -72,11 +284,11 @@ class HuggingFaceModel:
     def log_bits(self, name, total_bits):
         mbits = total_bits / 1e6
         mbytes = total_bits / 8e6
-        ratio = 100 * (total_bits / (self._weights.size * 32))
+        ratio = 100 * (total_bits / self._original_bits)
         print(f"[{name}] {mbits:8.2f} Mbits | {mbytes:8.2f} MB | {ratio:5.2f}% of original")
 
     def print_model_size(self):
-        total_bits = self._weights.size * 32
+        total_bits = self._original_bits
         self.log_bits("Original", total_bits)
         return total_bits
 
@@ -159,11 +371,67 @@ class HuggingFaceModel:
             packed |= (x[:, i] & 0xFF) << (8 * i)
         return packed
 
+    def pack_ngrams_uint_with_tail(self, exps, n=2):
+        L = (len(exps) // n) * n
+        packed = self.pack_ngrams_uint(exps, n=n)
+        tail = exps[L:].astype(np.uint8, copy=False)
+        return packed, tail
+
+    def unpack_ngrams_uint(self, packed, n=2):
+        unpacked = np.zeros(packed.size * n, dtype=np.uint32)
+        for i in range(n):
+            unpacked[i::n] = (packed >> (8 * i)) & 0xFF
+        return unpacked
+
+    def encode_signs(self, sign, validate=False):
+        payload_size = packed_byte_length(sign.size, 1)
+        if validate:
+            payload = pack_values(sign, 1)
+            decoded = unpack_values(payload, sign.size, 1)
+            if not np.array_equal(decoded, sign):
+                raise ValueError("Sign round-trip reconstruction failed.")
+            return payload
+        return payload_size
+
+    def encode_mantissa(self, mantissa, bits_per_value, validate=False):
+        payload_size = packed_byte_length(mantissa.size, bits_per_value)
+        if validate:
+            payload = pack_values(mantissa, bits_per_value)
+            decoded = unpack_values(payload, mantissa.size, bits_per_value)
+            if not np.array_equal(decoded, mantissa):
+                raise ValueError("Mantissa round-trip reconstruction failed.")
+            return payload
+        return payload_size
+
+    def encode_cluster_payload(self, exponents, validate=False):
+        if exponents.size == 0:
+            return ClusterPayload(
+                values=np.array([], dtype=np.uint32),
+                counts=np.array([], dtype=np.uint32),
+                encoded=b"",
+            )
+
+        values, counts = np.unique(exponents, return_counts=True)
+        symbol_ids = np.searchsorted(values, exponents)
+        encoded = ARITHMETIC_CODER.encode(symbol_ids, counts)
+        if validate:
+            decoded_ids = ARITHMETIC_CODER.decode(encoded, counts, symbol_ids.size)
+            decoded = values[decoded_ids]
+            if not np.array_equal(decoded.astype(np.uint32, copy=False), exponents.astype(np.uint32, copy=False)):
+                raise ValueError("Exponent payload round-trip reconstruction failed.")
+        return ClusterPayload(values=values.astype(np.uint32), counts=counts.astype(np.uint32), encoded=encoded)
+
+    def cluster_payload_byte_length(self, payload):
+        size = 4 + 8 + len(payload.encoded)
+        if payload.values.size:
+            size += payload.values.nbytes + payload.counts.nbytes
+        return size
+
     def cluster_layers(self, layer_arrays, threshold=0.02):
         """Group layers with similar exponent histograms (Jensen–Shannon)."""
         hists = []
         for arr in layer_arrays:
-            _, exps, _ = extract_fp32_parts(arr)
+            _, exps, _ = extract_float_parts(arr)
             h = np.bincount(exps, minlength=256).astype(np.float64)
             h /= h.sum() if h.sum() > 0 else 1
             hists.append(h)
@@ -198,7 +466,15 @@ class HuggingFaceModel:
         return np.array(offsets, dtype=np.uint64), codes, bit_offset
 
     def build_global_exponent_index(self, block_size=4096, ngram=1):
-        _, exps, mant = extract_fp32_parts(self._weights)
+        exponents = []
+        mantissa_bits = 0
+        sign_bits = 0
+        for _, param in self._named_params:
+            sign, exps, mant = extract_float_parts(param)
+            exponents.append(exps)
+            sign_bits += sign.size
+            mantissa_bits += mant.size * get_float_format(param.dtype)["mantissa_bits"]
+        exps = np.concatenate(exponents)
         offsets, codes, total_bits_exp = self.build_huffman_index(
             exps, block_size=block_size, ngram=ngram
         )
@@ -209,7 +485,7 @@ class HuggingFaceModel:
         self._exp_total_bits = total_bits_exp
         self._exp_ngram = ngram
 
-        total_bits = total_bits_exp + mant.size * 23 + exps.size
+        total_bits = total_bits_exp + mantissa_bits + sign_bits
         self.log_bits(
             f"Exp bitstream indexed (block={block_size}, n={ngram})",
             total_bits,
@@ -226,65 +502,167 @@ class HuggingFaceModel:
 
     def zipnn_compress(self, verbose=1):
         """Classic ZipNN: compress only exponent field globally (orden-0)."""
-        sign, exps, mant = extract_fp32_parts(self._weights)
+        exponents = []
+        mantissa_bits = 0
+        sign_bits = 0
+        for _, param in self._named_params:
+            sign, exps, mant = extract_float_parts(param)
+            exponents.append(exps)
+            sign_bits += sign.size
+            mantissa_bits += mant.size * get_float_format(param.dtype)["mantissa_bits"]
+        exps = np.concatenate(exponents)
         bits_exp = self.compute_zipnn_bits(exps, method="huffman")
-        total_bits = bits_exp + mant.size * 23 + sign.size
+        total_bits = bits_exp + mantissa_bits + sign_bits
         if verbose:
             self.log_bits("ZipNN", total_bits)
         return total_bits
 
     def neuralzip_compress(self, verbose=5, ngram=1, method="huffman",
-                          cluster=False, direct_block=0, exp=""):
+                          cluster=False, direct_block=0, exp="", validate=False):
         total_bits = 0
-        layer_arrays = [p.detach().to(torch.float32).cpu().numpy().flatten()
-                        for _, p in self._model.named_parameters()]
+        layer_arrays = [param for _, param in self._named_params]
 
         if cluster:
             clusters = self.cluster_layers(layer_arrays)
-            for cluster_ids in tqdm(clusters, desc="NeuralZip clustered"):
-                all_exps_model = []
-                total_floats_cluster = 0
+            cluster_lookup = np.zeros(len(layer_arrays), dtype=np.uint32)
+            for cluster_id, cluster_ids in enumerate(clusters):
+                for block_id in cluster_ids:
+                    cluster_lookup[block_id] = cluster_id
 
+            total_bytes = 16
+            cluster_id_bits = bits_required(len(clusters))
+            if cluster_id_bits:
+                total_bytes += packed_byte_length(cluster_lookup.size, cluster_id_bits)
+
+            cluster_streams = [[] for _ in clusters]
+            for cluster_ids in tqdm(clusters, desc="NeuralZip clustered"):
                 for idx in cluster_ids:
                     arr = layer_arrays[idx]
-                    _, exps_raw, mant_raw = extract_fp32_parts(arr)
-                    total_floats_cluster += exps_raw.size   # = mant_raw.size
+                    sign, exps_raw, mant_raw = extract_float_parts(arr)
+                    fmt = get_float_format(arr.dtype)
+                    sign_size = self.encode_signs(sign, validate=validate)
+                    mantissa_size = self.encode_mantissa(
+                        mant_raw, fmt["mantissa_bits"], validate=validate
+                    )
+                    if validate:
+                        sign_size = len(sign_size)
+                        mantissa_size = len(mantissa_size)
+
+                    total_bytes += 4 + 1 + 4 + 4
+                    total_bytes += sign_size + mantissa_size
 
                     if method == "sigma":
                         exps_model = exps_raw.astype(np.uint8)
+                        exps_tail = np.array([], dtype=np.uint8)
                     else:
-                        exps_model = (self.pack_ngrams_uint(exps_raw, n=ngram)
-                                      if ngram > 1 else exps_raw)
-                    if exps_model.size == 0:
+                        if ngram > 1:
+                            exps_model, exps_tail = self.pack_ngrams_uint_with_tail(
+                                exps_raw, n=ngram
+                            )
+                        else:
+                            exps_model = exps_raw
+                            exps_tail = np.array([], dtype=np.uint8)
+
+                    total_bytes += 4 + exps_tail.size
+                    cluster_streams[cluster_lookup[idx]].append(
+                        {
+                            "packed": exps_model.astype(np.uint32, copy=False),
+                            "tail": exps_tail.astype(np.uint8, copy=False),
+                            "raw": exps_raw.astype(np.uint32, copy=False),
+                        }
+                    )
+
+            for cluster_stream in cluster_streams:
+                packed_parts = [part["packed"] for part in cluster_stream if part["packed"].size]
+                packed_stream = (
+                    np.concatenate(packed_parts).astype(np.uint32, copy=False)
+                    if packed_parts else np.array([], dtype=np.uint32)
+                )
+                payload = self.encode_cluster_payload(packed_stream, validate=validate)
+                total_bytes += self.cluster_payload_byte_length(payload)
+                if validate and packed_stream.size:
+                    decoded_ids = ARITHMETIC_CODER.decode(
+                        payload.encoded,
+                        payload.counts,
+                        packed_stream.size,
+                    )
+                    decoded_stream = payload.values[decoded_ids]
+                else:
+                    decoded_stream = np.array([], dtype=np.uint32)
+
+                offset = 0
+                for part in cluster_stream:
+                    if not validate:
+                        offset += part["packed"].size
                         continue
-                    all_exps_model.append(exps_model)
+                    packed_len = part["packed"].size
+                    decoded_packed = np.array([], dtype=np.uint32)
+                    if packed_len:
+                        decoded_packed = decoded_stream[offset:offset + packed_len]
+                    offset += packed_len
 
-                if not all_exps_model:
-                    total_bits += total_floats_cluster * (23 + 1)
-                    continue
-                exps_all = np.concatenate(all_exps_model)
+                    if ngram > 1 and decoded_packed.size:
+                        decoded_exps = np.concatenate(
+                            [self.unpack_ngrams_uint(decoded_packed, n=ngram), part["tail"].astype(np.uint32)]
+                        )
+                    elif ngram > 1:
+                        decoded_exps = part["tail"].astype(np.uint32)
+                    else:
+                        decoded_exps = decoded_packed.astype(np.uint32, copy=False)
 
-                bits_exp = self.compute_zipnn_bits(exps_all, method=method)
-                bits_total = bits_exp + total_floats_cluster * (23 + 1)
-                total_bits += bits_total
+                    if not np.array_equal(decoded_exps, part["raw"]):
+                        raise ValueError("NeuralZip block exponent reconstruction failed.")
+
+            total_bits = total_bytes * 8
         else:
-            for name, param in tqdm(self._model.named_parameters(),
+            total_bytes = 0
+            for name, param in tqdm(self._named_params,
                                     desc="NeuralZip", total=len(layer_arrays)):
-                arr = param.detach().to(torch.float32).cpu().numpy().flatten()
-                if arr.size == 0:
+                if param.numel() == 0:
                     continue
-                sign, exps, mant = extract_fp32_parts(arr)
+                sign, exps, mant = extract_float_parts(param)
+                fmt = get_float_format(param.dtype)
+                sign_size = self.encode_signs(sign, validate=validate)
+                mantissa_size = self.encode_mantissa(mant, fmt["mantissa_bits"], validate=validate)
+                if validate:
+                    sign_size = len(sign_size)
+                    mantissa_size = len(mantissa_size)
+                total_bytes += 4 + 1 + 4 + 4 + sign_size + mantissa_size
 
                 if method == "sigma":
                     exps_model = exps.astype(np.uint8)
+                    exps_tail = np.array([], dtype=np.uint8)
                 else:
-                    exps_model = (self.pack_ngrams_uint(exps, n=ngram)
-                                  if ngram > 1 else exps)
+                    if ngram > 1:
+                        exps_model, exps_tail = self.pack_ngrams_uint_with_tail(exps, n=ngram)
+                    else:
+                        exps_model = exps
+                        exps_tail = np.array([], dtype=np.uint8)
 
-                bits_exp = self.compute_zipnn_bits(exps_model, method=method)
-                bits_mant = self.compute_zipnn_bits(mant, method="huffman")
-                bits_total = bits_exp + bits_mant + sign.size
-                total_bits += bits_total
+                payload = self.encode_cluster_payload(
+                    exps_model.astype(np.uint32, copy=False), validate=validate
+                )
+                total_bytes += self.cluster_payload_byte_length(payload)
+                total_bytes += 4 + exps_tail.size
+
+                if validate:
+                    decoded_ids = ARITHMETIC_CODER.decode(
+                        payload.encoded,
+                        payload.counts,
+                        exps_model.size,
+                    )
+                    decoded_stream = payload.values[decoded_ids]
+                    if ngram > 1 and decoded_stream.size:
+                        decoded_exps = np.concatenate(
+                            [self.unpack_ngrams_uint(decoded_stream, n=ngram), exps_tail.astype(np.uint32)]
+                        )
+                    elif ngram > 1:
+                        decoded_exps = exps_tail.astype(np.uint32)
+                    else:
+                        decoded_exps = decoded_stream.astype(np.uint32, copy=False)
+                    if not np.array_equal(decoded_exps, exps):
+                        raise ValueError("NeuralZip exponent reconstruction failed.")
+            total_bits = total_bytes * 8
 
         if verbose:
             self.log_bits(f"NeuralZip ({exp}) [n={ngram}, {method}, cluster={cluster}]",
@@ -293,7 +671,10 @@ class HuggingFaceModel:
 
 
     def zstd_compress(self, level=19, verbose=1):
-        raw = self._weights.tobytes()
+        raw = b"".join(
+            param.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+            for _, param in self._named_params
+        )
         cctx = zstd.ZstdCompressor(level=level, threads=8)
         compressed = cctx.compress(raw)
         bits = len(compressed) * 8
@@ -303,6 +684,17 @@ class HuggingFaceModel:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run compression experiments.")
+    parser.add_argument(
+        "--dtype",
+        choices=["auto", "float16", "bfloat16", "float32"],
+        default="auto",
+        help="Tensor dtype to request from Hugging Face when loading the model.",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate sign, mantissa, and exponent round-trip reconstruction.",
+    )
     parser.add_argument(
         "--models",
         nargs="+",
@@ -412,7 +804,7 @@ def main():
 
     for experiment in select_experiments(args.models, experiments):
         print(f"\nRunning {experiment['label']} ({experiment['model_id']})")
-        model = HuggingFaceModel(experiment["model_id"])
+        model = HuggingFaceModel(experiment["model_id"], dtype=args.dtype)
 
         model.print_model_size()
         model.zipnn_compress()
@@ -422,6 +814,7 @@ def main():
             cluster=True,
             direct_block=4096,
             exp="cluster-arith-trigram-direct",
+            validate=args.validate,
         )
 
 

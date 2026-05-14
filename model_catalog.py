@@ -24,6 +24,10 @@ EXPERIMENTS = [
         "model_id": "google/gemma-4-E4B-it",
     },
     {
+        "label": "DeepSeek R1",
+        "model_id": "deepseek-ai/DeepSeek-R1",
+    },
+    {
         "label": "Llama 3.2 1B",
         "model_id": "meta-llama/Llama-3.2-1B",
     },

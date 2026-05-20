@@ -7,7 +7,9 @@ import numpy as np
 from experiment_utils import (
     collect_exponents,
     collect_field,
+    collect_named_exponents,
     clustered_best_exponent_bits,
+    clustered_trigram_huffman_exponent_bits,
     ctx_huffman_exponent_bits,
     default_models,
     empirical_conditional_entropy,
@@ -18,7 +20,8 @@ from experiment_utils import (
     huffman_exponent_bits,
     log_bits,
     log_per_tensor_metric,
-    official_zipnn_bits,
+    neuralzip_predictor_exponent_bits,
+    neuralzip_v2_exponent_bits,
     pack_non_overlapping_ngrams,
     per_tensor_best_bits,
     per_tensor_ngram_bits,
@@ -63,6 +66,11 @@ def parse_args():
         choices=["AUTO", "HUFFMAN", "ZSTD", "LZ4", "SNAPPY"],
         default="HUFFMAN",
         help="Official ZipNN compression method.",
+    )
+    parser.add_argument(
+        "--skip-predictor",
+        action="store_true",
+        help="Skip NeuralZip-v3 predictor-greedy in --mode zipnn.",
     )
     parser.add_argument(
         "--ctx-order",
@@ -163,10 +171,52 @@ def run_full(experiment, args):
 
 
 def run_zipnn(experiment, args):
-    model = load_experiment_model(experiment, args, "Running comparison for")
-    zipnn_bits = official_zipnn_bits(model.model, args.zipnn_method)
-    model.log_bits(f"Official ZipNN ({args.zipnn_method})", zipnn_bits)
-    run_neuralzip_default(model, args)
+    print(f"\nRunning exponent-only comparison for {experiment['label']} ({experiment['model_id']})")
+    model = HuggingFaceModel(experiment["model_id"], dtype=args.dtype)
+    named_exponents = collect_named_exponents(model)
+    layer_exponents = [exponents for _, exponents in named_exponents]
+    original_bits = sum(exponents.size for exponents in layer_exponents) * 8
+    log_bits("Raw exponents", original_bits, original_bits)
+    log_bits(
+        f"Official ZipNN exponent bytes ({args.zipnn_method})",
+        zipnn_exponent_bits_by_tensor(layer_exponents, args.zipnn_method),
+        original_bits,
+    )
+    log_bits(
+        "Global Huffman exponent bytes",
+        global_huffman_exponent_bits(model, layer_exponents),
+        original_bits,
+    )
+    log_bits(
+        "NeuralZip cluster-trigram exponent bytes",
+        clustered_trigram_huffman_exponent_bits(model, layer_exponents),
+        original_bits,
+    )
+    v2_bits, v2_stats = neuralzip_v2_exponent_bits(model, named_exponents)
+    log_bits("NeuralZip-v2 architecture-greedy exponent bytes", v2_bits, original_bits)
+    print(
+        "NeuralZip-v2 stats: "
+        f"{v2_stats['clusters']} clusters, "
+        f"{v2_stats['families']} families, "
+        f"orders={v2_stats['orders']}"
+    )
+    if not args.skip_predictor:
+        predictor_bits, predictor_stats = neuralzip_predictor_exponent_bits(
+            model,
+            named_exponents,
+        )
+        log_bits(
+            "NeuralZip-v3 predictor-greedy exponent bytes",
+            predictor_bits,
+            original_bits,
+        )
+        print(
+            "NeuralZip-v3 stats: "
+            f"{predictor_stats['clusters']} clusters, "
+            f"{predictor_stats['families']} families, "
+            f"orders={predictor_stats['orders']}, "
+            f"predictors={predictor_stats['predictors']}"
+        )
 
 
 def run_exponent(experiment, args):

@@ -73,4 +73,4 @@ def unpack_values(data, value_count, bits_per_value):
     values = np.zeros(value_count, dtype=np.uint32)
     for idx in range(value_count):
         values[idx] = reader.read_bits(bits_per_value)
-    return values
+    return value

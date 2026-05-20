@@ -97,8 +97,8 @@ class NeuralZipMixin:
             raise IndexError("position out of range for exponent stream")
         return self._exp_offsets[block]
 
-    def zipnn_compress(self, verbose=1):
-        """Classic ZipNN: compress only exponent field globally."""
+    def global_huffman_compress(self, verbose=1, label="Global Huffman"):
+        """Compress the exponent field with one global Huffman model."""
         exponents = []
         mantissa_bits = 0
         sign_bits = 0
@@ -111,8 +111,12 @@ class NeuralZipMixin:
         bits_exp = self.compute_zipnn_bits(exps, method="huffman")
         total_bits = bits_exp + mantissa_bits + sign_bits
         if verbose:
-            self.log_bits("ZipNN", total_bits)
+            self.log_bits(label, total_bits)
         return total_bits
+
+    def zipnn_compress(self, verbose=1):
+        """Classic ZipNN-style baseline: global Huffman over exponent bytes."""
+        return self.global_huffman_compress(verbose=verbose, label="ZipNN")
 
     def _cluster_exponent_streams(
         self,

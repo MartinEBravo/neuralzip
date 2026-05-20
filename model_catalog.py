@@ -28,6 +28,26 @@ EXPERIMENTS = [
         "model_id": "deepseek-ai/DeepSeek-R1",
     },
     {
+        "label": "ResNet-50",
+        "model_id": "microsoft/resnet-50",
+    },
+    {
+        "label": "ResNet-152",
+        "model_id": "microsoft/resnet-152",
+    },
+    {
+        "label": "ConvNeXt Large",
+        "model_id": "facebook/convnext-large-224",
+    },
+    {
+        "label": "Swin Large",
+        "model_id": "microsoft/swin-large-patch4-window12-384",
+    },
+    {
+        "label": "Stable Diffusion 1.5",
+        "model_id": "runwayml/stable-diffusion-v1-5",
+    },
+    {
         "label": "Llama 3.2 1B",
         "model_id": "meta-llama/Llama-3.2-1B",
     },
@@ -50,6 +70,14 @@ EXPERIMENTS = [
     {
         "label": "Llama 3.2 11B Vision Instruct",
         "model_id": "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    },
+    {
+        "label": "Llama 3.2 90B Vision",
+        "model_id": "meta-llama/Llama-3.2-90B-Vision",
+    },
+    {
+        "label": "Llama 3.3 70B Instruct",
+        "model_id": "meta-llama/Llama-3.3-70B-Instruct",
     },
     {
         "label": "Phi-4-mini",

@@ -50,6 +50,14 @@ def collect_exponents(model):
     ]
 
 
+def collect_named_exponents(model):
+    layers = []
+    for name, param in model.model.named_parameters():
+        _, exponent, _ = extract_float_parts(param)
+        layers.append((name, exponent.astype(np.uint8, copy=False)))
+    return layers
+
+
 def collect_field(model, field, max_symbols):
     chunks = []
     seen = 0
@@ -259,6 +267,322 @@ def clustered_best_exponent_bits(model, layer_exponents, ctx_order):
         ]
         total_bytes += 1 + int(np.ceil(min(options) / 8))
     return total_bytes * 8
+
+
+def clustered_trigram_huffman_exponent_bits(model, layer_exponents):
+    layer_arrays = [param for _, param in model.model.named_parameters()]
+    clusters = model.cluster_layers(layer_arrays)
+    total_bytes = 16
+    cluster_id_bits = bits_required(len(clusters))
+    if cluster_id_bits:
+        total_bytes += packed_byte_length(len(layer_exponents), cluster_id_bits)
+
+    for cluster_ids in clusters:
+        packed_parts = []
+        tail_size = 0
+        for layer_id in cluster_ids:
+            packed, tail = model.pack_ngrams_uint_with_tail(
+                layer_exponents[layer_id],
+                n=3,
+            )
+            if packed.size:
+                packed_parts.append(packed)
+            tail_size += tail.size
+        packed_stream = (
+            np.concatenate(packed_parts).astype(np.uint32, copy=False)
+            if packed_parts
+            else np.array([], dtype=np.uint32)
+        )
+        payload = model.encode_huffman_payload(packed_stream)
+        total_bytes += model.cluster_payload_byte_length(payload) + tail_size
+    return total_bytes * 8
+
+
+def architecture_component(name):
+    parts = name.lower().split(".")
+    if "components" in parts:
+        idx = parts.index("components")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    if parts and parts[0] in {"unet", "vae", "text_encoder", "text_encoder_2"}:
+        return parts[0]
+    return "model"
+
+
+def architecture_role(name):
+    name = name.lower()
+    parts = name.split(".")
+    leaf = parts[-1] if parts else name
+    parent = parts[-2] if len(parts) > 1 else ""
+    joined = "." + name + "."
+
+    if leaf == "bias" or name.endswith(".bias"):
+        return "bias"
+    if "norm" in name or "ln_" in name or "layer_norm" in name:
+        return "norm"
+    if "embed" in name or "embedding" in name:
+        return "embed"
+    if "lm_head" in name:
+        return "lm_head"
+    if "conv" in parent or "conv" in leaf or ".conv" in joined:
+        return "conv"
+    if (
+        "q_proj" in name
+        or "to_q" in name
+        or ".q." in joined
+        or "query" in name
+    ):
+        return "attention_q"
+    if (
+        "k_proj" in name
+        or "to_k" in name
+        or ".k." in joined
+        or "key" in name
+    ):
+        return "attention_k"
+    if (
+        "v_proj" in name
+        or "to_v" in name
+        or ".v." in joined
+        or "value" in name
+    ):
+        return "attention_v"
+    if (
+        "o_proj" in name
+        or "out_proj" in name
+        or "to_out" in name
+        or "proj_out" in name
+        or "dense" in name
+    ):
+        return "attention_o"
+    if "gate_proj" in name or "gate" in name:
+        return "mlp_gate"
+    if "up_proj" in name or "ff.net.0" in name or parent in {"fc1", "wi", "w1"}:
+        return "mlp_up"
+    if "down_proj" in name or "ff.net.2" in name or parent in {"fc2", "wo", "w2"}:
+        return "mlp_down"
+    if "mlp" in name or "feed_forward" in name or "ffn" in name or ".ff." in joined:
+        return "mlp_other"
+    return "other"
+
+
+def architecture_group(name):
+    return f"{architecture_component(name)}:{architecture_role(name)}"
+
+
+def ngram_huffman_payload_bytes(model, exponents, n):
+    if exponents.size == 0:
+        return 0
+    if n == 1:
+        payload = model.encode_huffman_payload(exponents.astype(np.uint32, copy=False))
+        return model.cluster_payload_byte_length(payload)
+
+    packed, tail = model.pack_ngrams_uint_with_tail(exponents, n=n)
+    payload = model.encode_huffman_payload(packed.astype(np.uint32, copy=False))
+    return model.cluster_payload_byte_length(payload) + tail.size
+
+
+def best_ngram_huffman_payload_bytes(model, exponents, n_values=(1, 2, 3, 4)):
+    best_n = None
+    best_size = None
+    for n in n_values:
+        size = ngram_huffman_payload_bytes(model, exponents, n)
+        if best_size is None or size < best_size:
+            best_n = n
+            best_size = size
+    return best_size or 0, best_n or 1
+
+
+def predictive_transform(exponents, predictor):
+    values = exponents.astype(np.uint8, copy=False)
+    if predictor == "raw" or values.size < 2:
+        return values
+
+    predicted = np.empty_like(values)
+    predicted[0] = values[0]
+    if predictor == "delta":
+        deltas = values[1:].astype(np.int16) - values[:-1].astype(np.int16)
+        predicted[1:] = (deltas & 0xFF).astype(np.uint8, copy=False)
+        return predicted
+    if predictor == "xor":
+        predicted[1:] = np.bitwise_xor(values[1:], values[:-1])
+        return predicted
+    raise ValueError(f"Unsupported predictor: {predictor}")
+
+
+def neuralzip_predictor_exponent_bits(
+    model,
+    named_exponents,
+    n_values=(1, 2, 3, 4),
+    predictors=("raw", "delta", "xor"),
+    max_merge_passes=2,
+):
+    exponents = [entry[1] for entry in named_exponents]
+    families = {}
+    for idx, (name, _) in enumerate(named_exponents):
+        families.setdefault(architecture_group(name), []).append(idx)
+
+    cost_cache = {}
+
+    def cluster_stream(cluster, predictor):
+        parts = [
+            predictive_transform(exponents[idx], predictor)
+            for idx in cluster
+            if exponents[idx].size
+        ]
+        if not parts:
+            return np.array([], dtype=np.uint8)
+        return np.concatenate(parts).astype(np.uint8, copy=False)
+
+    def cluster_cost(cluster):
+        key = tuple(cluster)
+        if key not in cost_cache:
+            best = None
+            for predictor in predictors:
+                payload_bytes, best_n = best_ngram_huffman_payload_bytes(
+                    model,
+                    cluster_stream(cluster, predictor),
+                    n_values=n_values,
+                )
+                # Store predictor and n-gram selectors for each cluster.
+                candidate = payload_bytes + 2, predictor, best_n
+                if best is None or candidate[0] < best[0]:
+                    best = candidate
+            cost_cache[key] = best
+        return cost_cache[key]
+
+    final_clusters = []
+    for family_indices in families.values():
+        clusters = [[idx] for idx in family_indices]
+        for _ in range(max_merge_passes):
+            changed = False
+            merged_clusters = []
+            idx = 0
+            while idx < len(clusters):
+                if idx + 1 >= len(clusters):
+                    merged_clusters.append(clusters[idx])
+                    idx += 1
+                    continue
+
+                left = clusters[idx]
+                right = clusters[idx + 1]
+                left_cost, _, _ = cluster_cost(left)
+                right_cost, _, _ = cluster_cost(right)
+                merged = left + right
+                merged_cost, _, _ = cluster_cost(merged)
+                if merged_cost < left_cost + right_cost:
+                    merged_clusters.append(merged)
+                    changed = True
+                    idx += 2
+                else:
+                    merged_clusters.append(left)
+                    idx += 1
+
+            clusters = merged_clusters
+            if not changed:
+                break
+        final_clusters.extend(clusters)
+
+    total_bytes = 16
+    cluster_id_bits = bits_required(len(final_clusters))
+    if cluster_id_bits:
+        total_bytes += packed_byte_length(len(named_exponents), cluster_id_bits)
+
+    chosen_orders = {}
+    chosen_predictors = {}
+    for cluster in final_clusters:
+        payload_bytes, predictor, best_n = cluster_cost(cluster)
+        total_bytes += payload_bytes
+        chosen_orders[best_n] = chosen_orders.get(best_n, 0) + 1
+        chosen_predictors[predictor] = chosen_predictors.get(predictor, 0) + 1
+
+    return total_bytes * 8, {
+        "clusters": len(final_clusters),
+        "families": len(families),
+        "orders": chosen_orders,
+        "predictors": chosen_predictors,
+    }
+
+
+def neuralzip_v2_exponent_bits(
+    model,
+    named_exponents,
+    n_values=(1, 2, 3, 4),
+    max_merge_passes=2,
+):
+    exponents = [entry[1] for entry in named_exponents]
+    families = {}
+    for idx, (name, _) in enumerate(named_exponents):
+        families.setdefault(architecture_group(name), []).append(idx)
+
+    cost_cache = {}
+
+    def cluster_stream(cluster):
+        parts = [exponents[idx] for idx in cluster if exponents[idx].size]
+        if not parts:
+            return np.array([], dtype=np.uint8)
+        return np.concatenate(parts).astype(np.uint8, copy=False)
+
+    def cluster_cost(cluster):
+        key = tuple(cluster)
+        if key not in cost_cache:
+            payload_bytes, best_n = best_ngram_huffman_payload_bytes(
+                model,
+                cluster_stream(cluster),
+                n_values=n_values,
+            )
+            # Store one selector byte so the decoder knows which n-gram order was used.
+            cost_cache[key] = payload_bytes + 1, best_n
+        return cost_cache[key]
+
+    final_clusters = []
+    for family_indices in families.values():
+        clusters = [[idx] for idx in family_indices]
+        for _ in range(max_merge_passes):
+            changed = False
+            merged_clusters = []
+            idx = 0
+            while idx < len(clusters):
+                if idx + 1 >= len(clusters):
+                    merged_clusters.append(clusters[idx])
+                    idx += 1
+                    continue
+
+                left = clusters[idx]
+                right = clusters[idx + 1]
+                left_cost, _ = cluster_cost(left)
+                right_cost, _ = cluster_cost(right)
+                merged = left + right
+                merged_cost, _ = cluster_cost(merged)
+                if merged_cost < left_cost + right_cost:
+                    merged_clusters.append(merged)
+                    changed = True
+                    idx += 2
+                else:
+                    merged_clusters.append(left)
+                    idx += 1
+
+            clusters = merged_clusters
+            if not changed:
+                break
+        final_clusters.extend(clusters)
+
+    total_bytes = 16
+    cluster_id_bits = bits_required(len(final_clusters))
+    if cluster_id_bits:
+        total_bytes += packed_byte_length(len(named_exponents), cluster_id_bits)
+
+    chosen_orders = {}
+    for cluster in final_clusters:
+        payload_bytes, best_n = cluster_cost(cluster)
+        total_bytes += payload_bytes
+        chosen_orders[best_n] = chosen_orders.get(best_n, 0) + 1
+
+    return total_bytes * 8, {
+        "clusters": len(final_clusters),
+        "families": len(families),
+        "orders": chosen_orders,
+    }
 
 
 def entropy_from_counts(counts):

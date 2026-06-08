@@ -1,0 +1,3 @@
+model,model_id,dtype,exponent_symbols,nominal_exponent_bits,h0_bits_per_exponent,entropy_ratio,ideal_savings_bits_per_exponent
+GPT-2 Nano,sshleifer/tiny-gpt2,float32,102714,8,2.5518159445973896,0.3189769930746737,5.44818405540261
+GPT-2,gpt2,float32,124439808,8,2.664054835432396,0.3330068544290495,5.335945164567605

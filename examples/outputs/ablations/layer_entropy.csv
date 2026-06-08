@@ -1,0 +1,177 @@
+model,layer_idx,tensor,symbols,h0_bits_per_exponent
+GPT-2 Nano,0,transformer.wte.weight,100514,2.545885197434584
+GPT-2 Nano,1,transformer.wpe.weight,2048,2.553062951170674
+GPT-2 Nano,2,transformer.h.0.ln_1.weight,2,-0.0
+GPT-2 Nano,3,transformer.h.0.ln_1.bias,2,-0.0
+GPT-2 Nano,4,transformer.h.0.attn.c_attn.weight,12,2.054585169337799
+GPT-2 Nano,5,transformer.h.0.attn.c_attn.bias,6,-0.0
+GPT-2 Nano,6,transformer.h.0.attn.c_proj.weight,4,1.5
+GPT-2 Nano,7,transformer.h.0.attn.c_proj.bias,2,-0.0
+GPT-2 Nano,8,transformer.h.0.ln_2.weight,2,-0.0
+GPT-2 Nano,9,transformer.h.0.ln_2.bias,2,-0.0
+GPT-2 Nano,10,transformer.h.0.mlp.c_fc.weight,16,1.8050365325772657
+GPT-2 Nano,11,transformer.h.0.mlp.c_fc.bias,8,-0.0
+GPT-2 Nano,12,transformer.h.0.mlp.c_proj.weight,16,2.7806390622295662
+GPT-2 Nano,13,transformer.h.0.mlp.c_proj.bias,2,-0.0
+GPT-2 Nano,14,transformer.h.1.ln_1.weight,2,-0.0
+GPT-2 Nano,15,transformer.h.1.ln_1.bias,2,-0.0
+GPT-2 Nano,16,transformer.h.1.attn.c_attn.weight,12,1.8879185026711327
+GPT-2 Nano,17,transformer.h.1.attn.c_attn.bias,6,-0.0
+GPT-2 Nano,18,transformer.h.1.attn.c_proj.weight,4,1.5
+GPT-2 Nano,19,transformer.h.1.attn.c_proj.bias,2,-0.0
+GPT-2 Nano,20,transformer.h.1.ln_2.weight,2,-0.0
+GPT-2 Nano,21,transformer.h.1.ln_2.bias,2,-0.0
+GPT-2 Nano,22,transformer.h.1.mlp.c_fc.weight,16,2.311278124459133
+GPT-2 Nano,23,transformer.h.1.mlp.c_fc.bias,8,-0.0
+GPT-2 Nano,24,transformer.h.1.mlp.c_proj.weight,16,1.7987949406953985
+GPT-2 Nano,25,transformer.h.1.mlp.c_proj.bias,2,-0.0
+GPT-2 Nano,26,transformer.ln_f.weight,2,-0.0
+GPT-2 Nano,27,transformer.ln_f.bias,2,-0.0
+GPT-2,0,transformer.wte.weight,38597376,2.5680491628904374
+GPT-2,1,transformer.wpe.weight,786432,3.2587836884454853
+GPT-2,2,transformer.h.0.ln_1.weight,768,0.5948019798253771
+GPT-2,3,transformer.h.0.ln_1.bias,768,3.0283459500157965
+GPT-2,4,transformer.h.0.attn.c_attn.weight,1769472,2.9203895467387397
+GPT-2,5,transformer.h.0.attn.c_attn.bias,2304,3.2233872514552697
+GPT-2,6,transformer.h.0.attn.c_proj.weight,589824,3.1904945422381656
+GPT-2,7,transformer.h.0.attn.c_proj.bias,768,2.799569787742651
+GPT-2,8,transformer.h.0.ln_2.weight,768,1.6807163053851517
+GPT-2,9,transformer.h.0.ln_2.bias,768,2.9856520732589544
+GPT-2,10,transformer.h.0.mlp.c_fc.weight,2359296,2.7217648063223296
+GPT-2,11,transformer.h.0.mlp.c_fc.bias,3072,2.7682608029616547
+GPT-2,12,transformer.h.0.mlp.c_proj.weight,2359296,2.6257689153543313
+GPT-2,13,transformer.h.0.mlp.c_proj.bias,768,2.6807439020842097
+GPT-2,14,transformer.h.1.ln_1.weight,768,0.7297130186497673
+GPT-2,15,transformer.h.1.ln_1.bias,768,2.8931822075024787
+GPT-2,16,transformer.h.1.attn.c_attn.weight,1769472,2.7728506132543793
+GPT-2,17,transformer.h.1.attn.c_attn.bias,2304,3.1992596527241175
+GPT-2,18,transformer.h.1.attn.c_proj.weight,589824,2.6701523386248733
+GPT-2,19,transformer.h.1.attn.c_proj.bias,768,2.7632975612417225
+GPT-2,20,transformer.h.1.ln_2.weight,768,1.0040370042740292
+GPT-2,21,transformer.h.1.ln_2.bias,768,2.7181499615748836
+GPT-2,22,transformer.h.1.mlp.c_fc.weight,2359296,2.6448330700951423
+GPT-2,23,transformer.h.1.mlp.c_fc.bias,3072,2.759074662022363
+GPT-2,24,transformer.h.1.mlp.c_proj.weight,2359296,2.6706545740521888
+GPT-2,25,transformer.h.1.mlp.c_proj.bias,768,2.656318295915511
+GPT-2,26,transformer.h.2.ln_1.weight,768,0.9868617894451879
+GPT-2,27,transformer.h.2.ln_1.bias,768,2.905337540634108
+GPT-2,28,transformer.h.2.attn.c_attn.weight,1769472,2.7444356750373173
+GPT-2,29,transformer.h.2.attn.c_attn.bias,2304,3.1995712635622837
+GPT-2,30,transformer.h.2.attn.c_proj.weight,589824,2.613925702404041
+GPT-2,31,transformer.h.2.attn.c_proj.bias,768,2.6021860926909923
+GPT-2,32,transformer.h.2.ln_2.weight,768,0.4766061611348913
+GPT-2,33,transformer.h.2.ln_2.bias,768,2.7284334079402894
+GPT-2,34,transformer.h.2.mlp.c_fc.weight,2359296,2.599541061489247
+GPT-2,35,transformer.h.2.mlp.c_fc.bias,3072,2.5251899863015446
+GPT-2,36,transformer.h.2.mlp.c_proj.weight,2359296,2.617296869847666
+GPT-2,37,transformer.h.2.mlp.c_proj.bias,768,2.475408678908715
+GPT-2,38,transformer.h.3.ln_1.weight,768,0.5236426529719662
+GPT-2,39,transformer.h.3.ln_1.bias,768,2.8421257080646867
+GPT-2,40,transformer.h.3.attn.c_attn.weight,1769472,2.6459085028286573
+GPT-2,41,transformer.h.3.attn.c_attn.bias,2304,3.1694853866767367
+GPT-2,42,transformer.h.3.attn.c_proj.weight,589824,2.623742034061244
+GPT-2,43,transformer.h.3.attn.c_proj.bias,768,2.622867918124765
+GPT-2,44,transformer.h.3.ln_2.weight,768,0.34824885673754086
+GPT-2,45,transformer.h.3.ln_2.bias,768,2.664282469518597
+GPT-2,46,transformer.h.3.mlp.c_fc.weight,2359296,2.579549609290326
+GPT-2,47,transformer.h.3.mlp.c_fc.bias,3072,2.4216028214736376
+GPT-2,48,transformer.h.3.mlp.c_proj.weight,2359296,2.612141107018388
+GPT-2,49,transformer.h.3.mlp.c_proj.bias,768,2.5307418394590173
+GPT-2,50,transformer.h.4.ln_1.weight,768,0.3491329857635083
+GPT-2,51,transformer.h.4.ln_1.bias,768,2.691647415135752
+GPT-2,52,transformer.h.4.attn.c_attn.weight,1769472,2.656360165219425
+GPT-2,53,transformer.h.4.attn.c_attn.bias,2304,3.162034738675401
+GPT-2,54,transformer.h.4.attn.c_proj.weight,589824,2.6350254244461864
+GPT-2,55,transformer.h.4.attn.c_proj.bias,768,2.5464708779212546
+GPT-2,56,transformer.h.4.ln_2.weight,768,0.5404863659243708
+GPT-2,57,transformer.h.4.ln_2.bias,768,2.6652030481827396
+GPT-2,58,transformer.h.4.mlp.c_fc.weight,2359296,2.5883046166887858
+GPT-2,59,transformer.h.4.mlp.c_fc.bias,3072,2.6119164454529114
+GPT-2,60,transformer.h.4.mlp.c_proj.weight,2359296,2.6074706110656196
+GPT-2,61,transformer.h.4.mlp.c_proj.bias,768,2.59326058965717
+GPT-2,62,transformer.h.5.ln_1.weight,768,0.18902547071323134
+GPT-2,63,transformer.h.5.ln_1.bias,768,2.6243955346048673
+GPT-2,64,transformer.h.5.attn.c_attn.weight,1769472,2.6097468809405324
+GPT-2,65,transformer.h.5.attn.c_attn.bias,2304,3.049763908185073
+GPT-2,66,transformer.h.5.attn.c_proj.weight,589824,2.6050391787915967
+GPT-2,67,transformer.h.5.attn.c_proj.bias,768,2.606659322161921
+GPT-2,68,transformer.h.5.ln_2.weight,768,0.35186718559438057
+GPT-2,69,transformer.h.5.ln_2.bias,768,2.6434723728790415
+GPT-2,70,transformer.h.5.mlp.c_fc.weight,2359296,2.5804468161812837
+GPT-2,71,transformer.h.5.mlp.c_fc.bias,3072,2.6389714563475355
+GPT-2,72,transformer.h.5.mlp.c_proj.weight,2359296,2.606827569807336
+GPT-2,73,transformer.h.5.mlp.c_proj.bias,768,2.6162889527725257
+GPT-2,74,transformer.h.6.ln_1.weight,768,0.21166589886218756
+GPT-2,75,transformer.h.6.ln_1.bias,768,2.5310910530302575
+GPT-2,76,transformer.h.6.attn.c_attn.weight,1769472,2.591794027109314
+GPT-2,77,transformer.h.6.attn.c_attn.bias,2304,3.087054446374283
+GPT-2,78,transformer.h.6.attn.c_proj.weight,589824,2.614700494857
+GPT-2,79,transformer.h.6.attn.c_proj.bias,768,2.5965156127081515
+GPT-2,80,transformer.h.6.ln_2.weight,768,0.7677807670564089
+GPT-2,81,transformer.h.6.ln_2.bias,768,2.703707313066785
+GPT-2,82,transformer.h.6.mlp.c_fc.weight,2359296,2.574601192281195
+GPT-2,83,transformer.h.6.mlp.c_fc.bias,3072,2.6554267662628708
+GPT-2,84,transformer.h.6.mlp.c_proj.weight,2359296,2.6044845338807416
+GPT-2,85,transformer.h.6.mlp.c_proj.bias,768,2.5700495832207797
+GPT-2,86,transformer.h.7.ln_1.weight,768,0.19190426589745024
+GPT-2,87,transformer.h.7.ln_1.bias,768,2.3707894295991876
+GPT-2,88,transformer.h.7.attn.c_attn.weight,1769472,2.5874601009399028
+GPT-2,89,transformer.h.7.attn.c_attn.bias,2304,3.128745206865902
+GPT-2,90,transformer.h.7.attn.c_proj.weight,589824,2.614291161178906
+GPT-2,91,transformer.h.7.attn.c_proj.bias,768,2.5581671923665645
+GPT-2,92,transformer.h.7.ln_2.weight,768,0.9515545575650238
+GPT-2,93,transformer.h.7.ln_2.bias,768,2.625407558442401
+GPT-2,94,transformer.h.7.mlp.c_fc.weight,2359296,2.563626220847014
+GPT-2,95,transformer.h.7.mlp.c_fc.bias,3072,2.6049085609772247
+GPT-2,96,transformer.h.7.mlp.c_proj.weight,2359296,2.5984074511262887
+GPT-2,97,transformer.h.7.mlp.c_proj.bias,768,2.6041591170383285
+GPT-2,98,transformer.h.8.ln_1.weight,768,0.158588034886339
+GPT-2,99,transformer.h.8.ln_1.bias,768,2.586624545320473
+GPT-2,100,transformer.h.8.attn.c_attn.weight,1769472,2.574356083848926
+GPT-2,101,transformer.h.8.attn.c_attn.bias,2304,3.0798655467896525
+GPT-2,102,transformer.h.8.attn.c_proj.weight,589824,2.59796832441896
+GPT-2,103,transformer.h.8.attn.c_proj.bias,768,2.549976428177915
+GPT-2,104,transformer.h.8.ln_2.weight,768,0.9821700460221736
+GPT-2,105,transformer.h.8.ln_2.bias,768,2.6143207262431307
+GPT-2,106,transformer.h.8.mlp.c_fc.weight,2359296,2.560946852192983
+GPT-2,107,transformer.h.8.mlp.c_fc.bias,3072,2.548178153155257
+GPT-2,108,transformer.h.8.mlp.c_proj.weight,2359296,2.601845438384287
+GPT-2,109,transformer.h.8.mlp.c_proj.bias,768,2.564293806062097
+GPT-2,110,transformer.h.9.ln_1.weight,768,0.13955257530476972
+GPT-2,111,transformer.h.9.ln_1.bias,768,2.529431152320326
+GPT-2,112,transformer.h.9.attn.c_attn.weight,1769472,2.5747728496484124
+GPT-2,113,transformer.h.9.attn.c_attn.bias,2304,3.073784520810182
+GPT-2,114,transformer.h.9.attn.c_proj.weight,589824,2.6128199980048215
+GPT-2,115,transformer.h.9.attn.c_proj.bias,768,2.5913331048432138
+GPT-2,116,transformer.h.9.ln_2.weight,768,0.7919569770042704
+GPT-2,117,transformer.h.9.ln_2.bias,768,2.629775634089518
+GPT-2,118,transformer.h.9.mlp.c_fc.weight,2359296,2.5573504288550986
+GPT-2,119,transformer.h.9.mlp.c_fc.bias,3072,2.456365337723288
+GPT-2,120,transformer.h.9.mlp.c_proj.weight,2359296,2.6037583131382527
+GPT-2,121,transformer.h.9.mlp.c_proj.bias,768,2.4930689782112685
+GPT-2,122,transformer.h.10.ln_1.weight,768,0.17491680271176058
+GPT-2,123,transformer.h.10.ln_1.bias,768,2.601118092088627
+GPT-2,124,transformer.h.10.attn.c_attn.weight,1769472,2.5826064981723635
+GPT-2,125,transformer.h.10.attn.c_attn.bias,2304,3.026419971114248
+GPT-2,126,transformer.h.10.attn.c_proj.weight,589824,2.6049661923987006
+GPT-2,127,transformer.h.10.attn.c_proj.bias,768,2.6053064931836696
+GPT-2,128,transformer.h.10.ln_2.weight,768,0.293833843483303
+GPT-2,129,transformer.h.10.ln_2.bias,768,2.4264784395970684
+GPT-2,130,transformer.h.10.mlp.c_fc.weight,2359296,2.556968560643099
+GPT-2,131,transformer.h.10.mlp.c_fc.bias,3072,2.440900366015064
+GPT-2,132,transformer.h.10.mlp.c_proj.weight,2359296,2.5963227128007342
+GPT-2,133,transformer.h.10.mlp.c_proj.bias,768,2.4755259624044075
+GPT-2,134,transformer.h.11.ln_1.weight,768,0.8763256671143489
+GPT-2,135,transformer.h.11.ln_1.bias,768,2.598634436145977
+GPT-2,136,transformer.h.11.attn.c_attn.weight,1769472,2.608800746510586
+GPT-2,137,transformer.h.11.attn.c_attn.bias,2304,2.9288845660644145
+GPT-2,138,transformer.h.11.attn.c_proj.weight,589824,2.6548969575367347
+GPT-2,139,transformer.h.11.attn.c_proj.bias,768,2.5753573544738275
+GPT-2,140,transformer.h.11.ln_2.weight,768,1.1432376306864258
+GPT-2,141,transformer.h.11.ln_2.bias,768,2.6495192658570574
+GPT-2,142,transformer.h.11.mlp.c_fc.weight,2359296,2.5647786734506117
+GPT-2,143,transformer.h.11.mlp.c_fc.bias,3072,2.4929116175481485
+GPT-2,144,transformer.h.11.mlp.c_proj.weight,2359296,2.6036919003902015
+GPT-2,145,transformer.h.11.mlp.c_proj.bias,768,2.5624272756466766
+GPT-2,146,transformer.ln_f.weight,768,0.6365216007538005
+GPT-2,147,transformer.ln_f.bias,768,2.954085098219

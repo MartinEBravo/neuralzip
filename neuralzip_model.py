@@ -255,6 +255,153 @@ class NeuralZipMixin:
             if not np.array_equal(decoded_exps, part["raw"]):
                 raise ValueError("NeuralZip block exponent reconstruction failed.")
 
+    def build_gpu_inference_plan(self, ngram=3, block_size=4096, threshold=0.02):
+        """Build a metadata-only layout for future NeuralZip GPU inference tests.
+
+        The plan mirrors the DFloat11 serving idea: keep compressed exponent
+        payloads resident, decode only the tensor needed by the current module,
+        reconstruct a temporary floating-point buffer, run the matmul, and
+        discard the buffer. This method does not launch a CUDA kernel; it
+        exposes the cluster codebooks, tensor offsets, and tails needed by one.
+        """
+        if ngram < 1:
+            raise ValueError("ngram must be >= 1.")
+        if block_size < 1:
+            raise ValueError("block_size must be >= 1.")
+
+        layer_arrays = [param for _, param in self._named_params]
+        clusters = self.cluster_layers(layer_arrays, threshold=threshold)
+        cluster_lookup = np.zeros(len(layer_arrays), dtype=np.uint32)
+        for cluster_id, tensor_ids in enumerate(clusters):
+            for tensor_id in tensor_ids:
+                cluster_lookup[tensor_id] = cluster_id
+
+        tensor_parts = []
+        for tensor_id, (name, param) in enumerate(self._named_params):
+            sign, exps, mant = extract_float_parts(param)
+            fmt = get_float_format(param.dtype)
+            if ngram > 1:
+                symbols, tail = self.pack_ngrams_uint_with_tail(exps, n=ngram)
+            else:
+                symbols = exps.astype(np.uint32, copy=False)
+                tail = np.array([], dtype=np.uint8)
+
+            tensor_parts.append(
+                {
+                    "name": name,
+                    "shape": tuple(param.shape),
+                    "dtype": str(param.dtype).replace("torch.", ""),
+                    "numel": int(param.numel()),
+                    "cluster": int(cluster_lookup[tensor_id]),
+                    "symbols": symbols.astype(np.uint32, copy=False),
+                    "tail": tail.astype(np.uint8, copy=False),
+                    "sign_bits": int(sign.size),
+                    "mantissa_bits": int(mant.size * fmt["mantissa_bits"]),
+                }
+            )
+
+        tensor_records = [None] * len(tensor_parts)
+        cluster_records = []
+        total_exponent_bits = 0
+        total_codebook_bytes = 0
+        total_offset_bytes = 0
+        total_tail_bytes = 0
+        total_sign_bits = 0
+        total_mantissa_bits = 0
+
+        for cluster_id, tensor_ids in enumerate(clusters):
+            stream_parts = []
+            symbol_offset = 0
+            tail_offset = 0
+            for tensor_id in tensor_ids:
+                part = tensor_parts[tensor_id]
+                tensor_records[tensor_id] = {
+                    "name": part["name"],
+                    "shape": part["shape"],
+                    "dtype": part["dtype"],
+                    "numel": part["numel"],
+                    "cluster": cluster_id,
+                    "symbol_offset": int(symbol_offset),
+                    "symbol_count": int(part["symbols"].size),
+                    "tail_offset": int(tail_offset),
+                    "tail_count": int(part["tail"].size),
+                    "sign_bits": part["sign_bits"],
+                    "mantissa_bits": part["mantissa_bits"],
+                }
+                symbol_offset += int(part["symbols"].size)
+                tail_offset += int(part["tail"].size)
+                if part["symbols"].size:
+                    stream_parts.append(part["symbols"])
+                total_tail_bytes += int(part["tail"].size)
+                total_sign_bits += part["sign_bits"]
+                total_mantissa_bits += part["mantissa_bits"]
+
+            stream = (
+                np.concatenate(stream_parts).astype(np.uint32, copy=False)
+                if stream_parts
+                else np.array([], dtype=np.uint32)
+            )
+            if stream.size:
+                values, counts = np.unique(stream, return_counts=True)
+                lengths = huffman_code_lengths(values, counts)
+                symbol_ids = np.searchsorted(values, stream)
+                block_offsets = []
+                bit_offset = 0
+                for idx, symbol_id in enumerate(symbol_ids):
+                    if idx % block_size == 0:
+                        block_offsets.append(bit_offset)
+                    bit_offset += int(lengths[symbol_id])
+            else:
+                values = np.array([], dtype=np.uint32)
+                counts = np.array([], dtype=np.uint32)
+                lengths = np.array([], dtype=np.uint32)
+                block_offsets = []
+                bit_offset = 0
+
+            total_exponent_bits += bit_offset
+            codebook_bytes = 4 + 8 + values.nbytes + lengths.nbytes
+            offset_bytes = len(block_offsets) * 8
+            total_codebook_bytes += codebook_bytes
+            total_offset_bytes += offset_bytes
+
+            cluster_records.append(
+                {
+                    "cluster": cluster_id,
+                    "tensor_ids": [int(idx) for idx in tensor_ids],
+                    "symbol_count": int(stream.size),
+                    "encoded_bits": int(bit_offset),
+                    "codebook_bytes": int(codebook_bytes),
+                    "offset_bytes": int(offset_bytes),
+                    "values": values.astype(np.uint32, copy=False).tolist(),
+                    "code_lengths": lengths.astype(np.uint32, copy=False).tolist(),
+                    "block_offsets": [int(offset) for offset in block_offsets],
+                }
+            )
+
+        estimated_total_bits = (
+            total_exponent_bits
+            + total_sign_bits
+            + total_mantissa_bits
+            + 8 * (total_codebook_bytes + total_offset_bytes + total_tail_bytes)
+        )
+
+        return {
+            "format": "neuralzip-gpu-inference-plan",
+            "ngram": int(ngram),
+            "block_size": int(block_size),
+            "cluster_threshold": float(threshold),
+            "decode_policy": "decode tensor on demand, run compute, discard temporary weights",
+            "estimated_total_bits": int(estimated_total_bits),
+            "estimated_total_bytes": int(packed_byte_length(estimated_total_bits, 1)),
+            "exponent_bits": int(total_exponent_bits),
+            "sign_bits": int(total_sign_bits),
+            "mantissa_bits": int(total_mantissa_bits),
+            "metadata_bytes": int(total_codebook_bytes + total_offset_bytes),
+            "tail_bytes": int(total_tail_bytes),
+            "clusters": cluster_records,
+            "tensors": tensor_records,
+        }
+
     def _neuralzip_clustered(
         self,
         layer_arrays,

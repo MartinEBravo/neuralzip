@@ -41,6 +41,6 @@ from neuralzip.model_compression import HuggingFaceModel
 from neuralzip.neuralzip_model import NeuralZipModel
 ```
 
-Compression backends live in `neuralzip/compression_algorithms/`.
+Compression backends live in `neuralzip/algorithms/`.
 Model-suite selection, download planning, experiment execution, and upload
 manifests live in the notebooks.

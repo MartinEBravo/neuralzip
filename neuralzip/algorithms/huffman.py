@@ -48,7 +48,9 @@ class NativeHuffmanCoder:
             out.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
         )
         if rc != 0:
-            raise RuntimeError(f"Native Huffman code-length build failed with code {rc}.")
+            raise RuntimeError(
+                f"Native Huffman code-length build failed with code {rc}."
+            )
         return out
 
     def encode(self, symbols, values, lengths):

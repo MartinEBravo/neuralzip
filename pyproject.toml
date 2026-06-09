@@ -32,4 +32,4 @@ where = ["."]
 include = ["neuralzip*"]
 
 [tool.setuptools.package-data]
-"neuralzip.compression_algorithms" = ["*.so", "*.cpp"]
+"neuralzip.algorithms" = ["*.so", "*.cpp"]

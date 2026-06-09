@@ -2,9 +2,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bitpacking import bits_required, packed_byte_length, pack_values, unpack_values
-from compression_algorithms.arithmetic import ARITHMETIC_CODER
-from compression_algorithms.huffman import (
+from .bitpacking import bits_required, packed_byte_length, pack_values, unpack_values
+from .algorithms.arithmetic import ARITHMETIC_CODER
+from .algorithms.huffman import (
     decode_huffman_stream,
     encode_huffman_stream,
     huffman_code_lengths,

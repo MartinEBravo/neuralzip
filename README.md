@@ -1,9 +1,9 @@
 # NeuralZip Checkpoint Experiments
 
-Build native compression backends:
+Install the project in editable mode before running notebooks:
 
 ```bash
-make native
+pip install -e ".[experiments]"
 ```
 
 The main experiment entrypoint is `examples/1-model-hubs.ipynb`.
@@ -34,6 +34,13 @@ Legacy notebooks can still be used for small local debugging, but thesis tables
 should come from the model-hub notebook so storing, download, experiment, and
 upload provenance stay in one place.
 
-Compression backends live in `compression_algorithms/`. Model-suite selection,
-download planning, experiment execution, and upload manifests live in the
-notebooks.
+The importable library lives under `neuralzip/`; for example:
+
+```python
+from neuralzip.model_compression import HuggingFaceModel
+from neuralzip.neuralzip_model import NeuralZipModel
+```
+
+Compression backends live in `neuralzip/compression_algorithms/`.
+Model-suite selection, download planning, experiment execution, and upload
+manifests live in the notebooks.

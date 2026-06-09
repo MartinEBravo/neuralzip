@@ -4,11 +4,11 @@ import zstandard as zstd
 from scipy.spatial.distance import jensenshannon
 from tqdm import tqdm
 
-from bitpacking import bits_required, packed_byte_length
-from compression_algorithms.arithmetic import ARITHMETIC_CODER
-from compression_algorithms.huffman import huffman_code_lengths
-from compression_codecs import CodecMixin
-from float_utils import extract_float_parts, get_float_format
+from .bitpacking import bits_required, packed_byte_length
+from .algorithms.arithmetic import ARITHMETIC_CODER
+from .algorithms.huffman import huffman_code_lengths
+from .compression_codecs import CodecMixin
+from .float_utils import extract_float_parts, get_float_format
 
 
 class NeuralZipMixin:

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuralzip"
+version = "0.1.0"
+description = "Lossless checkpoint compression experiments for foundation models."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "torch",
+    "tqdm",
+    "transformers",
+    "zstandard",
+]
+
+[project.optional-dependencies]
+diffusion = ["diffusers"]
+experiments = [
+    "huggingface-hub",
+    "jupyter",
+    "pandas",
+    "safetensors",
+    "zipnn",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["neuralzip*"]
+
+[tool.setuptools.package-data]
+"neuralzip.compression_algorithms" = ["*.so", "*.cpp"]

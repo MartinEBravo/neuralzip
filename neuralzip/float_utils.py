@@ -1,6 +1,6 @@
 import numpy as np
 
-from formats import FLOAT_FORMATS
+from .formats import FLOAT_FORMATS
 
 
 def get_float_format(dtype):

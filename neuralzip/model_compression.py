@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoModelForImageClassification
 
-from neuralzip_model import NeuralZipModel
+from .neuralzip_model import NeuralZipModel
 
 
 class PipelineModule(torch.nn.Module):

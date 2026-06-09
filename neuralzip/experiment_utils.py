@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from bitpacking import bits_required, packed_byte_length
+from .bitpacking import bits_required, packed_byte_length
 
 
 MM_REPAIR_RATIO_RE = re.compile(r"Compression ratio:\s+([0-9.]+)%")

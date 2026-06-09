@@ -1,0 +1,104 @@
+{
+  "run_id": "20260609T023333Z",
+  "created_at": "2026-06-09T02:33:33.616384+00:00",
+  "execute_downloads": false,
+  "model_store": "/Users/martin/Projects/Tesis/Codebase/examples/models",
+  "events": [
+    {
+      "model": "Llama 3.3 70B Instruct",
+      "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+      "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/meta-llama__Llama-3.3-70B-Instruct",
+      "execute": false,
+      "status": "dry_run",
+      "allow_patterns": [
+        "*.safetensors",
+        "*.json",
+        "*.model",
+        "*.txt",
+        "*.md",
+        "tokenizer*",
+        "generation_config.json",
+        "special_tokens_map.json"
+      ],
+      "ignore_patterns": [
+        "*.bin",
+        "*.pt",
+        "*.onnx",
+        "*.msgpack",
+        "original/*"
+      ]
+    },
+    {
+      "model": "Gemma 4 31B",
+      "model_id": "google/gemma-4-31B",
+      "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/google__gemma-4-31B",
+      "execute": false,
+      "status": "dry_run",
+      "allow_patterns": [
+        "*.safetensors",
+        "*.json",
+        "*.model",
+        "*.txt",
+        "*.md",
+        "tokenizer*",
+        "generation_config.json",
+        "special_tokens_map.json"
+      ],
+      "ignore_patterns": [
+        "*.bin",
+        "*.pt",
+        "*.onnx",
+        "*.msgpack",
+        "original/*"
+      ]
+    },
+    {
+      "model": "gpt-oss-120b",
+      "model_id": "openai/gpt-oss-120b",
+      "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/openai__gpt-oss-120b",
+      "execute": false,
+      "status": "dry_run",
+      "allow_patterns": [
+        "*.safetensors",
+        "*.json",
+        "*.model",
+        "*.txt",
+        "*.md",
+        "tokenizer*",
+        "generation_config.json",
+        "special_tokens_map.json"
+      ],
+      "ignore_patterns": [
+        "*.bin",
+        "*.pt",
+        "*.onnx",
+        "*.msgpack",
+        "original/*"
+      ]
+    },
+    {
+      "model": "Qwen2.5 72B Instruct",
+      "model_id": "Qwen/Qwen2.5-72B-Instruct",
+      "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/Qwen__Qwen2.5-72B-Instruct",
+      "execute": false,
+      "status": "dry_run",
+      "allow_patterns": [
+        "*.safetensors",
+        "*.json",
+        "*.model",
+        "*.txt",
+        "*.md",
+        "tokenizer*",
+        "generation_config.json",
+        "special_tokens_map.json"
+      ],
+      "ignore_patterns": [
+        "*.bin",
+        "*.pt",
+        "*.onnx",
+        "*.msgpack",
+        "original/*"
+      ]
+    }
+  ]
+}

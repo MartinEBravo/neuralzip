@@ -1,0 +1,5 @@
+model,model_id,local_dir,status,safetensor_shards,checkpoint_bytes,raw_exponent_bits,global_huffman_bits,zipnn_tensor_huffman_bits,neuralzip_clustered_ngram_bits,global_huffman_ratio,zipnn_ratio,neuralzip_ratio,neuralzip_clusters,ngram_order
+Llama 3.3 70B Instruct,meta-llama/Llama-3.3-70B-Instruct,/Users/martin/Projects/Tesis/Codebase/examples/models/meta-llama__Llama-3.3-70B-Instruct,missing,0,0,0,,,,,,,,3
+Gemma 4 31B,google/gemma-4-31B,/Users/martin/Projects/Tesis/Codebase/examples/models/google__gemma-4-31B,missing,0,0,0,,,,,,,,3
+gpt-oss-120b,openai/gpt-oss-120b,/Users/martin/Projects/Tesis/Codebase/examples/models/openai__gpt-oss-120b,missing,0,0,0,,,,,,,,3
+Qwen2.5 72B Instruct,Qwen/Qwen2.5-72B-Instruct,/Users/martin/Projects/Tesis/Codebase/examples/models/Qwen__Qwen2.5-72B-Instruct,missing,0,0,0,,,,,,,,3

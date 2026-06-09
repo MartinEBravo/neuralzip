@@ -1,9 +1,7 @@
 import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoModelForImageClassification
 
-from compression_codecs import CodecMixin
-from float_utils import get_float_format
-from neuralzip_model import NeuralZipMixin
+from neuralzip_model import NeuralZipModel
 
 
 class PipelineModule(torch.nn.Module):
@@ -20,7 +18,7 @@ class PipelineModule(torch.nn.Module):
         self.components = torch.nn.ModuleDict(modules)
 
 
-class HuggingFaceModel(CodecMixin, NeuralZipMixin):
+class HuggingFaceModel(NeuralZipModel):
     def __init__(self, model_name, dtype="auto"):
         dtype_map = {
             "auto": "auto",
@@ -29,17 +27,7 @@ class HuggingFaceModel(CodecMixin, NeuralZipMixin):
             "float32": torch.float32,
         }
         self._model = self._load_model(model_name, dtype_map[dtype])
-        self._named_params = list(self._model.named_parameters())
-        self._original_bits = sum(
-            param.numel() * get_float_format(param.dtype)["total_bits"]
-            for _, param in self._named_params
-        )
-
-        self._exp_offsets = None
-        self._exp_codes = None
-        self._exp_block_size = None
-        self._exp_total_bits = None
-        self._exp_ngram = None
+        super().__init__(self._model.named_parameters())
 
     @property
     def model(self):
@@ -82,16 +70,3 @@ class HuggingFaceModel(CodecMixin, NeuralZipMixin):
             kwargs["torch_dtype"] = dtype
         pipeline = DiffusionPipeline.from_pretrained(model_name, **kwargs)
         return PipelineModule(pipeline)
-
-    def log_bits(self, name, total_bits):
-        mbits = total_bits / 1e6
-        mbytes = total_bits / 8e6
-        ratio = 100 * (total_bits / self._original_bits)
-        print(
-            f"[{name}] {mbits:8.2f} Mbits | {mbytes:8.2f} MB | {ratio:5.2f}% of original"
-        )
-
-    def print_model_size(self):
-        total_bits = self._original_bits
-        self.log_bits("Original", total_bits)
-        return total_bits

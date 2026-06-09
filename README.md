@@ -1,4 +1,4 @@
-# Model Compression Experiments
+# NeuralZip Checkpoint Experiments
 
 Build native compression backends:
 
@@ -6,16 +6,26 @@ Build native compression backends:
 make native
 ```
 
-Run experiments through the single entrypoint:
+The main experiment entrypoint is `examples/1-model-hubs.ipynb`.
+That notebook contains the complete model-hub workflow used by the thesis:
+model storing, checkpoint download, experiment execution, and result upload.
 
-```bash
-python3 experiments.py --mode full --models "Gemma 4 E2B"
-python3 experiments.py --mode zipnn --models "Gemma 4 E2B"
-python3 experiments.py --mode exponent --only ngram-sweep --models "Gemma 4 E2B"
-python3 experiments.py --mode entropy --field exponent --models "Gemma 4 E2B"
-python3 experiments.py --mode mm-repair --models "Gemma 4 E2B"
-```
+The current thesis checkpoint suite targets:
 
-Compression backends live in `compression_algorithms/`. The rest of the model
-loading, field extraction, and experiment orchestration stays at the repository
-root.
+- Llama 3.3 70B Instruct
+- Gemma 4 31B
+- `gpt-oss-120b`
+- Qwen2.5 72B Instruct
+
+Run `examples/1-model-hubs.ipynb` from top to bottom for the notebook-first
+pipeline. The notebook keeps destructive or expensive operations explicit:
+download and upload cells should be reviewed before execution, and local model
+storage defaults should be configured there.
+
+Legacy notebooks can still be used for small local debugging, but thesis tables
+should come from the model-hub notebook so storing, download, experiment, and
+upload provenance stay in one place.
+
+Compression backends live in `compression_algorithms/`. Shared model-suite
+constants and selectors live in small Python modules, but the experiment
+workflow itself belongs in notebooks.

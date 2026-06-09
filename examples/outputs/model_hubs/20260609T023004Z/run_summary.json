@@ -1,0 +1,13 @@
+{
+  "run_id": "20260609T023004Z",
+  "run_dir": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z",
+  "storage_estimates": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/storage_estimates.csv",
+  "download_manifest": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/download_manifest.json",
+  "results_csv": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/results.csv",
+  "experiment_manifest": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/experiment_manifest.json",
+  "upload_manifest": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/upload_manifest.json",
+  "allow_missing": true,
+  "execute_downloads": false,
+  "execute_upload": false,
+  "smoke_status": "success"
+}

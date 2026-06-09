@@ -7,10 +7,129 @@ from tqdm import tqdm
 from bitpacking import bits_required, packed_byte_length
 from compression_algorithms.arithmetic import ARITHMETIC_CODER
 from compression_algorithms.huffman import huffman_code_lengths
+from compression_codecs import CodecMixin
 from float_utils import extract_float_parts, get_float_format
 
 
 class NeuralZipMixin:
+    FIELD_NAMES = ("sign", "exponent", "mantissa")
+
+    def initialize_neuralzip(self, named_params):
+        self._named_params = list(named_params)
+        self._original_bits = self.total_original_bits()
+        self._exp_offsets = None
+        self._exp_codes = None
+        self._exp_block_size = None
+        self._exp_total_bits = None
+        self._exp_ngram = None
+        return self
+
+    @property
+    def named_params(self):
+        return tuple(self._named_params)
+
+    @property
+    def original_bits(self):
+        return self._original_bits
+
+    def iter_tensors(self):
+        yield from self._named_params
+
+    def named_parameters(self):
+        yield from self.iter_tensors()
+
+    def _validate_field(self, field):
+        if field not in self.FIELD_NAMES:
+            choices = ", ".join(self.FIELD_NAMES)
+            raise ValueError(f"Unsupported field {field!r}. Expected one of: {choices}.")
+
+    def split_fields(self, tensor):
+        """Return sign, exponent, and mantissa arrays for one floating tensor."""
+        return extract_float_parts(tensor)
+
+    def iter_tensor_field_parts(self):
+        for name, tensor in self.iter_tensors():
+            sign, exponent, mantissa = self.split_fields(tensor)
+            yield name, tensor, sign, exponent, mantissa
+
+    def iter_field_parts(self):
+        for name, _, sign, exponent, mantissa in self.iter_tensor_field_parts():
+            yield name, sign, exponent, mantissa
+
+    def iter_field_values(self, field):
+        self._validate_field(field)
+        field_index = self.FIELD_NAMES.index(field)
+        for _, sign, exponent, mantissa in self.iter_field_parts():
+            yield (sign, exponent, mantissa)[field_index]
+
+    def iter_model_field_values(self, field):
+        yield from self.iter_field_values(field)
+
+    def collect_field(self, field, max_symbols=0, dtype=np.uint32):
+        chunks = []
+        seen = 0
+        for values in self.iter_field_values(field):
+            remaining = (
+                None
+                if max_symbols is None or max_symbols <= 0
+                else max_symbols - seen
+            )
+            if remaining is not None and remaining <= 0:
+                break
+            if remaining is not None:
+                values = values[:remaining]
+            chunks.append(values.astype(dtype, copy=False))
+            seen += values.size
+
+        if not chunks:
+            return np.array([], dtype=dtype)
+        return np.concatenate(chunks).astype(dtype, copy=False)
+
+    def collect_exponents(self):
+        return [
+            values.astype(np.uint8, copy=False)
+            for values in self.iter_field_values("exponent")
+        ]
+
+    def named_exponents(self):
+        return [
+            (name, exponent.astype(np.uint8, copy=False))
+            for name, _, exponent, _ in self.iter_field_parts()
+        ]
+
+    def field_bits_per_value(self, field, tensor=None):
+        self._validate_field(field)
+        if field == "sign":
+            return 1
+        if tensor is None:
+            try:
+                _, tensor = next(iter(self._named_params))
+            except StopIteration:
+                return 0
+        fmt = get_float_format(tensor.dtype)
+        if field == "mantissa":
+            return fmt["mantissa_bits"]
+        return fmt["total_bits"] - fmt["mantissa_bits"] - 1
+
+    def total_original_bits(self):
+        return sum(
+            tensor.numel() * get_float_format(tensor.dtype)["total_bits"]
+            for _, tensor in self.iter_tensors()
+        )
+
+    def log_bits(self, name, total_bits):
+        mbits = total_bits / 1e6
+        mbytes = total_bits / 8e6
+        ratio = 100 * (total_bits / self._original_bits) if self._original_bits else 0.0
+        print(
+            f"[{name}] {mbits:8.2f} Mbits | {mbytes:8.2f} MB | {ratio:5.2f}% of original"
+        )
+
+    def print_model_size(self):
+        total_bits = self._original_bits
+        self.log_bits("Original", total_bits)
+        return total_bits
+
     def parse_context_order(self, method, default=2):
         _, _, order = method.partition(":")
         return int(order) if order else default
@@ -19,7 +138,7 @@ class NeuralZipMixin:
         """Group layers with similar exponent histograms (Jensen-Shannon)."""
         hists = []
         for arr in layer_arrays:
-            _, exps, _ = extract_float_parts(arr)
+            _, exps, _ = self.split_fields(arr)
             hist = np.bincount(exps, minlength=256).astype(np.float64)
             hist /= hist.sum() if hist.sum() > 0 else 1
             hists.append(hist)
@@ -62,12 +181,15 @@ class NeuralZipMixin:
         exponents = []
         mantissa_bits = 0
         sign_bits = 0
-        for _, param in self._named_params:
-            sign, exps, mant = extract_float_parts(param)
+        for _, tensor, sign, exps, mant in self.iter_tensor_field_parts():
             exponents.append(exps)
             sign_bits += sign.size
-            mantissa_bits += mant.size * get_float_format(param.dtype)["mantissa_bits"]
-        exps = np.concatenate(exponents)
+            mantissa_bits += mant.size * self.field_bits_per_value("mantissa", tensor)
+        exps = (
+            np.concatenate(exponents)
+            if exponents
+            else np.array([], dtype=np.uint32)
+        )
         offsets, codes, total_bits_exp = self.build_huffman_index(
             exps,
             block_size=block_size,
@@ -102,12 +224,15 @@ class NeuralZipMixin:
         exponents = []
         mantissa_bits = 0
         sign_bits = 0
-        for _, param in self._named_params:
-            sign, exps, mant = extract_float_parts(param)
+        for _, tensor, sign, exps, mant in self.iter_tensor_field_parts():
             exponents.append(exps)
             sign_bits += sign.size
-            mantissa_bits += mant.size * get_float_format(param.dtype)["mantissa_bits"]
-        exps = np.concatenate(exponents)
+            mantissa_bits += mant.size * self.field_bits_per_value("mantissa", tensor)
+        exps = (
+            np.concatenate(exponents)
+            if exponents
+            else np.array([], dtype=np.uint32)
+        )
         bits_exp = self.compute_zipnn_bits(exps, method="huffman")
         total_bits = bits_exp + mantissa_bits + sign_bits
         if verbose:
@@ -142,7 +267,7 @@ class NeuralZipMixin:
         for cluster_ids in tqdm(clusters, desc="NeuralZip clustered"):
             for idx in cluster_ids:
                 arr = layer_arrays[idx]
-                sign, exps_raw, mant_raw = extract_float_parts(arr)
+                sign, exps_raw, mant_raw = self.split_fields(arr)
                 fmt = get_float_format(arr.dtype)
                 sign_size, mantissa_size = self.encode_aux_field_sizes(
                     sign,
@@ -269,7 +394,7 @@ class NeuralZipMixin:
         if block_size < 1:
             raise ValueError("block_size must be >= 1.")
 
-        layer_arrays = [param for _, param in self._named_params]
+        layer_arrays = [param for _, param in self.iter_tensors()]
         clusters = self.cluster_layers(layer_arrays, threshold=threshold)
         cluster_lookup = np.zeros(len(layer_arrays), dtype=np.uint32)
         for cluster_id, tensor_ids in enumerate(clusters):
@@ -277,8 +402,8 @@ class NeuralZipMixin:
                 cluster_lookup[tensor_id] = cluster_id
 
         tensor_parts = []
-        for tensor_id, (name, param) in enumerate(self._named_params):
-            sign, exps, mant = extract_float_parts(param)
+        for tensor_id, (name, param) in enumerate(self.iter_tensors()):
+            sign, exps, mant = self.split_fields(param)
             fmt = get_float_format(param.dtype)
             if ngram > 1:
                 symbols, tail = self.pack_ngrams_uint_with_tail(exps, n=ngram)
@@ -440,10 +565,14 @@ class NeuralZipMixin:
         aux_method,
     ):
         total_bytes = 0
-        for _, param in tqdm(self._named_params, desc="NeuralZip", total=len(layer_arrays)):
+        for _, param in tqdm(
+            self.iter_tensors(),
+            desc="NeuralZip",
+            total=len(layer_arrays),
+        ):
             if param.numel() == 0:
                 continue
-            sign, exps, mant = extract_float_parts(param)
+            sign, exps, mant = self.split_fields(param)
             fmt = get_float_format(param.dtype)
             sign_size, mantissa_size = self.encode_aux_field_sizes(
                 sign,
@@ -497,7 +626,7 @@ class NeuralZipMixin:
         compress_aux_fields=False,
         aux_method="huffman",
     ):
-        layer_arrays = [param for _, param in self._named_params]
+        layer_arrays = [param for _, param in self.iter_tensors()]
 
         if cluster:
             total_bits = self._neuralzip_clustered(
@@ -529,7 +658,7 @@ class NeuralZipMixin:
     def zstd_compress(self, level=19, verbose=1):
         raw = b"".join(
             param.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
-            for _, param in self._named_params
+            for _, param in self.iter_tensors()
         )
         cctx = zstd.ZstdCompressor(level=level, threads=8)
         compressed = cctx.compress(raw)
@@ -537,3 +666,10 @@ class NeuralZipMixin:
         if verbose:
             self.log_bits(f"Zstd/level={level}", bits)
         return bits
+
+
+class NeuralZipModel(NeuralZipMixin, CodecMixin):
+    """Concrete NeuralZip API over a sequence of named torch tensors."""
+
+    def __init__(self, named_params):
+        self.initialize_neuralzip(named_params)

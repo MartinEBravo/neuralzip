@@ -1,0 +1,26 @@
+{
+  "model": "synthetic safetensors smoke",
+  "model_id": "local/synthetic-safetensors-smoke",
+  "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/smoke_checkpoint",
+  "status": "success",
+  "safetensor_shards": 1,
+  "checkpoint_bytes": 20848,
+  "parameter_count": 6208,
+  "tensor_count": 3,
+  "supported_tensor_count": 3,
+  "dtype_counts": {
+    "float32": 1,
+    "float16": 1,
+    "bfloat16": 1
+  },
+  "raw_exponent_bits": 43520,
+  "global_huffman_bits": 21668,
+  "zipnn_tensor_huffman_bits": 15935,
+  "neuralzip_clustered_ngram_bits": 14891,
+  "global_huffman_ratio": 0.4978860294117647,
+  "zipnn_ratio": 0.3661534926470588,
+  "neuralzip_ratio": 0.34216452205882353,
+  "neuralzip_clusters": 3,
+  "ngram_order": 3,
+  "elapsed_s": 0.008338332991115749
+}

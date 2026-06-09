@@ -9,21 +9,12 @@ import numpy as np
 from tqdm import tqdm
 
 from bitpacking import bits_required, packed_byte_length
-from float_utils import extract_float_parts, get_float_format
 
 
 MM_REPAIR_RATIO_RE = re.compile(r"Compression ratio:\s+([0-9.]+)%")
 MM_REPAIR_SIZE_RE = re.compile(r"Estimated output size \(bytes\):\s+([0-9]+)")
 MM_REPAIR_RULES_RE = re.compile(r"Number of rules:\s+([0-9]+)")
 MM_REPAIR_FINAL_RE = re.compile(r"Final sequence length:\s+([0-9]+)")
-
-
-def default_models(args):
-    if args.models is not None:
-        return args.models
-    if args.mode == "full":
-        return None
-    return ["Gemma 4 E2B"]
 
 
 def log_bits(name, bits, original_bits):
@@ -34,45 +25,19 @@ def log_bits(name, bits, original_bits):
 
 
 def iter_model_field_values(model, field):
-    for _, param in model.model.named_parameters():
-        sign, exponent, mantissa = extract_float_parts(param)
-        yield {
-            "sign": sign,
-            "exponent": exponent,
-            "mantissa": mantissa,
-        }[field]
+    yield from model.iter_field_values(field)
 
 
 def collect_exponents(model):
-    return [
-        values.astype(np.uint8, copy=False)
-        for values in iter_model_field_values(model, "exponent")
-    ]
+    return model.collect_exponents()
 
 
 def collect_named_exponents(model):
-    layers = []
-    for name, param in model.model.named_parameters():
-        _, exponent, _ = extract_float_parts(param)
-        layers.append((name, exponent.astype(np.uint8, copy=False)))
-    return layers
+    return model.named_exponents()
 
 
 def collect_field(model, field, max_symbols):
-    chunks = []
-    seen = 0
-    for values in iter_model_field_values(model, field):
-        remaining = None if max_symbols <= 0 else max_symbols - seen
-        if remaining is not None and remaining <= 0:
-            break
-        if remaining is not None:
-            values = values[:remaining]
-        chunks.append(values.astype(np.uint32, copy=False))
-        seen += values.size
-
-    if not chunks:
-        return np.array([], dtype=np.uint32)
-    return np.concatenate(chunks).astype(np.uint32, copy=False)
+    return model.collect_field(field, max_symbols=max_symbols)
 
 
 def official_zipnn_bits(model, method):
@@ -84,7 +49,12 @@ def official_zipnn_bits(model, method):
         ) from exc
 
     total_bits = 0
-    for _, param in model.named_parameters():
+    named_tensors = (
+        model.iter_tensors()
+        if hasattr(model, "iter_tensors")
+        else model.named_parameters()
+    )
+    for _, param in named_tensors:
         compressor = ZipNN(method=method, input_format="torch")
         tensor = param.detach().cpu().contiguous().clone()
         compressed = compressor.compress(tensor)
@@ -251,7 +221,7 @@ def trigram_estimator(model, args):
 
 
 def clustered_best_exponent_bits(model, layer_exponents, ctx_order):
-    layer_arrays = [param for _, param in model.model.named_parameters()]
+    layer_arrays = [param for _, param in model.iter_tensors()]
     clusters = model.cluster_layers(layer_arrays)
     total_bytes = 16
     cluster_id_bits = bits_required(len(clusters))
@@ -270,7 +240,7 @@ def clustered_best_exponent_bits(model, layer_exponents, ctx_order):
 
 
 def clustered_trigram_huffman_exponent_bits(model, layer_exponents):
-    layer_arrays = [param for _, param in model.model.named_parameters()]
+    layer_arrays = [param for _, param in model.iter_tensors()]
     clusters = model.cluster_layers(layer_arrays)
     total_bytes = 16
     cluster_id_bits = bits_required(len(clusters))
@@ -684,5 +654,4 @@ def run_irepair(irepair, symbols, memory_mb):
 
 
 def exponent_budget_bits(model, symbol_count):
-    first_dtype = next(model.model.parameters()).dtype
-    return symbol_count * get_float_format(first_dtype)["exponent_bits"]
+    return symbol_count * model.field_bits_per_value("exponent")

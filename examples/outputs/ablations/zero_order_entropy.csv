@@ -1,5 +1,4 @@
 model,model_id,dtype,exponent_symbols,nominal_exponent_bits,h0_bits_per_exponent,entropy_ratio,ideal_savings_bits_per_exponent
-Llama 3.2 1B,meta-llama/Llama-3.2-1B,bfloat16,1235814400,8,2.6339416567473695,0.3292427070934212,5.3660583432526305
-Gemma 3 1B IT,google/gemma-3-1b-it,bfloat16,999885952,8,2.745565454232826,0.34319568177910326,5.2544345457671735
-DeepSeek R1 Distill Qwen 1.5B,deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B,bfloat16,1777088000,8,2.6276056743705625,0.3284507092963203,5.372394325629438
-Phi 4 Mini,microsoft/Phi-4-mini-instruct,bfloat16,3836021760,8,2.7317809390497527,0.3414726173812191,5.268219060950248
+Synthetic decoder blocks,synthetic/decoder-blocks,float32,82048,8,2.6062862683200447,0.3257857835400056,5.393713731679956
+Synthetic vision backbone,synthetic/vision-backbone,float32,634048,8,2.701017885670634,0.33762723570882924,5.298982114329366
+Synthetic diffusion blocks,synthetic/diffusion-blocks,float32,430592,8,2.5729718366578895,0.3216214795822362,5.4270281633421105

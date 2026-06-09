@@ -1,7 +1,7 @@
 {
   "model": "synthetic safetensors smoke",
   "model_id": "local/synthetic-safetensors-smoke",
-  "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023333Z/smoke_checkpoint",
+  "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T032122Z/smoke_checkpoint",
   "status": "success",
   "safetensor_shards": 1,
   "checkpoint_bytes": 20848,
@@ -22,5 +22,5 @@
   "neuralzip_ratio": 0.34216452205882353,
   "neuralzip_clusters": 3,
   "ngram_order": 3,
-  "elapsed_s": 0.008745291008381173
+  "elapsed_s": 0.008148916997015476
 }

@@ -34,9 +34,9 @@
     "ngram_order": 3
   },
   {
-    "model": "gpt-oss-120b",
-    "model_id": "openai/gpt-oss-120b",
-    "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/openai__gpt-oss-120b",
+    "model": "Phi-4 14B",
+    "model_id": "microsoft/phi-4",
+    "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/microsoft__phi-4",
     "status": "missing",
     "safetensor_shards": 0,
     "checkpoint_bytes": 0,
@@ -51,9 +51,9 @@
     "ngram_order": 3
   },
   {
-    "model": "Qwen2.5 72B Instruct",
-    "model_id": "Qwen/Qwen2.5-72B-Instruct",
-    "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/Qwen__Qwen2.5-72B-Instruct",
+    "model": "Qwen3.5 27B",
+    "model_id": "Qwen/Qwen3.5-27B",
+    "local_dir": "/Users/martin/Projects/Tesis/Codebase/examples/models/Qwen__Qwen3.5-27B",
     "status": "missing",
     "safetensor_shards": 0,
     "checkpoint_bytes": 0,

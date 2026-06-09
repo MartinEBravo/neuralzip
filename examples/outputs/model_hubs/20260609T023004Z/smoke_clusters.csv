@@ -1,4 +1,0 @@
-model,model_id,shard,tensor,shape,numel,dtype,exponent_bits,cluster_key,ngram_order,raw_exponent_bits,zipnn_tensor_huffman_bits,ngram_symbols,tail_bits
-synthetic safetensors smoke,local/synthetic-safetensors-smoke,/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/smoke_checkpoint/model.safetensors,layers.0.weight,64x64,4096,float32,8,dtype=float32|E=8|rank=2|log2_numel=12,3,32768,10514,1365,8
-synthetic safetensors smoke,local/synthetic-safetensors-smoke,/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/smoke_checkpoint/model.safetensors,layers.1.weight,32x64,2048,float16,5,dtype=float16|E=5|rank=2|log2_numel=11,3,10240,5264,682,10
-synthetic safetensors smoke,local/synthetic-safetensors-smoke,/Users/martin/Projects/Tesis/Codebase/examples/outputs/model_hubs/20260609T023004Z/smoke_checkpoint/model.safetensors,norm.weight,64,64,bfloat16,8,dtype=bfloat16|E=8|rank=1|log2_numel=6,3,512,157,21,8

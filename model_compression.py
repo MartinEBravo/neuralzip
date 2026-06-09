@@ -70,3 +70,8 @@ class HuggingFaceModel(NeuralZipModel):
             kwargs["torch_dtype"] = dtype
         pipeline = DiffusionPipeline.from_pretrained(model_name, **kwargs)
         return PipelineModule(pipeline)
+
+
+class Compressor:
+    def __init__(self, method):
+        self.method = method

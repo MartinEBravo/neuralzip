@@ -1,4 +1,6 @@
 __pycache__/
 *.py[cod]
+**.csv
+**.json
 examples/models/
 examples/uploaded/

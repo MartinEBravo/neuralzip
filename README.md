@@ -37,8 +37,10 @@ upload provenance stay in one place.
 The importable library lives under `neuralzip/`; for example:
 
 ```python
-from neuralzip.model_compression import HuggingFaceModel
-from neuralzip.neuralzip_model import NeuralZipModel
+from neuralzip import Compressor, HFModel
+
+hf_model = HFModel("bert-base-uncased", dtype="bfloat16")
+zipnn_results = Compressor("ZipNN").compress(hf_model)
 ```
 
 Compression backends live in `neuralzip/algorithms/`.

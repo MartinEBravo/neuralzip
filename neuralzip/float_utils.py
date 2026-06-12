@@ -4,10 +4,9 @@ from .formats import FLOAT_FORMATS
 
 
 def get_float_format(dtype):
-    try:
-        return FLOAT_FORMATS[dtype]
-    except KeyError as exc:
-        raise TypeError(f"Unsupported floating dtype: {dtype}") from exc
+    if dtype not in FLOAT_FORMATS:
+        raise TypeError(f"Unsupported floating dtype: {dtype}")
+    return FLOAT_FORMATS[dtype]
 
 
 def extract_float_parts(tensor):

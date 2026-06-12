@@ -3,4 +3,5 @@ __pycache__/
 **.csv
 **.json
 examples/models/
+examples/outputs/
 examples/uploaded/

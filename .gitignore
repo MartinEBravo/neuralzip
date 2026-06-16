@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
+*.so
+*.egg-info/
 **.csv
 **.json
 examples/models/

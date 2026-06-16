@@ -1,4 +1,0 @@
-model,model_id,dtype,exponent_symbols,nominal_exponent_bits,h0_bits_per_exponent,entropy_ratio,ideal_savings_bits_per_exponent
-Synthetic decoder blocks,synthetic/decoder-blocks,float32,82048,8,2.6062862683200447,0.3257857835400056,5.393713731679956
-Synthetic vision backbone,synthetic/vision-backbone,float32,634048,8,2.701017885670634,0.33762723570882924,5.298982114329366
-Synthetic diffusion blocks,synthetic/diffusion-blocks,float32,430592,8,2.5729718366578895,0.3216214795822362,5.4270281633421105

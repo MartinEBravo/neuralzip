@@ -9,12 +9,8 @@ description = "Lossless checkpoint compression experiments for foundation models
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy",
-    "scipy",
     "torch",
-    "tqdm",
     "transformers",
-    "zstandard",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +26,3 @@ experiments = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["neuralzip*"]
-
-[tool.setuptools.package-data]
-"neuralzip.algorithms" = ["*.so", "*.cpp"]

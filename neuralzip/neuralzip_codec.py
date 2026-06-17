@@ -1,248 +1,58 @@
-from dataclasses import dataclass
+import re
 
 import numpy as np
 import torch
 
 from . import huffman
+from .utils import split_fields
+from .zipnn_codec import (
+    DTYPE_BY_NAME,
+    ByteGroupPayload,
+    CodebookPayload,
+    StreamChunk,
+    TensorPayload,
+    ZipNNCodec,
+    _dtype_name,
+    _tensor_from_raw_bytes,
+    _zipnn_dtype_config,
+    _zipnn_reordered_bytes,
+    _zipnn_restored_bytes,
+)
 
 
-DTYPE_BY_NAME = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
-}
-
-NEURALZIP_DTYPE_CONFIG = {
-    torch.float32: {
-        "element_size": 4,
-        "num_buffers": 4,
-        "byte_reorder": 220,
-        "bit_reorder": 1,
-    },
-    torch.bfloat16: {
-        "element_size": 2,
-        "num_buffers": 2,
-        "byte_reorder": 10,
-        "bit_reorder": 1,
-    },
-    torch.float16: {
-        "element_size": 2,
-        "num_buffers": 2,
-        "byte_reorder": 10,
-        "bit_reorder": 0,
-    },
-}
+def _layer_signature(name):
+    parts = str(name).split(".")
+    return ".".join(re.sub(r"\d+", "#", part) for part in parts)
 
 
-def _dtype_name(dtype):
-    return str(dtype).replace("torch.", "")
+def _jensen_shannon(left, right):
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    middle = 0.5 * (left + right)
+    left_mask = left > 0
+    right_mask = right > 0
+    divergence = 0.0
+    divergence += 0.5 * np.sum(
+        left[left_mask] * np.log2(left[left_mask] / middle[left_mask])
+    )
+    divergence += 0.5 * np.sum(
+        right[right_mask] * np.log2(right[right_mask] / middle[right_mask])
+    )
+    return float(np.sqrt(divergence))
 
 
-def _raw_tensor_bytes(tensor):
-    return int(tensor.numel() * tensor.element_size())
+def _exponent_distribution(tensor):
+    _, exponent, _ = split_fields(tensor.detach().cpu().contiguous())
+    stream = exponent.reshape(-1).to(torch.int64).numpy()
+    counts = np.bincount(stream, minlength=256).astype(np.float64)
+    total = counts.sum()
+    if total == 0:
+        return counts
+    return counts / total
 
 
-def _tensor_raw_bytes(tensor):
-    tensor = tensor.detach().cpu().contiguous()
-    return tensor.view(torch.uint8).reshape(-1).numpy().tobytes()
-
-
-def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
-    raw = torch.frombuffer(bytearray(raw_bytes), dtype=torch.uint8)
-    return raw.view(dtype).reshape(shape)
-
-
-def _neuralzip_dtype_config(dtype):
-    config = NEURALZIP_DTYPE_CONFIG.get(dtype)
-    if config is None:
-        raise TypeError(
-            "NeuralZip supports torch.float32, torch.bfloat16, and torch.float16 "
-            f"tensors; got {dtype}."
-        )
-    return config
-
-
-def _reorder_float32(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u4")).copy()
-    sign = (values >> np.uint32(8)) & np.uint32(0x00800000)
-    exponent = (values << np.uint32(1)) & np.uint32(0xFF000000)
-    mantissa = values & np.uint32(0x007FFFFF)
-    return (exponent | sign | mantissa).astype(np.dtype("<u4"), copy=False).tobytes()
-
-
-def _restore_float32(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u4")).copy()
-    sign = (values << np.uint32(8)) & np.uint32(0x80000000)
-    exponent = (values >> np.uint32(1)) & np.uint32(0x7F800000)
-    mantissa = values & np.uint32(0x007FFFFF)
-    return (sign | exponent | mantissa).astype(np.dtype("<u4"), copy=False).tobytes()
-
-
-def _reorder_bfloat16(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u2")).copy()
-    sign = (values >> np.uint16(8)) & np.uint16(0x0080)
-    exponent = (values << np.uint16(1)) & np.uint16(0xFF00)
-    mantissa = values & np.uint16(0x007F)
-    return (exponent | sign | mantissa).astype(np.dtype("<u2"), copy=False).tobytes()
-
-
-def _restore_bfloat16(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u2")).copy()
-    sign = (values << np.uint16(8)) & np.uint16(0x8000)
-    exponent = (values >> np.uint16(1)) & np.uint16(0x7F80)
-    mantissa = values & np.uint16(0x007F)
-    return (sign | exponent | mantissa).astype(np.dtype("<u2"), copy=False).tobytes()
-
-
-def _neuralzip_reordered_bytes(tensor, config):
-    raw_bytes = _tensor_raw_bytes(tensor)
-    if not config["bit_reorder"]:
-        return raw_bytes
-    if tensor.dtype == torch.float32:
-        return _reorder_float32(raw_bytes)
-    if tensor.dtype == torch.bfloat16:
-        return _reorder_bfloat16(raw_bytes)
-    return raw_bytes
-
-
-def _neuralzip_restored_bytes(raw_bytes, dtype, config):
-    if not config["bit_reorder"]:
-        return raw_bytes
-    if dtype == torch.float32:
-        return _restore_float32(raw_bytes)
-    if dtype == torch.bfloat16:
-        return _restore_bfloat16(raw_bytes)
-    return raw_bytes
-
-
-@dataclass(frozen=True)
-class StreamChunk:
-    mode: str
-    symbol_count: int
-    payload: bytes = b""
-    code_lengths: bytes = b""
-
-    @property
-    def payload_bytes(self):
-        return len(self.payload)
-
-    @property
-    def metadata_bytes(self):
-        # mode + symbol count + payload length, plus canonical Huffman table.
-        base_header = 1 + 8 + 8
-        if self.mode == "huffman":
-            return base_header + len(self.code_lengths)
-        return base_header
-
-    @property
-    def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
-
-
-@dataclass(frozen=True)
-class ByteGroupPayload:
-    stream_kind: str
-    symbol_count: int
-    chunks: tuple
-
-    @property
-    def payload_bytes(self):
-        return sum(chunk.payload_bytes for chunk in self.chunks)
-
-    @property
-    def metadata_bytes(self):
-        # stream kind + symbol count + chunk count.
-        return 1 + 8 + 8 + sum(chunk.metadata_bytes for chunk in self.chunks)
-
-    @property
-    def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
-
-    @property
-    def huffman_chunks(self):
-        return sum(chunk.mode == "huffman" for chunk in self.chunks)
-
-    @property
-    def raw_chunks(self):
-        return sum(chunk.mode == "raw" for chunk in self.chunks)
-
-    @property
-    def zero_chunks(self):
-        return sum(chunk.mode == "zero" for chunk in self.chunks)
-
-
-@dataclass(frozen=True)
-class TensorPayload:
-    name: str
-    shape: tuple
-    dtype: str
-    element_size: int
-    numel: int
-    strategy: str
-    groups: tuple
-    byte_reorder: int = 0
-    bit_reorder: int = 0
-    num_buffers: int = 0
-    remainder_payload: bytes = b""
-
-    @property
-    def raw_bytes(self):
-        return self.numel * self.element_size
-
-    @property
-    def metadata_bytes(self):
-        # name length + dtype id + rank + dimensions + element size + strategy.
-        tensor_header = (
-            len(self.name.encode("utf-8"))
-            + 1
-            + 1
-            + 8 * len(self.shape)
-            + 8
-            + 1
-        )
-        neuralzip_header = 1 + 1 + 1 if self.strategy == "neuralzip" else 0
-        return (
-            tensor_header
-            + neuralzip_header
-            + len(self.remainder_payload)
-            + sum(group.metadata_bytes for group in self.groups)
-        )
-
-    @property
-    def payload_bytes(self):
-        return sum(group.payload_bytes for group in self.groups)
-
-    @property
-    def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
-
-    @property
-    def huffman_groups(self):
-        return sum(group.huffman_chunks > 0 for group in self.groups)
-
-    @property
-    def raw_groups(self):
-        return sum(group.raw_chunks > 0 for group in self.groups)
-
-    @property
-    def zero_groups(self):
-        return sum(group.zero_chunks > 0 for group in self.groups)
-
-    @property
-    def huffman_chunks(self):
-        return sum(group.huffman_chunks for group in self.groups)
-
-    @property
-    def raw_chunks(self):
-        return sum(group.raw_chunks for group in self.groups)
-
-    @property
-    def zero_chunks(self):
-        return sum(group.zero_chunks for group in self.groups)
-
-
-class NeuralZipCodec:
-    """NeuralZip-style dtype-aware byte grouping with Huffman and raw fallback."""
+class NeuralZipCodec(ZipNNCodec):
+    """ZipNN byte grouping with JS-clustered shared Huffman codebooks."""
 
     def __init__(
         self,
@@ -250,23 +60,238 @@ class NeuralZipCodec:
         min_saving_bytes=0,
         chunk_size=256 << 10,
         compression_threshold=0.95,
+        prior_count=0,
+        exponent_prior_count=0,
+        cluster_map=None,
+        clustering="js-distance",
+        cluster_js_threshold=0.05,
+        max_codebook_sample_bytes=8 << 20,
+        test_cluster_compressibility=True,
     ):
-        self.min_saving_bytes = int(min_saving_bytes)
-        self.chunk_size = int(chunk_size)
-        self.compression_threshold = float(compression_threshold)
-        if self.min_saving_bytes < 0:
-            raise ValueError("min_saving_bytes must be non-negative.")
-        if self.chunk_size <= 0:
-            raise ValueError("chunk_size must be positive.")
-        if not 0 < self.compression_threshold <= 1:
-            raise ValueError("compression_threshold must be in (0, 1].")
+        super().__init__(
+            min_saving_bytes=min_saving_bytes,
+            chunk_size=chunk_size,
+            compression_threshold=compression_threshold,
+        )
+        self.prior_count = int(prior_count)
+        self.exponent_prior_count = int(exponent_prior_count)
+        self.cluster_map = dict(cluster_map or {})
+        self.clustering = str(clustering)
+        self.cluster_js_threshold = float(cluster_js_threshold)
+        self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
+        self.test_cluster_compressibility = bool(test_cluster_compressibility)
+        if self.prior_count < 0:
+            raise ValueError("prior_count must be non-negative.")
+        if self.exponent_prior_count < 0:
+            raise ValueError("exponent_prior_count must be non-negative.")
+        if self.cluster_js_threshold < 0:
+            raise ValueError("cluster_js_threshold must be non-negative.")
+        if self.max_codebook_sample_bytes <= 0:
+            raise ValueError("max_codebook_sample_bytes must be positive.")
+        self.reset_compression()
+        self.reset_decompression()
+
+    def reset_compression(self):
+        self._codebook_by_key = {}
+        self._codebook_payloads = []
+        self._codebook_payload_by_id = {}
+        self._raw_codebook_keys = set()
+        self._computed_cluster_map = {}
+        self._next_codebook_id = 0
+
+    def reset_decompression(self):
+        self._decode_codebooks = {}
+        self._codebook_payload_by_id = {}
+
+    def export_codebooks(self):
+        return tuple(self._codebook_payloads)
+
+    def load_codebooks(self, codebooks):
+        self._codebook_payload_by_id = {
+            int(codebook.codebook_id): codebook for codebook in codebooks or ()
+        }
+        self._decode_codebooks = {
+            int(codebook.codebook_id): huffman.build_decodebook(codebook.code_lengths)
+            for codebook in codebooks or ()
+        }
+
+    def codebook_metadata_bytes(self):
+        return sum(codebook.metadata_bytes for codebook in self._codebook_payloads)
+
+    def _append_codebook_payload(
+        self,
+        *,
+        codebook_id,
+        cluster_id,
+        stream_id,
+        dtype,
+        code_lengths,
+    ):
+        payload = CodebookPayload(
+            codebook_id=codebook_id,
+            cluster_id=cluster_id,
+            stream_id=stream_id,
+            dtype=dtype,
+            code_lengths=code_lengths,
+        )
+        self._codebook_payloads.append(payload)
+        self._codebook_payload_by_id[int(codebook_id)] = payload
+        return payload
+
+    @property
+    def raw_codebook_keys(self):
+        return len(self._raw_codebook_keys)
+
+    @property
+    def cluster_count(self):
+        return len(set(self._computed_cluster_map.values()) | set(self.cluster_map.values()))
+
+    def cluster_id(self, name):
+        if name in self.cluster_map:
+            return str(self.cluster_map[name])
+        if name in self._computed_cluster_map:
+            return str(self._computed_cluster_map[name])
+        return str(_layer_signature(name))
+
+    def _prepare_clusters(self, named_tensors):
+        clustering = self.clustering.lower().replace("_", "-")
+        if clustering in {"architecture-aware", "architecture", "layer-signature"}:
+            self._computed_cluster_map = {
+                name: _layer_signature(name)
+                for name, tensor in named_tensors
+                if name not in self.cluster_map
+                and torch.is_tensor(tensor)
+                and tensor.is_floating_point()
+            }
+            return
+
+        if clustering not in {
+            "js-distance",
+            "jensen-shannon",
+            "jensen-shannon-distance",
+        }:
+            raise ValueError(
+                "Unsupported clustering mode "
+                f"{self.clustering!r}. Expected 'js-distance' or "
+                "'architecture-aware'."
+            )
+
+        clusters = []
+        cluster_map = {}
+        for name, tensor in named_tensors:
+            if name in self.cluster_map:
+                continue
+            if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+                continue
+
+            distribution = _exponent_distribution(tensor)
+            weight = int(tensor.numel())
+            best_index = None
+            best_distance = float("inf")
+            for index, cluster in enumerate(clusters):
+                distance = _jensen_shannon(distribution, cluster["centroid"])
+                if distance < best_distance:
+                    best_index = index
+                    best_distance = distance
+
+            if best_index is None or best_distance > self.cluster_js_threshold:
+                cluster_id = f"js_{len(clusters):03d}"
+                clusters.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "centroid": distribution,
+                        "weight": weight,
+                    }
+                )
+                cluster_map[name] = cluster_id
+                continue
+
+            cluster = clusters[best_index]
+            total_weight = cluster["weight"] + weight
+            cluster["centroid"] = (
+                cluster["centroid"] * cluster["weight"] + distribution * weight
+            ) / total_weight
+            cluster["weight"] = total_weight
+            cluster_map[name] = cluster["cluster_id"]
+
+        self._computed_cluster_map = cluster_map
+
+    def precompute_codebooks(self, named_tensors):
+        self._prepare_clusters(named_tensors)
+        samples_by_key = {}
+        sample_sizes = {}
+        prior_by_key = {}
+
+        for name, tensor in named_tensors:
+            if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+                continue
+
+            original = tensor.detach().cpu().contiguous()
+            config = _zipnn_dtype_config(original.dtype)
+            reordered_bytes = _zipnn_reordered_bytes(original, config)
+            element_size = int(config["element_size"])
+
+            for byte_offset in range(int(config["num_buffers"])):
+                prior_count = (
+                    self.exponent_prior_count
+                    if int(byte_offset) == element_size - 1
+                    else self.prior_count
+                )
+                key = self._codebook_key(name, original, byte_offset)
+                prior_by_key[key] = prior_count
+                current_size = sample_sizes.get(key, 0)
+                remaining = self.max_codebook_sample_bytes - current_size
+                if remaining <= 0:
+                    continue
+
+                sample = reordered_bytes[
+                    byte_offset : byte_offset + remaining * element_size : element_size
+                ]
+                if not sample:
+                    continue
+                samples_by_key.setdefault(key, bytearray()).extend(sample)
+                sample_sizes[key] = current_size + len(sample)
+
+        for key, sample in samples_by_key.items():
+            if key in self._codebook_by_key:
+                continue
+            codebook = huffman.build_codebook(
+                bytes(sample),
+                prior_count=prior_by_key[key],
+            )
+            codebook_id = self._next_codebook_id
+            self._codebook_by_key[key] = (codebook_id, codebook)
+            cluster_id, dtype, stream_id = key
+            self._append_codebook_payload(
+                codebook_id=codebook_id,
+                cluster_id=cluster_id,
+                stream_id=stream_id,
+                dtype=dtype,
+                code_lengths=codebook.code_lengths,
+            )
+            self._next_codebook_id += 1
+            if self.test_cluster_compressibility:
+                header_size = 1 + 8 + 8 + 8 + 1
+                max_payload_bytes = max(
+                    0,
+                    int(len(sample) * self.compression_threshold) - header_size,
+                )
+                encoded_sample = huffman.encode_with_codebook(
+                    bytes(sample),
+                    codebook,
+                    min_saving_bytes=self.min_saving_bytes,
+                    max_output_bytes=max_payload_bytes,
+                )
+                if encoded_sample is None:
+                    self._raw_codebook_keys.add(key)
+        self.load_codebooks(self._codebook_payloads)
 
     def compress_tensor(self, name, tensor):
         if not torch.is_tensor(tensor) or not tensor.is_floating_point():
             raise TypeError("NeuralZipCodec only compresses floating tensors.")
 
         original = tensor.detach().cpu().contiguous()
-        config = _neuralzip_dtype_config(original.dtype)
+        config = _zipnn_dtype_config(original.dtype)
         return self._compress_neuralzip(name, original, config)
 
     def decompress_tensor(self, compressed):
@@ -279,88 +304,87 @@ class NeuralZipCodec:
             raise ValueError("Delta payloads require decompress_delta_tensor().")
         raise ValueError(f"Unsupported NeuralZip strategy: {compressed.strategy!r}")
 
-    def compress_delta_tensor(self, name, base_tensor, target_tensor):
-        if not torch.is_tensor(base_tensor) or not torch.is_tensor(target_tensor):
-            raise TypeError("Delta compression expects torch tensors.")
-        if (
-            base_tensor.shape != target_tensor.shape
-            or base_tensor.dtype != target_tensor.dtype
-        ):
-            raise ValueError("Delta tensors must have matching shape and dtype.")
-        if not target_tensor.is_floating_point():
-            raise TypeError("NeuralZip delta compression only supports floating tensors.")
-
-        base = base_tensor.detach().cpu().contiguous()
-        target = target_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        target_bytes = np.frombuffer(_tensor_raw_bytes(target), dtype=np.uint8)
-        delta = np.bitwise_xor(base_bytes, target_bytes).tobytes()
-        group = self._compress_stream(delta, "delta")
-
-        return TensorPayload(
-            name=name,
-            shape=tuple(int(dim) for dim in target.shape),
-            dtype=_dtype_name(target.dtype),
-            element_size=int(target.element_size()),
-            numel=int(target.numel()),
-            strategy="delta",
-            groups=(group,),
+    def _codebook_key(self, name, tensor, byte_offset):
+        return (
+            self.cluster_id(name),
+            _dtype_name(tensor.dtype),
+            int(byte_offset),
         )
 
-    def decompress_delta_tensor(self, compressed, base_tensor):
-        if compressed.strategy != "delta":
-            raise ValueError("Expected a delta payload.")
-        if len(compressed.groups) != 1:
-            raise ValueError("Delta payload must contain exactly one stream.")
-        if not torch.is_tensor(base_tensor):
-            raise TypeError("base_tensor must be a torch tensor.")
-        if tuple(int(dim) for dim in base_tensor.shape) != compressed.shape:
-            raise ValueError("Base tensor shape does not match delta payload.")
-
-        dtype = DTYPE_BY_NAME[compressed.dtype]
-        if base_tensor.dtype != dtype:
-            raise ValueError("Base tensor dtype does not match delta payload.")
-
-        delta = self._decompress_stream(compressed.groups[0])
-        if len(delta) != compressed.raw_bytes:
-            raise ValueError(
-                f"Delta stream has {len(delta)} bytes; expected {compressed.raw_bytes}."
+    def _ensure_codebook(self, key, chunk, prior_count):
+        codebook = self._codebook_by_key.get(key)
+        if codebook is None:
+            codebook = huffman.build_codebook(
+                chunk,
+                prior_count=prior_count,
             )
+            codebook_id = self._next_codebook_id
+            self._codebook_by_key[key] = (codebook_id, codebook)
+            cluster_id, dtype, stream_id = key
+            self._append_codebook_payload(
+                codebook_id=codebook_id,
+                cluster_id=cluster_id,
+                stream_id=stream_id,
+                dtype=dtype,
+                code_lengths=codebook.code_lengths,
+            )
+            self._decode_codebooks[codebook_id] = huffman.build_decodebook(
+                codebook.code_lengths
+            )
+            self._next_codebook_id += 1
+        return self._codebook_by_key[key]
 
-        base = base_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        delta_bytes = np.frombuffer(delta, dtype=np.uint8)
-        target_bytes = np.bitwise_xor(base_bytes, delta_bytes).tobytes()
-        return _tensor_from_raw_bytes(target_bytes, dtype, compressed.shape)
+    def _encode_shared_huffman_chunk(self, key, chunk, prior_count):
+        codebook_id, codebook = self._ensure_codebook(key, chunk, prior_count)
+        header_size = 1 + 8 + 8 + 8 + 1
+        max_payload_bytes = max(
+            0,
+            int(len(chunk) * self.compression_threshold) - header_size,
+        )
+        try:
+            encoded = huffman.encode_with_codebook(
+                chunk,
+                codebook,
+                min_saving_bytes=self.min_saving_bytes,
+                max_output_bytes=max_payload_bytes,
+            )
+        except ValueError as error:
+            if "missing" not in str(error):
+                raise
+            encoded = None
+        if encoded is None:
+            return None
+        candidate = StreamChunk(
+            mode="shared_huffman",
+            symbol_count=encoded.symbol_count,
+            payload=encoded.payload,
+            code_lengths=b"",
+            codebook_id=codebook_id,
+        )
+        if candidate.compressed_bytes >= len(chunk) * self.compression_threshold:
+            return None
+        return candidate
 
-    def _stream_chunk_size(self, element_size):
-        return max(1, self.chunk_size // int(element_size))
-
-    def _compress_stream(self, stream, stream_kind, *, chunk_size=None):
-        if chunk_size is None:
-            chunk_size = self.chunk_size
-
+    def _compress_shared_stream(self, name, tensor, stream, stream_kind, byte_offset):
+        chunk_size = self._stream_chunk_size(tensor.element_size())
+        is_exponent_stream = int(byte_offset) == int(tensor.element_size()) - 1
+        prior_count = (
+            self.exponent_prior_count
+            if is_exponent_stream
+            else self.prior_count
+        )
+        key = self._codebook_key(name, tensor, byte_offset)
         chunks = []
+
         for start in range(0, len(stream), chunk_size):
             chunk = stream[start : start + chunk_size]
             if not chunk:
                 continue
 
-            encoded = huffman.compress(
-                chunk,
-                min_saving_bytes=self.min_saving_bytes,
-            )
-            if encoded is not None:
-                encoded_size = len(encoded.payload) + len(encoded.code_lengths)
-                if encoded_size < len(chunk) * self.compression_threshold:
-                    chunks.append(
-                        StreamChunk(
-                            mode="huffman",
-                            symbol_count=encoded.symbol_count,
-                            payload=encoded.payload,
-                            code_lengths=encoded.code_lengths,
-                        )
-                    )
+            if key not in self._raw_codebook_keys:
+                shared = self._encode_shared_huffman_chunk(key, chunk, prior_count)
+                if shared is not None:
+                    chunks.append(shared)
                     continue
 
             chunks.append(
@@ -377,13 +401,13 @@ class NeuralZipCodec:
             chunks=tuple(chunks),
         )
 
-    def _decompress_stream(self, group):
+    def _decompress_shared_stream(self, group):
         output = bytearray()
         for chunk in group.chunks:
-            if chunk.mode == "zero":
-                output.extend(b"\x00" * chunk.symbol_count)
-            elif chunk.mode == "raw":
+            if chunk.mode == "raw":
                 output.extend(chunk.payload)
+            elif chunk.mode == "zero":
+                output.extend(b"\x00" * chunk.symbol_count)
             elif chunk.mode == "huffman":
                 output.extend(
                     huffman.decompress(
@@ -392,6 +416,28 @@ class NeuralZipCodec:
                             code_lengths=chunk.code_lengths,
                             symbol_count=chunk.symbol_count,
                         )
+                    )
+                )
+            elif chunk.mode == "shared_huffman":
+                if chunk.codebook_id is None:
+                    raise ValueError("Shared Huffman chunk is missing a codebook id.")
+                if chunk.code_lengths:
+                    self._decode_codebooks[chunk.codebook_id] = huffman.build_decodebook(
+                        chunk.code_lengths
+                    )
+                decodebook = self._decode_codebooks.get(chunk.codebook_id)
+                if decodebook is None:
+                    raise ValueError(
+                        f"Missing shared Huffman codebook {chunk.codebook_id}."
+                    )
+                output.extend(
+                    huffman.decompress_with_decodebook(
+                        huffman.HuffmanPayload(
+                            payload=chunk.payload,
+                            code_lengths=decodebook.code_lengths,
+                            symbol_count=chunk.symbol_count,
+                        ),
+                        decodebook,
                     )
                 )
             else:
@@ -405,17 +451,19 @@ class NeuralZipCodec:
         return bytes(output)
 
     def _compress_neuralzip(self, name, tensor, config):
-        reordered_bytes = _neuralzip_reordered_bytes(tensor, config)
+        reordered_bytes = _zipnn_reordered_bytes(tensor, config)
         element_size = int(config["element_size"])
         groups = []
 
         for byte_offset in range(int(config["num_buffers"])):
             stream = reordered_bytes[byte_offset::element_size]
             groups.append(
-                self._compress_stream(
+                self._compress_shared_stream(
+                    name,
+                    tensor,
                     stream,
                     "byte_group",
-                    chunk_size=self._stream_chunk_size(element_size),
+                    byte_offset,
                 )
             )
 
@@ -430,11 +478,12 @@ class NeuralZipCodec:
             byte_reorder=int(config["byte_reorder"]),
             bit_reorder=int(config["bit_reorder"]),
             num_buffers=int(config["num_buffers"]),
+            cluster_id=self.cluster_id(name),
         )
 
     def _decompress_neuralzip(self, compressed):
         dtype = DTYPE_BY_NAME[compressed.dtype]
-        config = _neuralzip_dtype_config(dtype)
+        config = _zipnn_dtype_config(dtype)
         if compressed.element_size != int(config["element_size"]):
             raise ValueError(
                 f"Payload element size {compressed.element_size} does not match "
@@ -448,7 +497,7 @@ class NeuralZipCodec:
 
         raw = bytearray(compressed.raw_bytes)
         for byte_offset, group in enumerate(compressed.groups):
-            stream = self._decompress_stream(group)
+            stream = self._decompress_shared_stream(group)
             expected_symbols = len(raw[byte_offset::compressed.element_size])
             if len(stream) != expected_symbols:
                 raise ValueError(
@@ -457,9 +506,5 @@ class NeuralZipCodec:
                 )
             raw[byte_offset::compressed.element_size] = stream
 
-        restored = _neuralzip_restored_bytes(bytes(raw), dtype, config)
+        restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)
-
-
-def compression_ratio(compressed):
-    return compressed.compressed_bytes / compressed.raw_bytes if compressed.raw_bytes else 0.0

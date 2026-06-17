@@ -13,7 +13,7 @@ MODEL_SUITE = [
 COMPRESSOR_SUITE = [
     {
         "name": "ZipNN local",
-        "method": "zipnn",
+        "method": "zipnn-local",
         "verify": False,
         "description": (
             "the local ZipNN-compatible codec applied tensor by tensor with "
@@ -28,9 +28,30 @@ COMPRESSOR_SUITE = [
         "description": "the official ZipNN package from the authors.",
     },
     {
-        "name": "NeuralZip",
-        "method": "neuralzip",
+        "name": "NeuralZip-Fast",
+        "method": "neuralzip-fast",
         "verify": False,
-        "description": "the experimental NeuralZip codec, currently a copy of local ZipNN.",
+        "description": (
+            "the fast NeuralZip codec with Jensen-Shannon "
+            "clustered codebooks reused by byte stream."
+        ),
+    },
+    {
+        "name": "NeuralZip-Ratio",
+        "method": "neuralzip-ratio",
+        "verify": False,
+        "description": (
+            "the codebook-aware exponent-stream ratio experiment selecting "
+            "between ZipNN-local Huffman and full-vocabulary n-gram arithmetic."
+        ),
+    },
+    {
+        "name": "Global Huffman",
+        "method": "global-huffman",
+        "verify": False,
+        "description": (
+            "an exponent-stream baseline that builds one Huffman tree from a "
+            "representative chunk and reuses it for the remaining chunks."
+        ),
     },
 ]

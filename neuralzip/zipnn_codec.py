@@ -116,11 +116,32 @@ def _zipnn_restored_bytes(raw_bytes, dtype, config):
 
 
 @dataclass(frozen=True)
+class CodebookPayload:
+    codebook_id: int
+    cluster_id: str
+    stream_id: int
+    dtype: str
+    code_lengths: bytes
+
+    @property
+    def metadata_bytes(self):
+        return (
+            8
+            + len(self.cluster_id.encode("utf-8"))
+            + 8
+            + len(self.dtype.encode("utf-8"))
+            + len(self.code_lengths)
+            + 1
+        )
+
+
+@dataclass(frozen=True)
 class StreamChunk:
     mode: str
     symbol_count: int
     payload: bytes = b""
     code_lengths: bytes = b""
+    codebook_id: int | None = None
 
     @property
     def payload_bytes(self):
@@ -132,6 +153,9 @@ class StreamChunk:
         base_header = 1 + 8 + 8
         if self.mode == "huffman":
             return base_header + len(self.code_lengths)
+        if self.mode == "shared_huffman":
+            # codebook id + definition flag + optional canonical Huffman table.
+            return base_header + 8 + 1 + len(self.code_lengths)
         return base_header
 
     @property
@@ -160,6 +184,17 @@ class ByteGroupPayload:
 
     @property
     def huffman_chunks(self):
+        return sum(
+            chunk.mode
+            in {
+                "huffman",
+                "shared_huffman",
+            }
+            for chunk in self.chunks
+        )
+
+    @property
+    def local_huffman_chunks(self):
         return sum(chunk.mode == "huffman" for chunk in self.chunks)
 
     @property
@@ -169,6 +204,20 @@ class ByteGroupPayload:
     @property
     def zero_chunks(self):
         return sum(chunk.mode == "zero" for chunk in self.chunks)
+
+    @property
+    def shared_codebook_defs(self):
+        return sum(
+            chunk.mode == "shared_huffman" and bool(chunk.code_lengths)
+            for chunk in self.chunks
+        )
+
+    @property
+    def shared_codebook_refs(self):
+        return sum(
+            chunk.mode == "shared_huffman" and not chunk.code_lengths
+            for chunk in self.chunks
+        )
 
 
 @dataclass(frozen=True)
@@ -184,6 +233,7 @@ class TensorPayload:
     bit_reorder: int = 0
     num_buffers: int = 0
     remainder_payload: bytes = b""
+    cluster_id: str | None = None
 
     @property
     def raw_bytes(self):
@@ -201,9 +251,13 @@ class TensorPayload:
             + 1
         )
         zipnn_header = 1 + 1 + 1 if self.strategy in {"zipnn", "neuralzip"} else 0
+        cluster_header = (
+            len(self.cluster_id.encode("utf-8")) if self.cluster_id is not None else 0
+        )
         return (
             tensor_header
             + zipnn_header
+            + cluster_header
             + len(self.remainder_payload)
             + sum(group.metadata_bytes for group in self.groups)
         )
@@ -239,6 +293,22 @@ class TensorPayload:
     @property
     def zero_chunks(self):
         return sum(group.zero_chunks for group in self.groups)
+
+    @property
+    def shared_codebook_defs(self):
+        return sum(
+            getattr(group, "shared_codebook_defs", 0) for group in self.groups
+        )
+
+    @property
+    def shared_codebook_refs(self):
+        return sum(
+            getattr(group, "shared_codebook_refs", 0) for group in self.groups
+        )
+
+    @property
+    def local_huffman_chunks(self):
+        return sum(getattr(group, "local_huffman_chunks", 0) for group in self.groups)
 
 
 class ZipNNCodec:

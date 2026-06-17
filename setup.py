@@ -13,6 +13,12 @@ setup(
             sources=["neuralzip/_huffman_cpp.cpp"],
             language="c++",
             extra_compile_args=compile_args,
-        )
+        ),
+        Extension(
+            "neuralzip._arithmetic_cpp",
+            sources=["neuralzip/_arithmetic_cpp.cpp"],
+            language="c++",
+            extra_compile_args=compile_args,
+        ),
     ]
 )

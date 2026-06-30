@@ -167,12 +167,17 @@ def sparse_ngram_arithmetic_encode_with_codebook(
         data = bytes(data)
 
     max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
-    result = _arithmetic_cpp.sparse_ngram_encode_with_codebook(
-        data,
-        codebook.payload,
-        min_saving_bytes=min_saving_bytes,
-        max_output_bytes=max_bytes,
-    )
+    try:
+        result = _arithmetic_cpp.sparse_ngram_encode_with_codebook(
+            data,
+            codebook.payload,
+            min_saving_bytes=min_saving_bytes,
+            max_output_bytes=max_bytes,
+        )
+    except ValueError as error:
+        if "missing from sparse codebook" not in str(error):
+            raise
+        return None
     if result is None:
         return None
 

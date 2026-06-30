@@ -395,6 +395,18 @@ def _compressed_codebook_size(codebook, compressor):
     raise ValueError("compressor must be 'raw', 'zlib', or 'lzma'.")
 
 
+def _aligned_ngram_training_data(streams, n):
+    n = int(n)
+    parts = []
+    tail_bytes = 0
+    for stream in streams:
+        complete_length = (len(stream) // n) * n
+        if complete_length:
+            parts.append(stream[:complete_length])
+        tail_bytes += len(stream) - complete_length
+    return b"".join(parts), tail_bytes
+
+
 def ngram_codebook_boundary(
     model,
     *,
@@ -416,13 +428,19 @@ def ngram_codebook_boundary(
         total_unique = 0
         codebooks = []
         for cluster_id, streams in streams_by_cluster.items():
-            data = b"".join(streams)
-            unique, token_count, entropy, codebook, tail = _ngram_counts_and_codebook(
-                data,
-                n,
-            )
+            data, stream_tail = _aligned_ngram_training_data(streams, n)
+            if not data:
+                tail_bytes += stream_tail
+                continue
+            (
+                unique,
+                token_count,
+                entropy,
+                codebook,
+                aligned_tail,
+            ) = _ngram_counts_and_codebook(data, n)
             payload_bits += token_count * entropy
-            tail_bytes += tail
+            tail_bytes += stream_tail + aligned_tail
             total_unique += unique
             codebooks.append(codebook)
             cluster_stats.append((cluster_id, unique, token_count))
@@ -478,13 +496,18 @@ def selected_ngram_codebook_cost(
             candidates = [
                 ("zipnn-local", _zipnn_local_stream_cost(streams), 0, 0)
             ]
-            data = b"".join(streams)
             for n in n_values:
-                codebook = huffman.build_sparse_ngram_arithmetic_codebook(
-                    data,
-                    n=int(n),
-                    max_total=1 << 26,
-                )
+                data, _ = _aligned_ngram_training_data(streams, n)
+                if not data:
+                    continue
+                try:
+                    codebook = huffman.build_sparse_ngram_arithmetic_codebook(
+                        data,
+                        n=int(n),
+                        max_total=1 << 26,
+                    )
+                except ValueError:
+                    continue
                 payload_cost = 0
                 encoded_count = 0
                 for stream in streams:

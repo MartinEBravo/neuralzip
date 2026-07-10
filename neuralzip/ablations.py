@@ -90,6 +90,75 @@ def zero_order_entropy(values):
     return float(-(probabilities * np.log2(probabilities)).sum())
 
 
+def _first_order_entropy_from_counts(transition_counts):
+    transition_counts = np.asarray(transition_counts, dtype=np.float64)
+    total = float(transition_counts.sum())
+    if total == 0.0:
+        return 0.0
+
+    entropy = 0.0
+    for row in transition_counts:
+        row_total = float(row.sum())
+        if row_total == 0.0:
+            continue
+        probabilities = row[row > 0] / row_total
+        conditional_entropy = float(
+            -(probabilities * np.log2(probabilities)).sum()
+        )
+        entropy += (row_total / total) * conditional_entropy
+    return entropy
+
+
+def first_order_entropy(values):
+    values = np.asarray(values, dtype=np.uint8).reshape(-1)
+    if values.size < 2:
+        return 0.0
+    pair_ids = (
+        (values[:-1].astype(np.uint16) << 8)
+        | values[1:].astype(np.uint16)
+    )
+    transition_counts = np.bincount(
+        pair_ids.astype(np.int64), minlength=256 * 256
+    ).reshape(256, 256)
+    return _first_order_entropy_from_counts(transition_counts)
+
+
+def exponent_order_entropies(model):
+    symbol_counts = np.zeros(256, dtype=np.int64)
+    transition_counts = np.zeros((256, 256), dtype=np.int64)
+    tensor_count = 0
+
+    for _, tensor in named_floating_tensors(model):
+        values = np.asarray(exponent_stream(tensor), dtype=np.uint8).reshape(-1)
+        if values.size == 0:
+            continue
+        tensor_count += 1
+        symbol_counts += np.bincount(values, minlength=256)
+        if values.size < 2:
+            continue
+        pair_ids = (
+            (values[:-1].astype(np.uint16) << 8)
+            | values[1:].astype(np.uint16)
+        )
+        transition_counts += np.bincount(
+            pair_ids.astype(np.int64), minlength=256 * 256
+        ).reshape(256, 256)
+
+    probabilities = symbol_counts[symbol_counts > 0].astype(np.float64)
+    probabilities /= float(symbol_counts.sum()) if symbol_counts.sum() else 1.0
+    h0 = float(-(probabilities * np.log2(probabilities)).sum())
+    h1 = _first_order_entropy_from_counts(transition_counts)
+    return {
+        "tensors": tensor_count,
+        "exponent_symbols": int(symbol_counts.sum()),
+        "transitions": int(transition_counts.sum()),
+        "h0_bits_per_exponent": h0,
+        "h1_bits_per_exponent": h1,
+        "entropy_reduction_bits_per_exponent": h0 - h1,
+        "entropy_reduction_pct": 100.0 * (h0 - h1) / h0 if h0 else 0.0,
+    }
+
+
 def exponent_entropy_by_signature(model, max_tensors=None):
     table, _ = exponent_histograms(model, max_tensors=max_tensors)
     if table.empty:

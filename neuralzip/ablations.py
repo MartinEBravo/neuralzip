@@ -1,13 +1,17 @@
 import re
 import math
+import time
 import zlib
 import lzma
+import heapq
 
 import numpy as np
 import pandas as pd
 import torch
 
 from . import huffman
+from . import huff0
+from . import turborc
 from .neuralzip_codec import NeuralZipCodec
 from .utils import split_fields
 from .zipnn_codec import _zipnn_dtype_config, _zipnn_reordered_bytes
@@ -256,12 +260,205 @@ def _iter_chunks(data, chunk_size):
         yield data[start : start + int(chunk_size)]
 
 
-def zipnn_exponent_huffman_cost(
+def _huffman_lengths_from_counts(counts):
+    counts = {
+        int(symbol): int(count)
+        for symbol, count in enumerate(np.asarray(counts, dtype=np.int64))
+        if int(count) > 0
+    }
+    if not counts:
+        return {}
+    if len(counts) == 1:
+        symbol = next(iter(counts))
+        return {symbol: 1}
+
+    order = 0
+    heap = []
+    for symbol, count in counts.items():
+        heap.append((count, order, {symbol: 0}))
+        order += 1
+    heapq.heapify(heap)
+
+    while len(heap) > 1:
+        left_count, _, left_depths = heapq.heappop(heap)
+        right_count, _, right_depths = heapq.heappop(heap)
+        merged = {}
+        for symbol, depth in left_depths.items():
+            merged[symbol] = depth + 1
+        for symbol, depth in right_depths.items():
+            merged[symbol] = depth + 1
+        heapq.heappush(heap, (left_count + right_count, order, merged))
+        order += 1
+    return heap[0][2]
+
+
+def _huffman_bits_from_counts(counts):
+    counts = np.asarray(counts, dtype=np.int64)
+    lengths = _huffman_lengths_from_counts(counts)
+    return int(sum(int(counts[symbol]) * length for symbol, length in lengths.items()))
+
+
+def _delta_stream(stream):
+    values = np.frombuffer(bytes(stream), dtype=np.uint8)
+    if values.size == 0:
+        return b""
+    delta = np.empty_like(values)
+    delta[0] = values[0]
+    if values.size > 1:
+        delta[1:] = (values[1:].astype(np.int16) - values[:-1].astype(np.int16)) & 0xFF
+    return delta.tobytes()
+
+
+def _entropy_from_counts(counts):
+    counts = np.asarray(counts, dtype=np.float64)
+    total = float(counts.sum())
+    if total == 0.0:
+        return 0.0
+    probabilities = counts[counts > 0] / total
+    return float(-(probabilities * np.log2(probabilities)).sum())
+
+
+def delta_exponent_diagnostics(
     model,
     *,
     layout="original",
     chunk_size=256 << 10,
 ):
+    exponent_counts = np.zeros(256, dtype=np.int64)
+    delta_counts = np.zeros(256, dtype=np.int64)
+    raw_bytes = 0
+    transitions = 0
+    repeated_transitions = 0
+    tensors = 0
+
+    for _, tensor in named_floating_tensors(model):
+        stream = zipnn_exponent_stream(tensor, layout=layout)
+        values = np.frombuffer(bytes(stream), dtype=np.uint8)
+        if values.size == 0:
+            continue
+
+        tensors += 1
+        raw_bytes += int(values.size)
+        exponent_counts += np.bincount(values, minlength=256)
+
+        delta = np.frombuffer(_delta_stream(stream), dtype=np.uint8)
+        delta_counts += np.bincount(delta, minlength=256)
+
+        if values.size > 1:
+            repeated_transitions += int(np.count_nonzero(values[1:] == values[:-1]))
+            transitions += int(values.size - 1)
+
+    zipnn = zipnn_exponent_huffman_cost(
+        model,
+        layout=layout,
+        chunk_size=chunk_size,
+    ).iloc[0]
+    delta = delta_exponent_huffman_cost(
+        model,
+        layout=layout,
+        chunk_size=chunk_size,
+    ).iloc[0]
+
+    exponent_h0 = _entropy_from_counts(exponent_counts)
+    delta_h0 = _entropy_from_counts(delta_counts)
+    same_pct = (
+        100.0 * repeated_transitions / transitions
+        if transitions
+        else 0.0
+    )
+
+    return pd.DataFrame(
+        [
+            {
+                "method": "Delta exponent diagnostic",
+                "layout": layout,
+                "raw_bytes": raw_bytes,
+                "tensors": tensors,
+                "transitions": transitions,
+                "same_exponent_transition_pct": same_pct,
+                "exponent_h0_bits": exponent_h0,
+                "delta_h0_bits": delta_h0,
+                "delta_h0_minus_exponent_h0_bits": delta_h0 - exponent_h0,
+                "ideal_exponent_pct": 100.0 * exponent_h0 / 8.0,
+                "ideal_delta_pct": 100.0 * delta_h0 / 8.0,
+                "zipnn_compressed_pct": float(zipnn["compressed_pct"]),
+                "delta_compressed_pct": float(delta["compressed_pct"]),
+                "delta_gain_vs_zipnn_pp": (
+                    float(zipnn["compressed_pct"]) - float(delta["compressed_pct"])
+                ),
+                "zipnn_compressed_bytes": int(zipnn["compressed_bytes"]),
+                "delta_compressed_bytes": int(delta["compressed_bytes"]),
+                "delta_metadata_bytes": int(delta["metadata_bytes"]),
+                "chunks": int(delta["chunks"]),
+                "delta_huffman_chunks": int(delta["huffman_chunks"]),
+                "delta_raw_chunks": int(delta["raw_chunks"]),
+            }
+        ]
+    )
+
+
+def delta_exponent_huffman_cost(
+    model,
+    *,
+    layout="original",
+    chunk_size=256 << 10,
+):
+    raw_bytes = 0
+    compressed_bytes = 0
+    payload_bytes = 0
+    chunks = 0
+    huffman_chunks = 0
+    raw_chunks = 0
+
+    for _, tensor in named_floating_tensors(model):
+        stream = zipnn_exponent_stream(tensor, layout=layout)
+        raw_bytes += len(stream)
+        delta = _delta_stream(stream)
+        for chunk in _iter_chunks(delta, chunk_size):
+            chunks += 1
+            raw_cost = 1 + 8 + 8 + len(chunk)
+            encoded = huffman.compress(chunk, min_saving_bytes=0)
+            if encoded is None:
+                compressed_bytes += raw_cost
+                payload_bytes += len(chunk)
+                raw_chunks += 1
+                continue
+            encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
+            if encoded_cost >= raw_cost:
+                compressed_bytes += raw_cost
+                payload_bytes += len(chunk)
+                raw_chunks += 1
+                continue
+            compressed_bytes += encoded_cost
+            payload_bytes += len(encoded.payload)
+            huffman_chunks += 1
+
+    return pd.DataFrame(
+        [
+            {
+                "method": "Delta exponent Huffman",
+                "layout": layout,
+                "raw_bytes": raw_bytes,
+                "payload_bytes": payload_bytes,
+                "metadata_bytes": compressed_bytes - payload_bytes,
+                "compressed_bytes": compressed_bytes,
+                "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
+                "chunks": chunks,
+                "huffman_chunks": huffman_chunks,
+                "raw_chunks": raw_chunks,
+            }
+        ]
+    )
+
+
+def zipnn_exponent_huffman_cost(
+    model,
+    *,
+    layout="original",
+    chunk_size=256 << 10,
+    compression_threshold=None,
+):
+    encode_start = time.perf_counter()
     rows = []
     raw_bytes = 0
     compressed_bytes = 0
@@ -277,7 +474,18 @@ def zipnn_exponent_huffman_cost(
                 compressed_bytes += raw_cost
                 continue
             encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-            compressed_bytes += min(raw_cost, encoded_cost)
+            size_limit = raw_cost
+            if compression_threshold is not None:
+                size_limit = min(
+                    size_limit,
+                    int(len(chunk) * float(compression_threshold)),
+                )
+            if encoded_cost >= size_limit:
+                compressed_bytes += raw_cost
+            else:
+                compressed_bytes += min(raw_cost, encoded_cost)
+
+    encode_seconds = time.perf_counter() - encode_start
 
     rows.append(
         {
@@ -287,134 +495,11 @@ def zipnn_exponent_huffman_cost(
             "compressed_bytes": compressed_bytes,
             "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
             "chunks": chunks,
+            "precompute_seconds": 0.0,
+            "encode_seconds": encode_seconds,
         }
     )
     return pd.DataFrame(rows)
-
-
-def global_exponent_huffman_cost(
-    model,
-    *,
-    layout="original",
-    chunk_size=256 << 10,
-    compression_threshold=1.0,
-    prior_count=1,
-):
-    tensor_streams = [
-        (name, zipnn_exponent_stream(tensor, layout=layout))
-        for name, tensor in named_floating_tensors(model)
-    ]
-    chunks = []
-    raw_bytes = 0
-    for name, stream in tensor_streams:
-        raw_bytes += len(stream)
-        for chunk_index, chunk in enumerate(_iter_chunks(stream, chunk_size)):
-            if chunk:
-                chunks.append((name, chunk_index, chunk))
-
-    if not chunks:
-        return pd.DataFrame(
-            [
-                {
-                    "method": "Global Huffman",
-                    "layout": layout,
-                    "raw_bytes": 0,
-                    "compressed_bytes": 0,
-                    "compressed_pct": 0.0,
-                    "payload_bytes": 0,
-                    "codebook_bytes": 0,
-                    "metadata_bytes": 0,
-                    "chunks": 0,
-                    "huffman_chunks": 0,
-                    "raw_chunks": 0,
-                    "representative_tensor": None,
-                    "representative_chunk": None,
-                    "prior_count": int(prior_count),
-                }
-            ]
-        )
-
-    representative_name, representative_chunk, representative = max(
-        ((name, chunk_index, chunk) for name, chunk_index, chunk in chunks),
-        key=lambda item: (len(item[2]), -item[1], item[0]),
-    )
-    codebook = huffman.build_codebook(
-        representative,
-        prior_count=int(prior_count),
-    )
-    codebook_bytes = len(codebook.code_lengths)
-    chunk_header_bytes = 1 + 8 + 8
-    codebook_header_bytes = 8 + len("global".encode("utf-8")) + 8 + len("exponent")
-
-    compressed_bytes = codebook_header_bytes + codebook_bytes
-    payload_bytes = 0
-    huffman_chunks = 0
-    raw_chunks = 0
-    tensor_rows = []
-
-    for name, chunk_index, chunk in chunks:
-        raw_cost = chunk_header_bytes + len(chunk)
-        max_payload_bytes = max(
-            0,
-            int(len(chunk) * float(compression_threshold)) - chunk_header_bytes,
-        )
-        encoded = huffman.encode_with_codebook(
-            chunk,
-            codebook,
-            min_saving_bytes=0,
-            max_output_bytes=max_payload_bytes,
-        )
-        if encoded is None:
-            compressed_bytes += raw_cost
-            payload_bytes += len(chunk)
-            raw_chunks += 1
-            tensor_rows.append(
-                {
-                    "name": name,
-                    "chunk": int(chunk_index),
-                    "mode": "raw",
-                    "raw_bytes": len(chunk),
-                    "compressed_bytes": raw_cost,
-                }
-            )
-            continue
-
-        encoded_cost = chunk_header_bytes + len(encoded.payload)
-        compressed_bytes += encoded_cost
-        payload_bytes += len(encoded.payload)
-        huffman_chunks += 1
-        tensor_rows.append(
-            {
-                "name": name,
-                "chunk": int(chunk_index),
-                "mode": "global_huffman",
-                "raw_bytes": len(chunk),
-                "compressed_bytes": encoded_cost,
-            }
-        )
-
-    metadata_bytes = compressed_bytes - payload_bytes
-    return pd.DataFrame(
-        [
-            {
-                "method": "Global Huffman",
-                "layout": layout,
-                "raw_bytes": raw_bytes,
-                "compressed_bytes": compressed_bytes,
-                "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
-                "payload_bytes": payload_bytes,
-                "codebook_bytes": codebook_bytes,
-                "metadata_bytes": metadata_bytes,
-                "chunks": len(chunks),
-                "huffman_chunks": huffman_chunks,
-                "raw_chunks": raw_chunks,
-                "representative_tensor": representative_name,
-                "representative_chunk": int(representative_chunk),
-                "prior_count": int(prior_count),
-                "tensor_results": tensor_rows,
-            }
-        ]
-    )
 
 
 def _clustered_zipnn_exponent_streams(model, *, cluster_js_threshold, layout):
@@ -434,6 +519,67 @@ def _clustered_zipnn_exponent_streams(model, *, cluster_js_threshold, layout):
         tensor_streams.append((cluster_id, stream))
         raw_bytes += len(stream)
     return streams_by_cluster, tensor_streams, raw_bytes
+
+
+def order1_huffman_cluster_cost(
+    model,
+    *,
+    cluster_js_threshold=0.05,
+    layout="original",
+):
+    streams_by_cluster, _, raw_bytes = _clustered_zipnn_exponent_streams(
+        model,
+        cluster_js_threshold=cluster_js_threshold,
+        layout=layout,
+    )
+    payload_bits = 0
+    first_symbol_bytes = 0
+    codebook_bytes = 0
+    stream_headers = 0
+    nonempty_contexts = 0
+
+    for streams in streams_by_cluster.values():
+        counts = np.zeros((256, 256), dtype=np.int64)
+        for stream in streams:
+            values = np.frombuffer(bytes(stream), dtype=np.uint8)
+            if values.size == 0:
+                continue
+            first_symbol_bytes += 1
+            stream_headers += 1 + 8 + 8
+            if values.size > 1:
+                np.add.at(counts, (values[:-1], values[1:]), 1)
+
+        for context in range(256):
+            row = counts[context]
+            if int(row.sum()) == 0:
+                continue
+            nonempty_contexts += 1
+            payload_bits += _huffman_bits_from_counts(row)
+            codebook_bytes += 1 + 256
+
+    codec_header_bytes = 8 + len("order1-huffman".encode("utf-8")) + 8 + len(layout)
+    cluster_header_bytes = len(streams_by_cluster) * (8 + 8)
+    payload_bytes = math.ceil(payload_bits / 8) + first_symbol_bytes
+    metadata_bytes = codec_header_bytes + cluster_header_bytes + stream_headers + codebook_bytes
+    compressed_bytes = payload_bytes + metadata_bytes
+
+    return pd.DataFrame(
+        [
+            {
+                "method": "Order-1 clustered Huffman",
+                "cluster_js_threshold": float(cluster_js_threshold),
+                "layout": layout,
+                "clusters": len(streams_by_cluster),
+                "raw_bytes": raw_bytes,
+                "payload_bytes": payload_bytes,
+                "metadata_bytes": metadata_bytes,
+                "codebook_bytes": codebook_bytes,
+                "compressed_bytes": compressed_bytes,
+                "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
+                "nonempty_contexts": nonempty_contexts,
+            }
+        ]
+    )
 
 
 def _ngram_counts_and_codebook(data, n):
@@ -636,6 +782,1102 @@ def selected_ngram_codebook_cost(
                 "codebook_bytes": codebook_bytes,
                 "encoded_tensors": encoded_tensors,
                 "selected_modes": selected,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _pack_ngram_symbols(data, n):
+    n = int(n)
+    complete_length = (len(data) // n) * n
+    if complete_length <= 0:
+        return np.array([], dtype=np.uint32), b"", data
+    values = np.frombuffer(data[:complete_length], dtype=np.uint8).reshape(-1, n)
+    dtype = np.uint64 if n > 4 else np.uint32
+    packed = np.zeros(values.shape[0], dtype=dtype)
+    for offset in range(n):
+        packed |= values[:, offset].astype(dtype) << (8 * offset)
+    return packed, data[:complete_length], data[complete_length:]
+
+
+def _topk_ngram_vocab(sample, n, top_k):
+    packed, _, _ = _pack_ngram_symbols(sample, n)
+    if packed.size == 0:
+        return np.array([], dtype=np.uint32)
+    symbols, counts = np.unique(packed, return_counts=True)
+    order = np.argsort(counts)[::-1]
+    selected = symbols[order[: int(top_k)]]
+    return np.sort(selected)
+
+
+def _tokenize_ngrams(data, n, vocab):
+    packed, complete, tail = _pack_ngram_symbols(data, n)
+    if packed.size == 0 or len(vocab) == 0:
+        return b"", complete, tail, 0, 0
+
+    vocab = np.asarray(vocab, dtype=packed.dtype)
+    positions = np.searchsorted(vocab, packed)
+    hits = (positions < len(vocab)) & (vocab[np.minimum(positions, len(vocab) - 1)] == packed)
+    token_ids = np.full(packed.shape[0], 255, dtype=np.uint8)
+    token_ids[hits] = positions[hits].astype(np.uint8)
+
+    escape_bytes = b""
+    escapes = int(np.count_nonzero(~hits))
+    if escapes:
+        escape_bytes = (
+            np.frombuffer(complete, dtype=np.uint8)
+            .reshape(-1, int(n))[~hits]
+            .reshape(-1)
+            .tobytes()
+        )
+    return token_ids.tobytes(), escape_bytes, tail, int(hits.sum()), escapes
+
+
+def _vocab_metadata_bytes(vocab, n):
+    return 1 + 2 + int(len(vocab)) * int(n)
+
+
+def _huff0_local_stream_cost(streams, *, chunk_size):
+    max_block = huff0.max_block_size()
+    effective_chunk = min(int(chunk_size), max_block)
+    total = 0
+    payload = 0
+    metadata = 0
+    compressed_chunks = 0
+    raw_chunks = 0
+    for stream in streams:
+        for chunk in _iter_chunks(stream, effective_chunk):
+            raw_cost = 1 + 8 + 8 + len(chunk)
+            try:
+                encoded = huff0.compress(chunk, min_saving_bytes=0)
+            except ValueError:
+                encoded = None
+            if encoded is None:
+                total += raw_cost
+                payload += len(chunk)
+                metadata += 1 + 8 + 8
+                raw_chunks += 1
+                continue
+            encoded_cost = 1 + 8 + 8 + len(encoded.codebook) + len(encoded.payload)
+            if encoded_cost >= raw_cost:
+                total += raw_cost
+                payload += len(chunk)
+                metadata += 1 + 8 + 8
+                raw_chunks += 1
+                continue
+            total += encoded_cost
+            payload += len(encoded.payload)
+            metadata += encoded_cost - len(encoded.payload)
+            compressed_chunks += 1
+    return total, payload, metadata, compressed_chunks, raw_chunks
+
+
+def _sample_streams(streams, max_sample_bytes):
+    parts = []
+    remaining = int(max_sample_bytes)
+    for stream in streams:
+        if remaining <= 0:
+            break
+        if not stream:
+            continue
+        part = stream[:remaining]
+        parts.append(part)
+        remaining -= len(part)
+    return b"".join(parts)
+
+
+def _ngram_huff0_cluster_cost(
+    streams,
+    *,
+    n,
+    top_k,
+    chunk_size,
+    max_sample_bytes,
+    compression_threshold,
+):
+    sample = _sample_streams(streams, max_sample_bytes)
+    vocab = _topk_ngram_vocab(sample, n, top_k)
+    if len(vocab) < 2:
+        return None
+
+    sample_tokens, _, _, _, _ = _tokenize_ngrams(sample, n, vocab)
+    if len(set(sample_tokens)) < 2:
+        return None
+
+    try:
+        codebook = huff0.build_codebook(sample_tokens, prior_count=0)
+    except ValueError:
+        return None
+
+    max_block = huff0.max_block_size()
+    effective_token_chunk = min(max_block, max(1, int(chunk_size) // int(n)))
+    header_bytes = 1 + 8 + 8 + 8 + 8 + 1
+    codebook_bytes = len(codebook.codebook) + _vocab_metadata_bytes(vocab, n)
+    total = codebook_bytes
+    payload = 0
+    metadata = codebook_bytes
+    compressed_chunks = 0
+    raw_chunks = 0
+    hits = 0
+    escapes = 0
+
+    for stream in streams:
+        raw_chunks_for_stream = 0
+        step = effective_token_chunk * int(n)
+        for chunk in _iter_chunks(stream, step):
+            raw_cost = 1 + 8 + 8 + len(chunk)
+            tokens, escape_bytes, tail, chunk_hits, chunk_escapes = _tokenize_ngrams(
+                chunk,
+                n,
+                vocab,
+            )
+            if not tokens:
+                total += raw_cost
+                payload += len(chunk)
+                metadata += 1 + 8 + 8
+                raw_chunks += 1
+                raw_chunks_for_stream += 1
+                continue
+
+            max_payload_bytes = max(
+                0,
+                int(len(chunk) * float(compression_threshold))
+                - header_bytes
+                - len(escape_bytes)
+                - len(tail),
+            )
+            try:
+                encoded = huff0.encode_with_codebook(
+                    tokens,
+                    codebook,
+                    min_saving_bytes=0,
+                    max_output_bytes=max_payload_bytes,
+                )
+            except ValueError:
+                encoded = None
+
+            if encoded is None:
+                total += raw_cost
+                payload += len(chunk)
+                metadata += 1 + 8 + 8
+                raw_chunks += 1
+                raw_chunks_for_stream += 1
+                continue
+
+            encoded_cost = (
+                header_bytes
+                + len(encoded.payload)
+                + len(escape_bytes)
+                + len(tail)
+            )
+            if encoded_cost >= len(chunk) * float(compression_threshold):
+                total += raw_cost
+                payload += len(chunk)
+                metadata += 1 + 8 + 8
+                raw_chunks += 1
+                raw_chunks_for_stream += 1
+                continue
+
+            total += encoded_cost
+            payload += len(encoded.payload) + len(escape_bytes) + len(tail)
+            metadata += header_bytes
+            compressed_chunks += 1
+            hits += chunk_hits
+            escapes += chunk_escapes
+
+        if raw_chunks_for_stream:
+            pass
+
+    return {
+        "cost": total,
+        "payload_bytes": payload,
+        "metadata_bytes": metadata,
+        "codebook_bytes": codebook_bytes,
+        "compressed_chunks": compressed_chunks,
+        "raw_chunks": raw_chunks,
+        "hits": hits,
+        "escapes": escapes,
+        "vocab_size": int(len(vocab)),
+    }
+
+
+def _raw_streams_cost(streams, *, chunk_size):
+    total = 0
+    payload = 0
+    metadata = 0
+    raw_chunks = 0
+    for stream in streams:
+        for chunk in _iter_chunks(stream, int(chunk_size)):
+            if not chunk:
+                continue
+            header = 1 + 8 + 8
+            total += header + len(chunk)
+            payload += len(chunk)
+            metadata += header
+            raw_chunks += 1
+    return {
+        "cost": total,
+        "payload_bytes": payload,
+        "metadata_bytes": metadata,
+        "codebook_bytes": 0,
+        "compressed_chunks": 0,
+        "raw_chunks": raw_chunks,
+        "hits": 0,
+        "escapes": 0,
+    }
+
+
+def _huff0_shared_stream_cost(
+    streams,
+    codebook,
+    *,
+    chunk_size,
+    compression_threshold,
+):
+    max_block = huff0.max_block_size()
+    effective_chunk = min(int(chunk_size), max_block)
+    total = 0
+    payload = 0
+    metadata = 0
+    compressed_chunks = 0
+    raw_chunks = 0
+    huffman_header = 1 + 8 + 8 + 8 + 1
+    raw_header = 1 + 8 + 8
+
+    for stream in streams:
+        for chunk in _iter_chunks(stream, effective_chunk):
+            if not chunk:
+                continue
+            raw_cost = raw_header + len(chunk)
+            max_payload_bytes = max(
+                0,
+                int(len(chunk) * float(compression_threshold)) - huffman_header,
+            )
+            try:
+                encoded = huff0.encode_with_codebook(
+                    chunk,
+                    codebook,
+                    min_saving_bytes=0,
+                    max_output_bytes=max_payload_bytes,
+                )
+            except ValueError:
+                encoded = None
+
+            if encoded is None:
+                total += raw_cost
+                payload += len(chunk)
+                metadata += raw_header
+                raw_chunks += 1
+                continue
+
+            encoded_cost = huffman_header + len(encoded.payload)
+            if encoded_cost >= len(chunk) * float(compression_threshold):
+                total += raw_cost
+                payload += len(chunk)
+                metadata += raw_header
+                raw_chunks += 1
+                continue
+
+            total += encoded_cost
+            payload += len(encoded.payload)
+            metadata += huffman_header
+            compressed_chunks += 1
+
+    return {
+        "cost": total,
+        "payload_bytes": payload,
+        "metadata_bytes": metadata,
+        "codebook_bytes": 0,
+        "compressed_chunks": compressed_chunks,
+        "raw_chunks": raw_chunks,
+        "hits": 0,
+        "escapes": 0,
+    }
+
+
+def _build_huff0_shared_mode(sample):
+    if not sample or len(set(sample)) < 2:
+        return None
+    try:
+        codebook = huff0.build_codebook(sample, prior_count=0)
+    except ValueError:
+        return None
+    return {
+        "kind": "huff0-1gram-shared",
+        "codebook": codebook,
+        "codebook_bytes": len(codebook.codebook),
+    }
+
+
+def _build_ngram_huff0_mode(sample, *, n, top_k):
+    vocab = _topk_ngram_vocab(sample, n, top_k)
+    if len(vocab) < 2:
+        return None
+    sample_tokens, _, _, _, _ = _tokenize_ngrams(sample, n, vocab)
+    if not sample_tokens or len(set(sample_tokens)) < 2:
+        return None
+    try:
+        codebook = huff0.build_codebook(sample_tokens, prior_count=0)
+    except ValueError:
+        return None
+    return {
+        "kind": f"huff0-ngram-{int(n)}",
+        "n": int(n),
+        "vocab": vocab,
+        "vocab_bytes": np.asarray(vocab, dtype="<u4").tobytes(),
+        "codebook": codebook,
+        "codebook_bytes": len(codebook.codebook) + _vocab_metadata_bytes(vocab, n),
+    }
+
+
+def _encode_huff0_mode(
+    streams,
+    mode,
+    *,
+    chunk_size,
+    compression_threshold,
+):
+    if mode["kind"] == "raw":
+        return _raw_streams_cost(streams, chunk_size=chunk_size)
+
+    if mode["kind"] == "huff0-1gram-shared":
+        result = _huff0_shared_stream_cost(
+            streams,
+            mode["codebook"],
+            chunk_size=chunk_size,
+            compression_threshold=compression_threshold,
+        )
+        result["cost"] += int(mode["codebook_bytes"])
+        result["metadata_bytes"] += int(mode["codebook_bytes"])
+        result["codebook_bytes"] = int(mode["codebook_bytes"])
+        return result
+
+    if str(mode["kind"]).startswith("huff0-ngram-"):
+        n = int(mode["n"])
+        codebook = mode["codebook"]
+        vocab_bytes = mode["vocab_bytes"]
+        max_block = huff0.max_block_size()
+        effective_token_chunk = min(max_block, max(1, int(chunk_size) // n))
+        header_bytes = 1 + 8 + 8 + 8 + 8 + 1
+        raw_header = 1 + 8 + 8
+        total = int(mode["codebook_bytes"])
+        payload = 0
+        metadata = int(mode["codebook_bytes"])
+        compressed_chunks = 0
+        raw_chunks = 0
+        hits = 0
+        escapes = 0
+
+        for stream in streams:
+            step = effective_token_chunk * n
+            for chunk in _iter_chunks(stream, step):
+                if not chunk:
+                    continue
+                raw_cost = raw_header + len(chunk)
+                max_payload_bytes = max(
+                    0,
+                    int(len(chunk) * float(compression_threshold))
+                    - header_bytes,
+                )
+                try:
+                    encoded = huff0.encode_ngram_with_codebook(
+                        chunk,
+                        codebook,
+                        vocab_bytes,
+                        n=n,
+                        min_saving_bytes=0,
+                        max_output_bytes=max_payload_bytes,
+                    )
+                except ValueError:
+                    encoded = None
+
+                if encoded is None:
+                    total += raw_cost
+                    payload += len(chunk)
+                    metadata += raw_header
+                    raw_chunks += 1
+                    continue
+
+                encoded_cost = (
+                    header_bytes
+                    + len(encoded.payload)
+                    + len(encoded.escape_bytes)
+                    + len(encoded.tail)
+                )
+                if encoded_cost >= len(chunk) * float(compression_threshold):
+                    total += raw_cost
+                    payload += len(chunk)
+                    metadata += raw_header
+                    raw_chunks += 1
+                    continue
+
+                total += encoded_cost
+                payload += len(encoded.payload) + len(encoded.escape_bytes) + len(encoded.tail)
+                metadata += header_bytes
+                compressed_chunks += 1
+                hits += encoded.hits
+                escapes += encoded.misses
+
+        return {
+            "cost": total,
+            "payload_bytes": payload,
+            "metadata_bytes": metadata,
+            "codebook_bytes": int(mode["codebook_bytes"]),
+            "compressed_chunks": compressed_chunks,
+            "raw_chunks": raw_chunks,
+            "hits": hits,
+            "escapes": escapes,
+        }
+
+    raise ValueError(f"Unsupported clustered Huff0 mode: {mode['kind']!r}.")
+
+
+def _select_clustered_huff0_mode(
+    streams,
+    *,
+    n_values,
+    top_k,
+    chunk_size,
+    max_sample_bytes,
+    compression_threshold,
+):
+    sample = _sample_streams(streams, max_sample_bytes)
+    raw_sample_cost = _raw_streams_cost([sample], chunk_size=chunk_size)["cost"]
+    candidates = [{"kind": "raw", "sample_cost": raw_sample_cost}]
+    shared = _build_huff0_shared_mode(sample)
+    if shared is not None:
+        result = _encode_huff0_mode(
+            [sample],
+            shared,
+            chunk_size=chunk_size,
+            compression_threshold=compression_threshold,
+        )
+        shared["sample_cost"] = result["cost"]
+        candidates.append(shared)
+
+    for n in n_values:
+        mode = _build_ngram_huff0_mode(sample, n=int(n), top_k=int(top_k))
+        if mode is None:
+            continue
+        result = _encode_huff0_mode(
+            [sample],
+            mode,
+            chunk_size=chunk_size,
+            compression_threshold=compression_threshold,
+        )
+        mode["sample_cost"] = result["cost"]
+        candidates.append(mode)
+
+    return min(candidates, key=lambda candidate: int(candidate["sample_cost"]))
+
+
+def neuralzip_exponent_cost(
+    model,
+    *,
+    enable_packed_exponents=True,
+    cluster_js_threshold=0.05,
+    n_values=(2, 3, 4),
+    layout="original",
+    chunk_size=256 << 10,
+    top_k=254,
+    max_sample_bytes=8 << 20,
+    compression_threshold=0.95,
+    packed_time_budget_ratio=0.10,
+):
+    named_tensors = list(named_floating_tensors(model))
+    codec = NeuralZipCodec(
+        chunk_size=chunk_size,
+        compression_threshold=compression_threshold,
+        clustering="js-distance",
+        cluster_js_threshold=cluster_js_threshold,
+        max_codebook_sample_bytes=max_sample_bytes,
+        ngram_values=tuple(n_values) if enable_packed_exponents else (),
+        top_k=top_k,
+        exponent_layout=layout,
+        packed_time_budget_ratio=(
+            packed_time_budget_ratio if enable_packed_exponents else 0.0
+        ),
+    )
+
+    precompute_start = time.perf_counter()
+    codec.precompute_codebooks(named_tensors)
+    precompute_seconds = time.perf_counter() - precompute_start
+
+    raw_bytes = 0
+    exponent_keys = set()
+    groups = []
+    encode_start = time.perf_counter()
+    for name, tensor in named_tensors:
+        original = tensor.detach().cpu().contiguous()
+        config = _zipnn_dtype_config(original.dtype)
+        if not config["bit_reorder"]:
+            continue
+        reordered = _zipnn_reordered_bytes(original, config)
+        element_size = int(config["element_size"])
+        stream_id = element_size - 1
+        stream = reordered[stream_id::element_size]
+        stream, _ = codec._apply_exponent_layout(original, stream, True)
+        raw_bytes += len(stream)
+        exponent_keys.add(codec._codebook_key(name, original, stream_id))
+        groups.append(
+            codec._compress_cluster_stream(
+                name,
+                original,
+                stream,
+                "exponent",
+                stream_id,
+                is_exponent=True,
+            )
+        )
+    encode_seconds = time.perf_counter() - encode_start
+
+    codebooks = tuple(
+        payload
+        for payload in codec.export_codebooks()
+        if (payload.cluster_id, payload.dtype, int(payload.stream_id))
+        in exponent_keys
+    )
+    codebook_bytes = sum(payload.metadata_bytes for payload in codebooks)
+    compressed_bytes = codebook_bytes + sum(
+        chunk.compressed_bytes for group in groups for chunk in group.chunks
+    )
+    selected_modes = {}
+    for key in exponent_keys:
+        mode = codec._mode_by_key.get(key)
+        if mode is None:
+            continue
+        kind = str(mode["kind"])
+        if kind == "packed_huff0":
+            kind = f"packed_huff0_n{int(mode['ngram_n'])}"
+        selected_modes[kind] = selected_modes.get(kind, 0) + 1
+
+    return pd.DataFrame(
+        [
+            {
+                "method": (
+                    "NeuralZip" if enable_packed_exponents else "Fast only"
+                ),
+                "layout": layout,
+                "clusters": codec.cluster_count,
+                "raw_bytes": raw_bytes,
+                "compressed_bytes": compressed_bytes,
+                "compressed_pct": (
+                    100.0 * compressed_bytes / raw_bytes if raw_bytes else 0.0
+                ),
+                "codebook_bytes": codebook_bytes,
+                "codebooks": len(codebooks),
+                "selected_modes": selected_modes,
+                "packed_ngram_chunks": sum(
+                    group.packed_ngram_chunks for group in groups
+                ),
+                "shared_huffman_chunks": sum(
+                    group.shared_codebook_refs - group.packed_ngram_chunks
+                    for group in groups
+                ),
+                "raw_chunks": sum(group.raw_chunks for group in groups),
+                "precompute_seconds": precompute_seconds,
+                "encode_seconds": encode_seconds,
+            }
+        ]
+    )
+
+
+def _local_huffman_chunk_cost(chunk, *, compression_threshold):
+    raw_header = 1 + 8 + 8
+    raw_cost = raw_header + len(chunk)
+    if not chunk:
+        return None
+    encoded = huffman.compress(chunk, min_saving_bytes=0)
+    if encoded is None:
+        return None
+    encoded_cost = raw_header + len(encoded.code_lengths) + len(encoded.payload)
+    if encoded_cost >= len(chunk) * float(compression_threshold):
+        return None
+    return {
+        "kind": "huffman-1gram-local",
+        "cost": encoded_cost,
+        "payload_bytes": len(encoded.payload),
+        "metadata_bytes": encoded_cost - len(encoded.payload),
+        "codebook_bytes": len(encoded.code_lengths),
+        "hits": 0,
+        "escapes": 0,
+    }
+
+
+def _local_huff0_chunk_cost(chunk, *, compression_threshold):
+    raw_header = 1 + 8 + 8
+    raw_cost = raw_header + len(chunk)
+    if not chunk:
+        return None
+    try:
+        encoded = huff0.compress(chunk, min_saving_bytes=0, prior_count=0)
+    except ValueError:
+        return None
+    if encoded is None:
+        return None
+    encoded_cost = raw_header + len(encoded.codebook) + len(encoded.payload)
+    if encoded_cost >= len(chunk) * float(compression_threshold):
+        return None
+    return {
+        "kind": "huff0-1gram-local",
+        "cost": encoded_cost,
+        "payload_bytes": len(encoded.payload),
+        "metadata_bytes": encoded_cost - len(encoded.payload),
+        "codebook_bytes": len(encoded.codebook),
+        "hits": 0,
+        "escapes": 0,
+    }
+
+
+def _local_ngram_huff0_chunk_cost(chunk, *, n, top_k, compression_threshold):
+    n = int(n)
+    vocab = _topk_ngram_vocab(chunk, n, top_k)
+    if len(vocab) < 2:
+        return None
+    tokens, escape_bytes, tail, hits, escapes = _tokenize_ngrams(chunk, n, vocab)
+    if not tokens or len(set(tokens)) < 2:
+        return None
+    try:
+        encoded = huff0.compress(tokens, min_saving_bytes=0, prior_count=0)
+    except ValueError:
+        return None
+    if encoded is None:
+        return None
+
+    header_bytes = 1 + 8 + 8 + 8 + 8 + 1
+    vocab_bytes = _vocab_metadata_bytes(vocab, n)
+    codebook_bytes = len(encoded.codebook) + vocab_bytes
+    encoded_cost = (
+        header_bytes
+        + codebook_bytes
+        + len(encoded.payload)
+        + len(escape_bytes)
+        + len(tail)
+    )
+    if encoded_cost >= len(chunk) * float(compression_threshold):
+        return None
+
+    payload_bytes = len(encoded.payload) + len(escape_bytes) + len(tail)
+    return {
+        "kind": f"huff0-ngram-{n}-local",
+        "cost": encoded_cost,
+        "payload_bytes": payload_bytes,
+        "metadata_bytes": encoded_cost - payload_bytes,
+        "codebook_bytes": codebook_bytes,
+        "hits": hits,
+        "escapes": escapes,
+    }
+
+
+def selected_local_ngram_huff0_cost(
+    model,
+    *,
+    n_values=(2, 3, 4),
+    layout="transpose2d",
+    chunk_size=256 << 10,
+    top_k=254,
+    compression_threshold=1.0,
+    base_codec="huff0",
+):
+    base_codec = str(base_codec).lower().replace("_", "-")
+    if base_codec not in {"huff0", "huffman"}:
+        raise ValueError("base_codec must be 'huff0' or 'huffman'.")
+    encode_start = time.perf_counter()
+    raw_header = 1 + 8 + 8
+    max_block = huff0.max_block_size()
+    if base_codec == "huffman" and n_values:
+        effective_chunk = min(
+            int(chunk_size), int(max_block) * min(int(n) for n in n_values)
+        )
+    else:
+        effective_chunk = min(int(chunk_size), int(max_block))
+
+    raw_bytes = 0
+    total_bytes = 0
+    payload_bytes = 0
+    metadata_bytes = 0
+    codebook_bytes = 0
+    selected = {}
+    chunks = 0
+    encoded_chunks = 0
+    raw_chunks = 0
+    ngram_hits = 0
+    ngram_escapes = 0
+
+    for _, tensor in named_floating_tensors(model):
+        stream = zipnn_exponent_stream(tensor, layout=layout)
+        raw_bytes += len(stream)
+        for chunk in _iter_chunks(stream, effective_chunk):
+            if not chunk:
+                continue
+            chunks += 1
+            raw_cost = raw_header + len(chunk)
+            candidates = [
+                {
+                    "kind": "raw",
+                    "cost": raw_cost,
+                    "payload_bytes": len(chunk),
+                    "metadata_bytes": raw_header,
+                    "codebook_bytes": 0,
+                    "hits": 0,
+                    "escapes": 0,
+                }
+            ]
+
+            if base_codec == "huffman":
+                local_base = _local_huffman_chunk_cost(
+                    chunk,
+                    compression_threshold=compression_threshold,
+                )
+            else:
+                local_base = _local_huff0_chunk_cost(
+                    chunk,
+                    compression_threshold=compression_threshold,
+                )
+            if local_base is not None:
+                candidates.append(local_base)
+
+            for n in n_values:
+                ngram = _local_ngram_huff0_chunk_cost(
+                    chunk,
+                    n=int(n),
+                    top_k=int(top_k),
+                    compression_threshold=compression_threshold,
+                )
+                if ngram is not None:
+                    candidates.append(ngram)
+
+            best = min(candidates, key=lambda candidate: int(candidate["cost"]))
+            total_bytes += int(best["cost"])
+            payload_bytes += int(best["payload_bytes"])
+            metadata_bytes += int(best["metadata_bytes"])
+            codebook_bytes += int(best["codebook_bytes"])
+            ngram_hits += int(best["hits"])
+            ngram_escapes += int(best["escapes"])
+            selected[best["kind"]] = selected.get(best["kind"], 0) + 1
+            if best["kind"] == "raw":
+                raw_chunks += 1
+            else:
+                encoded_chunks += 1
+
+    encode_seconds = time.perf_counter() - encode_start
+    return pd.DataFrame(
+        [
+            {
+                "method": (
+                    "Ratio only" if base_codec == "huffman" else "local-ngram-huff0"
+                ),
+                "layout": layout,
+                "base_codec": base_codec,
+                "clusters": 0,
+                "raw_bytes": raw_bytes,
+                "payload_bytes": payload_bytes,
+                "metadata_bytes": metadata_bytes,
+                "codebook_bytes": codebook_bytes,
+                "compressed_bytes": total_bytes,
+                "compressed_pct": 100 * total_bytes / raw_bytes if raw_bytes else 0.0,
+                "selected_modes": selected,
+                "chunks": chunks,
+                "encoded_chunks": encoded_chunks,
+                "raw_chunks": raw_chunks,
+                "ngram_hits": ngram_hits,
+                "ngram_escapes": ngram_escapes,
+                "ngram_hit_rate": (
+                    ngram_hits / (ngram_hits + ngram_escapes)
+                    if (ngram_hits + ngram_escapes)
+                    else 0.0
+                ),
+                "top_k": int(top_k),
+                "precompute_seconds": 0.0,
+                "encode_seconds": encode_seconds,
+                "cold_encode_seconds": encode_seconds,
+            }
+        ]
+    )
+
+
+def selected_ngram_huff0_cost(
+    model,
+    *,
+    cluster_js_thresholds=(0.05,),
+    n_values=(2, 3, 4),
+    layout="transpose2d",
+    chunk_size=256 << 10,
+    top_k=254,
+    max_sample_bytes=8 << 20,
+    compression_threshold=1.0,
+):
+    rows = []
+    for threshold in cluster_js_thresholds:
+        precompute_start = time.perf_counter()
+        streams_by_cluster, _, raw_bytes = _clustered_zipnn_exponent_streams(
+            model,
+            cluster_js_threshold=threshold,
+            layout=layout,
+        )
+        modes_by_cluster = {}
+        for cluster_id, streams in streams_by_cluster.items():
+            modes_by_cluster[cluster_id] = _select_clustered_huff0_mode(
+                streams,
+                n_values=n_values,
+                top_k=top_k,
+                chunk_size=chunk_size,
+                max_sample_bytes=max_sample_bytes,
+                compression_threshold=compression_threshold,
+            )
+        precompute_seconds = time.perf_counter() - precompute_start
+
+        encode_start = time.perf_counter()
+        total_bytes = 0
+        payload_bytes = 0
+        metadata_bytes = 0
+        codebook_bytes = 0
+        selected = {}
+        encoded_chunks = 0
+        raw_chunks = 0
+        ngram_hits = 0
+        ngram_escapes = 0
+
+        for cluster_id, streams in streams_by_cluster.items():
+            mode = modes_by_cluster[cluster_id]
+            best = _encode_huff0_mode(
+                streams,
+                mode,
+                chunk_size=chunk_size,
+                compression_threshold=compression_threshold,
+            )
+            total_bytes += int(best["cost"])
+            payload_bytes += int(best["payload_bytes"])
+            metadata_bytes += int(best["metadata_bytes"])
+            codebook_bytes += int(best["codebook_bytes"])
+            encoded_chunks += int(best["compressed_chunks"])
+            raw_chunks += int(best["raw_chunks"])
+            ngram_hits += int(best["hits"])
+            ngram_escapes += int(best["escapes"])
+            selected[mode["kind"]] = selected.get(mode["kind"], 0) + 1
+        encode_seconds = time.perf_counter() - encode_start
+
+        rows.append(
+            {
+                "method": "ngram-huff0",
+                "cluster_js_threshold": float(threshold),
+                "layout": layout,
+                "clusters": len(streams_by_cluster),
+                "raw_bytes": raw_bytes,
+                "payload_bytes": payload_bytes,
+                "metadata_bytes": metadata_bytes,
+                "codebook_bytes": codebook_bytes,
+                "compressed_bytes": total_bytes,
+                "compressed_pct": 100 * total_bytes / raw_bytes if raw_bytes else 0.0,
+                "selected_modes": selected,
+                "encoded_chunks": encoded_chunks,
+                "raw_chunks": raw_chunks,
+                "ngram_hits": ngram_hits,
+                "ngram_escapes": ngram_escapes,
+                "ngram_hit_rate": (
+                    ngram_hits / (ngram_hits + ngram_escapes)
+                    if (ngram_hits + ngram_escapes)
+                    else 0.0
+                ),
+                "top_k": int(top_k),
+                "max_sample_bytes": int(max_sample_bytes),
+                "precompute_seconds": precompute_seconds,
+                "encode_seconds": encode_seconds,
+                "cold_encode_seconds": precompute_seconds + encode_seconds,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def neuralzip_component_ablation(
+    model,
+    *,
+    repeats=5,
+    cluster_js_threshold=0.05,
+    n_values=(2, 3, 4),
+    layout="original",
+    chunk_size=256 << 10,
+    top_k=254,
+    max_sample_bytes=8 << 20,
+    compression_threshold=0.95,
+    packed_time_budget_ratio=0.10,
+):
+    if int(repeats) < 1:
+        raise ValueError("repeats must be at least 1.")
+
+    runs = []
+    for repeat in range(1, int(repeats) + 1):
+        zipnn = zipnn_exponent_huffman_cost(
+            model,
+            layout=layout,
+            chunk_size=chunk_size,
+            compression_threshold=compression_threshold,
+        ).iloc[0].to_dict()
+        fast_only = neuralzip_exponent_cost(
+            model,
+            enable_packed_exponents=False,
+            cluster_js_threshold=cluster_js_threshold,
+            n_values=n_values,
+            layout=layout,
+            chunk_size=chunk_size,
+            top_k=top_k,
+            max_sample_bytes=max_sample_bytes,
+            compression_threshold=compression_threshold,
+            packed_time_budget_ratio=packed_time_budget_ratio,
+        ).iloc[0].to_dict()
+        ratio_only = selected_local_ngram_huff0_cost(
+            model,
+            n_values=n_values,
+            layout=layout,
+            chunk_size=chunk_size,
+            top_k=top_k,
+            compression_threshold=compression_threshold,
+            base_codec="huffman",
+        ).iloc[0].to_dict()
+        neuralzip = neuralzip_exponent_cost(
+            model,
+            enable_packed_exponents=True,
+            cluster_js_threshold=cluster_js_threshold,
+            n_values=n_values,
+            layout=layout,
+            chunk_size=chunk_size,
+            top_k=top_k,
+            max_sample_bytes=max_sample_bytes,
+            compression_threshold=compression_threshold,
+            packed_time_budget_ratio=packed_time_budget_ratio,
+        ).iloc[0].to_dict()
+
+        for variant, row in (
+            ("ZipNN", zipnn),
+            ("Fast only", fast_only),
+            ("Ratio only", ratio_only),
+            ("NeuralZip", neuralzip),
+        ):
+            runs.append(
+                {
+                    "variant": variant,
+                    "repeat": repeat,
+                    "raw_bytes": int(row["raw_bytes"]),
+                    "compressed_bytes": int(row["compressed_bytes"]),
+                    "compression_pct": float(row["compressed_pct"]),
+                    "compression_seconds": float(row["encode_seconds"]),
+                    "precompute_seconds": float(
+                        row.get("precompute_seconds", 0.0)
+                    ),
+                    "clusters": int(row.get("clusters", 0)),
+                    "codebook_bytes": int(row.get("codebook_bytes", 0)),
+                    "selected_modes": row.get("selected_modes", {}),
+                    "packed_ngram_chunks": int(
+                        row.get("packed_ngram_chunks", 0)
+                    ),
+                }
+            )
+
+    runs = pd.DataFrame(runs)
+    summaries = []
+    for variant in ("ZipNN", "Fast only", "Ratio only", "NeuralZip"):
+        group = runs[runs["variant"] == variant]
+        first = group.iloc[0]
+        summaries.append(
+            {
+                "variant": variant,
+                "repeats": len(group),
+                "raw_bytes": int(first["raw_bytes"]),
+                "compressed_bytes": int(first["compressed_bytes"]),
+                "compression_pct": float(group["compression_pct"].median()),
+                "compression_seconds": float(
+                    group["compression_seconds"].median()
+                ),
+                "precompute_seconds": float(
+                    group["precompute_seconds"].median()
+                ),
+                "clusters": int(first["clusters"]),
+                "codebook_bytes": int(first["codebook_bytes"]),
+                "packed_ngram_chunks": int(first["packed_ngram_chunks"]),
+                "selected_modes": first["selected_modes"],
+            }
+        )
+    return runs, pd.DataFrame(summaries)
+
+
+def selected_turborc_range_cost(
+    model,
+    *,
+    cluster_js_thresholds=(0.2, 0.1, 0.05, 0.03, 0.02),
+    layout="transpose2d",
+    chunk_size=256 << 10,
+    method="rccs",
+):
+    rows = []
+    method = turborc._normalize_method(method)
+    method_label = f"turborc-{method}"
+    chunk_header_bytes = 1 + 8 + 8
+    codec_header_bytes = 8 + len(method_label.encode("utf-8")) + 8 + len(layout)
+
+    for threshold in cluster_js_thresholds:
+        streams_by_cluster, _, raw_bytes = _clustered_zipnn_exponent_streams(
+            model,
+            cluster_js_threshold=threshold,
+            layout=layout,
+        )
+        start = time.perf_counter()
+        total_bytes = codec_header_bytes
+        payload_bytes = 0
+        chunks = 0
+        compressed_chunks = 0
+        raw_chunks = 0
+
+        for streams in streams_by_cluster.values():
+            for stream in streams:
+                for chunk in _iter_chunks(stream, chunk_size):
+                    chunks += 1
+                    raw_cost = chunk_header_bytes + len(chunk)
+                    encoded = turborc.compress(
+                        chunk,
+                        method=method,
+                        min_saving_bytes=0,
+                    )
+                    if encoded is None:
+                        total_bytes += raw_cost
+                        payload_bytes += len(chunk)
+                        raw_chunks += 1
+                        continue
+
+                    encoded_cost = chunk_header_bytes + len(encoded.payload)
+                    if encoded_cost >= raw_cost:
+                        total_bytes += raw_cost
+                        payload_bytes += len(chunk)
+                        raw_chunks += 1
+                        continue
+
+                    total_bytes += encoded_cost
+                    payload_bytes += len(encoded.payload)
+                    compressed_chunks += 1
+
+        encode_seconds = time.perf_counter() - start
+        metadata_bytes = total_bytes - payload_bytes
+        rows.append(
+            {
+                "method": method_label,
+                "cluster_js_threshold": float(threshold),
+                "layout": layout,
+                "clusters": len(streams_by_cluster),
+                "raw_bytes": raw_bytes,
+                "payload_bytes": payload_bytes,
+                "metadata_bytes": metadata_bytes,
+                "codebook_bytes": codec_header_bytes,
+                "compressed_bytes": total_bytes,
+                "compression_ratio": total_bytes / raw_bytes if raw_bytes else 0.0,
+                "compressed_pct": 100 * total_bytes / raw_bytes if raw_bytes else 0.0,
+                "chunks": chunks,
+                "compressed_chunks": compressed_chunks,
+                "raw_chunks": raw_chunks,
+                "encoded_tensors": compressed_chunks,
+                "selected_modes": {
+                    method_label: compressed_chunks,
+                    "raw": raw_chunks,
+                },
+                "encode_seconds": encode_seconds,
             }
         )
     return pd.DataFrame(rows)

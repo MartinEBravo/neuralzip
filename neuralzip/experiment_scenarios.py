@@ -15,17 +15,12 @@ from .zipnn_codec import ZipNNCodec
 
 
 DEFAULT_METHODS = (
-    ("Global Huffman", "global-huffman"),
     ("ZipNN local", "zipnn-local"),
-    ("NeuralZip-Fast", "neuralzip-fast"),
-    ("NeuralZip-Ratio", "neuralzip-ratio"),
+    ("NeuralZip", "neuralzip"),
 )
 
 
-FAST_METHODS = (
-    ("ZipNN local", "zipnn-local"),
-    ("NeuralZip-Fast", "neuralzip-fast"),
-)
+FULL_CHECKPOINT_METHODS = DEFAULT_METHODS
 
 
 @dataclass
@@ -385,6 +380,276 @@ def run_hf_model_suite_experiment(
     return df
 
 
+def _resolve_torchvision_weights(models_module, constructor_name, weights):
+    if weights is None:
+        return None, "none"
+    if str(weights).upper() == "DEFAULT":
+        try:
+            weights_enum = models_module.get_model_weights(constructor_name)
+            return weights_enum.DEFAULT, "DEFAULT"
+        except Exception:
+            return "DEFAULT", "DEFAULT"
+    return weights, str(weights)
+
+
+def _load_torchvision_mapping(spec, *, dtype):
+    from torchvision import models
+
+    constructor_name = _model_spec_value(spec, "constructor")
+    if not constructor_name:
+        raise ValueError("torchvision specs require a constructor name.")
+    builder = getattr(models, constructor_name)
+    weights, weights_label = _resolve_torchvision_weights(
+        models,
+        constructor_name,
+        _model_spec_value(spec, "weights", "DEFAULT"),
+    )
+
+    try:
+        module = builder(weights=weights)
+    except TypeError:
+        module = builder(pretrained=weights is not None)
+    tensor_dtype = _normalise_dtype(dtype)
+    if tensor_dtype == "auto":
+        tensor_dtype = None
+    tensors = _tensor_mapping_from_module(module, dtype=tensor_dtype)
+    return tensors, {
+        "load_backend": "torchvision",
+        "source": f"torchvision.models.{constructor_name}",
+        "weights": weights_label,
+    }
+
+
+def _load_diffusers_unet_mapping(
+    spec,
+    *,
+    dtype,
+    local_files_only,
+):
+    loader_name = _model_spec_value(spec, "loader", "UNet2DConditionModel")
+    if loader_name == "UNet2DConditionModel":
+        from diffusers import UNet2DConditionModel as loader_cls
+    elif loader_name == "UNet2DModel":
+        from diffusers import UNet2DModel as loader_cls
+    else:
+        raise ValueError(
+            "Unsupported diffusers UNet loader "
+            f"{loader_name!r}. Expected UNet2DConditionModel or UNet2DModel."
+        )
+
+    model_id = _model_spec_value(spec, "model_id")
+    if not model_id:
+        raise ValueError("diffusers specs require a model_id.")
+    load_kwargs = dict(_model_spec_value(spec, "load_kwargs", {}) or {})
+    subfolder = _model_spec_value(spec, "subfolder", None)
+    if subfolder:
+        load_kwargs["subfolder"] = subfolder
+    load_kwargs["local_files_only"] = bool(local_files_only)
+
+    tensor_dtype = _normalise_dtype(dtype)
+    if tensor_dtype != "auto" and tensor_dtype is not None:
+        load_kwargs.setdefault("torch_dtype", tensor_dtype)
+    load_kwargs.setdefault("low_cpu_mem_usage", True)
+
+    module = loader_cls.from_pretrained(model_id, **load_kwargs)
+    if tensor_dtype == "auto":
+        tensor_dtype = None
+    tensors = _tensor_mapping_from_module(module, dtype=tensor_dtype)
+    source = model_id if not subfolder else f"{model_id}/{subfolder}"
+    return tensors, {
+        "load_backend": f"diffusers:{loader_name}",
+        "source": source,
+        "weights": "pretrained",
+    }
+
+
+def _load_vision_diffusion_mapping(
+    spec,
+    *,
+    dtype,
+    local_files_only,
+):
+    backend = str(_model_spec_value(spec, "backend", "")).lower()
+    if backend == "torchvision":
+        return _load_torchvision_mapping(spec, dtype=dtype)
+    if backend == "diffusers-unet":
+        return _load_diffusers_unet_mapping(
+            spec,
+            dtype=dtype,
+            local_files_only=local_files_only,
+        )
+    raise ValueError(f"Unsupported vision/diffusion backend {backend!r}.")
+
+
+def _load_failure_row(spec, *, experiment, error, dtype, fallback_for=None):
+    model_name = _model_spec_value(spec, "name")
+    return {
+        "experiment": experiment,
+        "model": model_name,
+        "model_name": model_name,
+        "model_id": _model_spec_value(spec, "model_id", None),
+        "family": _model_spec_value(spec, "family", None),
+        "backend": _model_spec_value(spec, "backend", None),
+        "source": _model_spec_value(spec, "model_id", None)
+        or _model_spec_value(spec, "constructor", None),
+        "weights": _model_spec_value(spec, "weights", None),
+        "fallback_for": fallback_for,
+        "dtype": str(dtype).replace("torch.", ""),
+        "status": "load-failed",
+        "error": f"{type(error).__name__}: {error}",
+        "load_backend": None,
+    }
+
+
+def _model_methods_completed(existing_rows, model_name, methods):
+    completed = {
+        str(row.get("compressor"))
+        for row in existing_rows
+        if row.get("model_name") == model_name
+        and row.get("status") == "ok"
+        and row.get("compressor") is not None
+    }
+    return all(name in completed for name, _ in methods)
+
+
+def run_vision_diffusion_experiment(
+    output_dir,
+    *,
+    model_suite,
+    methods=DEFAULT_METHODS,
+    dtype=torch.bfloat16,
+    local_files_only=False,
+    resume=True,
+):
+    output_dir = _ensure_dir(output_dir)
+    result_path = output_dir / "vision_diffusion_results.csv"
+    experiment = "vision-diffusion"
+    rows = []
+    if resume and result_path.exists():
+        rows = pd.read_csv(result_path).to_dict(orient="records")
+
+    for spec in model_suite:
+        model_name = _model_spec_value(spec, "name")
+        if resume and _model_methods_completed(rows, model_name, methods):
+            continue
+
+        candidate_specs = [spec]
+        fallback = _model_spec_value(spec, "fallback", None)
+        if fallback:
+            candidate_specs.append(fallback)
+
+        loaded = False
+        for attempt_index, candidate in enumerate(candidate_specs):
+            fallback_for = _model_spec_value(candidate, "fallback_for", None)
+            candidate_name = _model_spec_value(candidate, "name")
+            if resume and _model_methods_completed(rows, candidate_name, methods):
+                loaded = True
+                break
+
+            load_start = time.perf_counter()
+            try:
+                candidate_dtype = _model_spec_value(
+                    candidate,
+                    "dtype",
+                    _model_spec_value(candidate, "default_dtype", dtype),
+                )
+                tensors, load_metadata = _load_vision_diffusion_mapping(
+                    candidate,
+                    dtype=candidate_dtype,
+                    local_files_only=local_files_only,
+                )
+            except Exception as error:
+                if attempt_index == 0:
+                    rows.append(
+                        _load_failure_row(
+                            candidate,
+                            experiment=experiment,
+                            error=error,
+                            dtype=_model_spec_value(
+                                candidate,
+                                "dtype",
+                                _model_spec_value(candidate, "default_dtype", dtype),
+                            ),
+                            fallback_for=fallback_for,
+                        )
+                    )
+                    pd.DataFrame(rows).to_csv(result_path, index=False)
+                if attempt_index + 1 < len(candidate_specs):
+                    continue
+                rows.append(
+                    _load_failure_row(
+                        candidate,
+                        experiment=experiment,
+                        error=error,
+                        dtype=_model_spec_value(
+                            candidate,
+                            "dtype",
+                            _model_spec_value(candidate, "default_dtype", dtype),
+                        ),
+                        fallback_for=fallback_for,
+                    )
+                )
+                pd.DataFrame(rows).to_csv(result_path, index=False)
+                break
+
+            load_seconds = time.perf_counter() - load_start
+            if not tensors:
+                rows.append(
+                    {
+                        "experiment": experiment,
+                        "model": candidate_name,
+                        "model_name": candidate_name,
+                        "model_id": _model_spec_value(candidate, "model_id", None),
+                        "family": _model_spec_value(candidate, "family", None),
+                        "backend": _model_spec_value(candidate, "backend", None),
+                        "source": load_metadata.get("source"),
+                        "weights": load_metadata.get("weights"),
+                        "fallback_for": fallback_for,
+                        "dtype": str(candidate_dtype).replace("torch.", ""),
+                        "status": "no-floating-tensors",
+                        "error": "Loaded model exposes no floating-point tensors.",
+                        "load_backend": load_metadata.get("load_backend"),
+                    }
+                )
+                pd.DataFrame(rows).to_csv(result_path, index=False)
+                break
+
+            parameter_count = sum(int(tensor.numel()) for tensor in tensors.values())
+            floating_raw_bytes = sum(
+                int(tensor.numel() * tensor.element_size())
+                for tensor in tensors.values()
+            )
+            for row in _compress_mapping(candidate_name, tensors, methods=methods):
+                row["experiment"] = experiment
+                row["model_name"] = candidate_name
+                row["model_id"] = _model_spec_value(candidate, "model_id", None)
+                row["family"] = _model_spec_value(candidate, "family", None)
+                row["backend"] = _model_spec_value(candidate, "backend", None)
+                row["source"] = load_metadata.get("source")
+                row["weights"] = load_metadata.get("weights")
+                row["fallback_for"] = fallback_for
+                row["dtype"] = str(candidate_dtype).replace("torch.", "")
+                row["tensor_count"] = len(tensors)
+                row["parameter_count"] = parameter_count
+                row["floating_raw_bytes"] = floating_raw_bytes
+                row["load_seconds"] = load_seconds
+                row["load_backend"] = load_metadata.get("load_backend")
+                rows.append(row)
+
+            pd.DataFrame(rows).to_csv(result_path, index=False)
+            del tensors
+            gc.collect()
+            loaded = True
+            break
+
+        if not loaded:
+            gc.collect()
+
+    df = pd.DataFrame(rows)
+    df.to_csv(result_path, index=False)
+    return df
+
+
 def run_moe_experiment(
     output_dir,
     *,
@@ -490,7 +755,7 @@ def run_lossy_lossless_experiment(
         )
 
     representations = (
-        ("fp32-original", torch.float32, FAST_METHODS),
+        ("fp32-original", torch.float32, FULL_CHECKPOINT_METHODS),
         ("bf16-rounded", torch.bfloat16, methods),
     )
 
@@ -1067,7 +1332,7 @@ def compress_federated_directory(
     checkpoint_dir,
     output_dir,
     *,
-    methods=FAST_METHODS,
+    methods=FULL_CHECKPOINT_METHODS,
     dtype=torch.bfloat16,
 ):
     checkpoint_dir = Path(checkpoint_dir)
@@ -1103,11 +1368,10 @@ def compress_federated_directory_amortized(
     *,
     dtype=torch.bfloat16,
     chunk_size=256 << 10,
-    compression_threshold=0.95,
+    compression_threshold=1.0,
     clustering="js-distance",
     cluster_js_threshold=0.05,
     max_codebook_sample_bytes=8 << 20,
-    test_cluster_compressibility=True,
     calibration_rounds=1,
 ):
     checkpoint_dir = Path(checkpoint_dir)
@@ -1143,7 +1407,6 @@ def compress_federated_directory_amortized(
         clustering=clustering,
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
-        test_cluster_compressibility=test_cluster_compressibility,
     )
     calibration_named = []
     for path in calibration_paths:
@@ -1186,8 +1449,8 @@ def compress_federated_directory_amortized(
                 "checkpoint": path.name,
                 "round": int(checkpoint["round"]),
                 "client": int(checkpoint["client"]),
-                "compressor": "NeuralZip-Fast amortized",
-                "method": "neuralzip-fast-amortized",
+                "compressor": "NeuralZip amortized",
+                "method": "neuralzip-amortized",
                 "scope": "full checkpoint",
                 "status": "ok",
                 "raw_bytes": raw_bytes,
@@ -1334,11 +1597,10 @@ def run_federated_codec_protocol(
     dtype=torch.bfloat16,
     seed=2026,
     chunk_size=256 << 10,
-    compression_threshold=0.95,
+    compression_threshold=1.0,
     clustering="js-distance",
     cluster_js_threshold=0.05,
     max_codebook_sample_bytes=8 << 20,
-    test_cluster_compressibility=True,
 ):
     """Benchmark FedZipNN vs FedNeuralZip as communication protocols.
 
@@ -1399,7 +1661,6 @@ def run_federated_codec_protocol(
         clustering=clustering,
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
-        test_cluster_compressibility=test_cluster_compressibility,
     )
     start = time.perf_counter()
     neuralzip_codec.precompute_codebooks(list(initial_server.items()))
@@ -1610,11 +1871,10 @@ def run_federated_codec_protocol_online(
     download=True,
     device=None,
     chunk_size=256 << 10,
-    compression_threshold=0.95,
+    compression_threshold=1.0,
     clustering="js-distance",
     cluster_js_threshold=0.05,
     max_codebook_sample_bytes=8 << 20,
-    test_cluster_compressibility=True,
     num_workers=0,
     progress_every=10,
 ):
@@ -1737,7 +1997,6 @@ def run_federated_codec_protocol_online(
         clustering=clustering,
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
-        test_cluster_compressibility=test_cluster_compressibility,
     )
     start = time.perf_counter()
     neuralzip_codec.precompute_codebooks(list(initial_tensors.items()))

@@ -4,8 +4,15 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from .archive import (
+    VERSION as ARCHIVE_VERSION,
+    serialized_codebooks_size,
+    serialized_group_size,
+    serialized_size,
+    serialized_tensor_size,
+)
 from .neuralzip_codec import NeuralZipCodec
-from .zipnn_codec import ZipNNCodec, compression_ratio
+from .zipnn_codec import ZipNNCodec
 
 if TYPE_CHECKING:
     from .model import HFModel
@@ -16,17 +23,12 @@ def _normalize_method(method):
     aliases = {
         "zipnn": "zipnn_local",
         "zipnn_local": "zipnn_local",
-        "global_huffman_zipnn": "zipnn_local",
-        "global_huffman": "global_huffman",
-        "global_huffman_baseline": "global_huffman",
         "zipnn_original": "zipnn_src",
         "zipnn_src": "zipnn_src",
         "zipnn_source": "zipnn_src",
         "official_zipnn": "zipnn_src",
-        "neuralzip": "neuralzip_fast",
-        "neural_zip": "neuralzip_fast",
-        "neuralzip_fast": "neuralzip_fast",
-        "neuralzip_ratio": "neuralzip_ratio",
+        "neuralzip": "neuralzip",
+        "neural_zip": "neuralzip",
     }
     if method_key not in aliases:
         choices = ", ".join(sorted(set(aliases.values())))
@@ -90,18 +92,27 @@ def _stream_summaries(tensor_payloads):
                     "compressed_bytes": 0,
                     "local_huffman_chunks": 0,
                     "shared_huffman_chunks": 0,
+                    "packed_ngram_chunks": 0,
                     "raw_chunks": 0,
                     "zero_chunks": 0,
+                    "ngram_hits": 0,
+                    "ngram_escapes": 0,
                 },
             )
+            serialized_group_bytes = serialized_group_size(group)
             entry["raw_bytes"] += raw_bytes
             entry["payload_bytes"] += group.payload_bytes
-            entry["metadata_bytes"] += group.metadata_bytes
-            entry["compressed_bytes"] += group.compressed_bytes
+            entry["metadata_bytes"] += serialized_group_bytes - group.payload_bytes
+            entry["compressed_bytes"] += serialized_group_bytes
             entry["local_huffman_chunks"] += group.local_huffman_chunks
-            entry["shared_huffman_chunks"] += group.shared_codebook_refs
+            entry["shared_huffman_chunks"] += (
+                group.shared_codebook_refs - group.packed_ngram_chunks
+            )
+            entry["packed_ngram_chunks"] += group.packed_ngram_chunks
             entry["raw_chunks"] += group.raw_chunks
             entry["zero_chunks"] += group.zero_chunks
+            entry["ngram_hits"] += group.ngram_hits
+            entry["ngram_escapes"] += group.ngram_escapes
 
     for entry in streams.values():
         raw_bytes = entry["raw_bytes"]
@@ -121,37 +132,39 @@ class Compressor:
         keep_payloads=False,
         min_saving_bytes=0,
         chunk_size=256 << 10,
-        compression_threshold=0.95,
+        compression_threshold=None,
         zipnn_method="HUFFMAN",
         cluster_map=None,
         clustering="js-distance",
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
-        test_cluster_compressibility=True,
+        ngram_values=(2, 3, 4),
+        top_k=254,
+        exponent_layout="original",
+        packed_time_budget_ratio=0.10,
     ):
         self.method = _normalize_method(method)
         self.verify = bool(verify)
         self.keep_payloads = bool(keep_payloads)
         self.zipnn_method = str(zipnn_method).upper()
         self.cluster_js_threshold = float(cluster_js_threshold)
-        codec_cls = (
-            NeuralZipCodec
-            if self.method == "neuralzip_fast"
-            else ZipNNCodec
-        )
+        if compression_threshold is None:
+            compression_threshold = 0.95
+        codec_cls = NeuralZipCodec if self.method == "neuralzip" else ZipNNCodec
         codec_kwargs = {
             "min_saving_bytes": min_saving_bytes,
             "chunk_size": chunk_size,
             "compression_threshold": compression_threshold,
         }
-        if self.method == "neuralzip_fast":
+        if self.method == "neuralzip":
             codec_kwargs["cluster_map"] = cluster_map
             codec_kwargs["clustering"] = clustering
             codec_kwargs["cluster_js_threshold"] = cluster_js_threshold
             codec_kwargs["max_codebook_sample_bytes"] = max_codebook_sample_bytes
-            codec_kwargs["test_cluster_compressibility"] = (
-                test_cluster_compressibility
-            )
+            codec_kwargs["ngram_values"] = ngram_values
+            codec_kwargs["top_k"] = top_k
+            codec_kwargs["exponent_layout"] = exponent_layout
+            codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
         self.codec = codec_cls(**codec_kwargs)
 
     def compress(self, model: "HFModel"):
@@ -161,16 +174,14 @@ class Compressor:
                 method_name="zipnn-local",
                 method_detail="dtype-byte-reorder-huffman",
             )
-        if self.method == "neuralzip_fast":
+        if self.method == "neuralzip":
             return self._codec_compression(
                 model,
-                method_name="neuralzip-fast",
-                method_detail="dtype-byte-reorder-shared-huffman",
+                method_name="neuralzip",
+                method_detail=(
+                    "js-clustered-shared-huffman-time-budgeted-packed-exponents"
+                ),
             )
-        if self.method == "neuralzip_ratio":
-            return self._neuralzip_ratio(model)
-        if self.method == "global_huffman":
-            return self._global_huffman(model)
         if self.method == "zipnn_src":
             return self._zipnn_src(model)
         raise AssertionError(f"Unhandled compression method {self.method!r}.")
@@ -193,6 +204,21 @@ class Compressor:
                 )
             tensors[payload.name] = self.codec.decompress_tensor(payload)
         return tensors
+
+    @staticmethod
+    def save(compressed_model, path):
+        from .archive import dump
+
+        dump(compressed_model, path)
+
+    @staticmethod
+    def load(path):
+        from .archive import load
+
+        return load(path)
+
+    def decompress_file(self, path):
+        return self.decompress(self.load(path))
 
     def compress_delta(self, base_model, target_model):
         base_tensors = dict(_model_parameters(base_model))
@@ -255,7 +281,7 @@ class Compressor:
                 "payload_bytes": compressed.payload_bytes,
                 "metadata_bytes": compressed_bytes - compressed.payload_bytes,
                 "compressed_bytes": compressed_bytes,
-                "compression_ratio": compression_ratio(compressed),
+                "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
                 "huffman_chunks": compressed.huffman_chunks,
                 "raw_chunks": compressed.raw_chunks,
                 "zero_chunks": compressed.zero_chunks,
@@ -322,6 +348,9 @@ class Compressor:
         total_shared_codebook_defs = 0
         total_shared_codebook_refs = 0
         total_local_huffman_chunks = 0
+        total_packed_ngram_chunks = 0
+        total_ngram_hits = 0
+        total_ngram_escapes = 0
         precompute_seconds = 0.0
         codebook_metadata_bytes = 0
         codebooks = ()
@@ -344,7 +373,7 @@ class Compressor:
             self.codec.precompute_codebooks(parameters)
             precompute_seconds = time.perf_counter() - start
             codebooks = self.codec.export_codebooks()
-            codebook_metadata_bytes = self.codec.codebook_metadata_bytes()
+            codebook_metadata_bytes = serialized_codebooks_size(codebooks)
             total_metadata_bytes += codebook_metadata_bytes
             total_compressed_bytes += codebook_metadata_bytes
             total_shared_codebook_defs += len(codebooks)
@@ -360,7 +389,7 @@ class Compressor:
             compressed = self.codec.compress_tensor(name, parameter)
             encode_seconds = time.perf_counter() - start
 
-            compressed_bytes = compressed.compressed_bytes
+            compressed_bytes = serialized_tensor_size(compressed)
             compressed_payloads.append(compressed)
             total_compressed_bytes += compressed_bytes
             total_payload_bytes += compressed.payload_bytes
@@ -376,6 +405,11 @@ class Compressor:
             total_local_huffman_chunks += getattr(
                 compressed, "local_huffman_chunks", 0
             )
+            total_packed_ngram_chunks += getattr(
+                compressed, "packed_ngram_chunks", 0
+            )
+            total_ngram_hits += getattr(compressed, "ngram_hits", 0)
+            total_ngram_escapes += getattr(compressed, "ngram_escapes", 0)
             strategy_counts[compressed.strategy] = (
                 strategy_counts.get(compressed.strategy, 0) + 1
             )
@@ -401,7 +435,7 @@ class Compressor:
                 "payload_bytes": compressed.payload_bytes,
                 "metadata_bytes": compressed_bytes - compressed.payload_bytes,
                 "compressed_bytes": compressed_bytes,
-                "compression_ratio": compression_ratio(compressed),
+                "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
                 "huffman_groups": compressed.huffman_groups,
                 "raw_groups": compressed.raw_groups,
                 "zero_groups": compressed.zero_groups,
@@ -413,6 +447,11 @@ class Compressor:
                 "local_huffman_chunks": getattr(
                     compressed, "local_huffman_chunks", 0
                 ),
+                "packed_ngram_chunks": getattr(
+                    compressed, "packed_ngram_chunks", 0
+                ),
+                "ngram_hits": getattr(compressed, "ngram_hits", 0),
+                "ngram_escapes": getattr(compressed, "ngram_escapes", 0),
                 "encode_seconds": encode_seconds,
             }
             if self.verify:
@@ -422,6 +461,12 @@ class Compressor:
                 result["payload"] = compressed
             tensor_results.append(result)
 
+        total_compressed_bytes = serialized_size(
+            method_name,
+            codebooks,
+            compressed_payloads,
+        )
+        total_metadata_bytes = total_compressed_bytes - total_payload_bytes
         model_compression_ratio = (
             total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
         )
@@ -451,16 +496,29 @@ class Compressor:
             "zero_chunks": total_zero_chunks,
             "shared_codebook_defs": total_shared_codebook_defs,
             "shared_codebook_refs": total_shared_codebook_refs,
-            "shared_huffman_chunks": total_shared_codebook_refs,
+            "shared_huffman_chunks": (
+                total_shared_codebook_refs - total_packed_ngram_chunks
+            ),
             "local_huffman_chunks": total_local_huffman_chunks,
+            "packed_ngram_chunks": total_packed_ngram_chunks,
+            "ngram_hits": total_ngram_hits,
+            "ngram_escapes": total_ngram_escapes,
+            "ngram_hit_rate": (
+                total_ngram_hits / (total_ngram_hits + total_ngram_escapes)
+                if total_ngram_hits + total_ngram_escapes
+                else 0.0
+            ),
             "raw_codebook_keys": getattr(self.codec, "raw_codebook_keys", 0),
             "clusters": getattr(self.codec, "cluster_count", 0),
+            "selected_modes": getattr(self.codec, "selected_modes", {}),
+            "selection_stats": getattr(self.codec, "selection_stats", {}),
             "precompute_seconds": precompute_seconds,
             "encode_seconds": total_encode_seconds,
             "cold_encode_seconds": precompute_seconds + total_encode_seconds,
             "decode_seconds": total_decode_seconds if self.verify else None,
             "roundtrip_ok": roundtrip_ok,
             "header": {
+                "archive_version": ARCHIVE_VERSION,
                 "codebooks": codebooks,
                 "chunk_size": getattr(self.codec, "chunk_size", None),
                 "clustering": getattr(self.codec, "clustering", None),
@@ -468,101 +526,12 @@ class Compressor:
                     self.codec, "cluster_js_threshold", None
                 ),
                 "clusters": getattr(self.codec, "cluster_count", 0),
+                "selected_modes": getattr(self.codec, "selected_modes", {}),
+                "selection_stats": getattr(self.codec, "selection_stats", {}),
             },
             "codebooks": codebooks,
             "stream_results": stream_results,
             "tensor_results": tensor_results,
-        }
-
-    def _neuralzip_ratio(self, model: "HFModel"):
-        from .ablations import (
-            selected_ngram_codebook_cost,
-            zipnn_exponent_huffman_cost,
-        )
-
-        start = time.perf_counter()
-        zipnn_exponent = zipnn_exponent_huffman_cost(model, layout="original")
-        baseline_pct = float(zipnn_exponent["compressed_pct"].iloc[0])
-        ratio_table = selected_ngram_codebook_cost(
-            model,
-            cluster_js_thresholds=(self.cluster_js_threshold,),
-            n_values=(2, 3, 4),
-            layout="transpose2d",
-        )
-        elapsed = time.perf_counter() - start
-        row = ratio_table.iloc[0].to_dict()
-        raw_bytes = int(row["raw_bytes"])
-        compressed_bytes = int(row["compressed_bytes"])
-        compressed_pct = float(row["compressed_pct"])
-
-        return {
-            "method": "neuralzip-ratio",
-            "zipnn_method": "exponent-ngram-codebook-selector",
-            "input_format": "torch",
-            "scope": "bf16-exponent-stream",
-            "model_id": getattr(model, "model_name", None),
-            "raw_bytes": raw_bytes,
-            "payload_bytes": compressed_bytes - int(row["codebook_bytes"]),
-            "metadata_bytes": int(row["codebook_bytes"]),
-            "codebook_metadata_bytes": int(row["codebook_bytes"]),
-            "compressed_bytes": compressed_bytes,
-            "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
-            "compressed_pct": compressed_pct,
-            "zipnn_local_exponent_pct": baseline_pct,
-            "gain_pp_vs_zipnn_local": baseline_pct - compressed_pct,
-            "cluster_js_threshold": float(row["cluster_js_threshold"]),
-            "clusters": int(row["clusters"]),
-            "selected_modes": row["selected_modes"],
-            "encoded_tensors": int(row["encoded_tensors"]),
-            "precompute_seconds": elapsed,
-            "encode_seconds": 0.0,
-            "cold_encode_seconds": elapsed,
-            "decode_seconds": None,
-            "roundtrip_ok": None,
-            "ratio_table": ratio_table,
-            "zipnn_exponent_table": zipnn_exponent,
-        }
-
-    def _global_huffman(self, model: "HFModel"):
-        from .ablations import global_exponent_huffman_cost
-
-        start = time.perf_counter()
-        table = global_exponent_huffman_cost(
-            model,
-            layout="original",
-            chunk_size=getattr(self.codec, "chunk_size", 256 << 10),
-            compression_threshold=getattr(self.codec, "compression_threshold", 1.0),
-            prior_count=1,
-        )
-        elapsed = time.perf_counter() - start
-        row = table.iloc[0].to_dict()
-        raw_bytes = int(row["raw_bytes"])
-        compressed_bytes = int(row["compressed_bytes"])
-
-        return {
-            "method": "global-huffman",
-            "zipnn_method": "representative-exponent-huffman",
-            "input_format": "torch",
-            "scope": "exponent-stream",
-            "model_id": getattr(model, "model_name", None),
-            "raw_bytes": raw_bytes,
-            "payload_bytes": int(row["payload_bytes"]),
-            "metadata_bytes": int(row["metadata_bytes"]),
-            "codebook_metadata_bytes": int(row["codebook_bytes"]),
-            "compressed_bytes": compressed_bytes,
-            "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
-            "compressed_pct": float(row["compressed_pct"]),
-            "chunks": int(row["chunks"]),
-            "huffman_chunks": int(row["huffman_chunks"]),
-            "raw_chunks": int(row["raw_chunks"]),
-            "representative_tensor": row["representative_tensor"],
-            "representative_chunk": row["representative_chunk"],
-            "precompute_seconds": elapsed,
-            "encode_seconds": 0.0,
-            "cold_encode_seconds": elapsed,
-            "decode_seconds": None,
-            "roundtrip_ok": None,
-            "global_huffman_table": table,
         }
 
     def _zipnn_src(self, model: "HFModel"):

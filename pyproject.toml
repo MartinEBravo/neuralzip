@@ -19,10 +19,15 @@ diffusion = ["diffusers"]
 experiments = [
     "huggingface-hub",
     "jupyter",
+    "matplotlib",
     "pandas",
+    "pillow",
+    "pyarrow",
     "safetensors",
+    "torchvision",
     "zipnn",
 ]
+test = ["pytest"]
 
 [tool.setuptools.packages.find]
 where = ["."]

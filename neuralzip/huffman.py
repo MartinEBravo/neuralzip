@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 
-from . import _arithmetic_cpp, _huffman_cpp
+from . import _huffman_cpp
+
+try:
+    from . import _arithmetic_cpp
+except ImportError:
+    _arithmetic_cpp = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,11 @@ def decompress_with_decodebook(payload, decodebook):
 
 
 def build_sparse_ngram_arithmetic_codebook(data, *, n, max_total=1 << 20):
+    if _arithmetic_cpp is None:
+        raise ImportError(
+            "The optional sparse n-gram arithmetic extension is not available. "
+            "It is retained only for deferred-technique ablations."
+        )
     if not isinstance(data, (bytes, bytearray, memoryview)):
         data = bytes(data)
     payload = _arithmetic_cpp.sparse_ngram_build_codebook(
@@ -163,6 +173,11 @@ def sparse_ngram_arithmetic_encode_with_codebook(
     min_saving_bytes=0,
     max_output_bytes=None,
 ):
+    if _arithmetic_cpp is None:
+        raise ImportError(
+            "The optional sparse n-gram arithmetic extension is not available. "
+            "It is retained only for deferred-technique ablations."
+        )
     if not isinstance(data, (bytes, bytearray, memoryview)):
         data = bytes(data)
 
@@ -191,6 +206,11 @@ def sparse_ngram_arithmetic_encode_with_codebook(
 
 
 def sparse_ngram_arithmetic_decompress(payload):
+    if _arithmetic_cpp is None:
+        raise ImportError(
+            "The optional sparse n-gram arithmetic extension is not available. "
+            "It is retained only for deferred-technique ablations."
+        )
     return _arithmetic_cpp.sparse_ngram_decompress(
         payload.payload,
         payload.codebook,

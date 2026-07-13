@@ -352,6 +352,7 @@ class Compressor:
         total_ngram_hits = 0
         total_ngram_escapes = 0
         precompute_seconds = 0.0
+        codebook_setup_seconds = 0.0
         codebook_metadata_bytes = 0
         codebooks = ()
         compressed_payloads = []
@@ -368,17 +369,23 @@ class Compressor:
             self.codec.reset_compression()
         if hasattr(self.codec, "reset_decompression"):
             self.codec.reset_decompression()
-        if hasattr(self.codec, "precompute_codebooks"):
+        if hasattr(self.codec, "prepare_clusters"):
             start = time.perf_counter()
-            self.codec.precompute_codebooks(parameters)
+            self.codec.prepare_clusters(parameters)
             precompute_seconds = time.perf_counter() - start
+
+        if (
+            hasattr(self.codec, "build_codebooks_and_select_modes")
+            and not getattr(self.codec, "builds_codebooks_lazily", False)
+        ):
+            start = time.perf_counter()
+            self.codec.build_codebooks_and_select_modes(parameters)
+            codebook_setup_seconds = time.perf_counter() - start
             codebooks = self.codec.export_codebooks()
             codebook_metadata_bytes = serialized_codebooks_size(codebooks)
             total_metadata_bytes += codebook_metadata_bytes
             total_compressed_bytes += codebook_metadata_bytes
             total_shared_codebook_defs += len(codebooks)
-            if hasattr(self.codec, "load_codebooks"):
-                self.codec.load_codebooks(codebooks)
 
         for name, parameter in parameters:
             raw_bytes = _raw_tensor_bytes(parameter)
@@ -461,6 +468,11 @@ class Compressor:
                 result["payload"] = compressed
             tensor_results.append(result)
 
+        if getattr(self.codec, "builds_codebooks_lazily", False):
+            codebooks = self.codec.export_codebooks()
+            codebook_metadata_bytes = serialized_codebooks_size(codebooks)
+            total_shared_codebook_defs = len(codebooks)
+
         total_compressed_bytes = serialized_size(
             method_name,
             codebooks,
@@ -513,8 +525,16 @@ class Compressor:
             "selected_modes": getattr(self.codec, "selected_modes", {}),
             "selection_stats": getattr(self.codec, "selection_stats", {}),
             "precompute_seconds": precompute_seconds,
+            "clustering_seconds": precompute_seconds,
+            "codebook_setup_seconds": codebook_setup_seconds,
             "encode_seconds": total_encode_seconds,
-            "cold_encode_seconds": precompute_seconds + total_encode_seconds,
+            "compression_seconds": codebook_setup_seconds + total_encode_seconds,
+            "total_compression_seconds": (
+                precompute_seconds + codebook_setup_seconds + total_encode_seconds
+            ),
+            "cold_encode_seconds": (
+                precompute_seconds + codebook_setup_seconds + total_encode_seconds
+            ),
             "decode_seconds": total_decode_seconds if self.verify else None,
             "roundtrip_ok": roundtrip_ok,
             "header": {

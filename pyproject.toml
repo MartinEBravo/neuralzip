@@ -24,10 +24,11 @@ experiments = [
     "pillow",
     "pyarrow",
     "safetensors",
+    "timm",
     "torchvision",
     "zipnn",
 ]
-test = ["pytest"]
+test = ["pandas", "pytest"]
 
 [tool.setuptools.packages.find]
 where = ["."]

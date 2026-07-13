@@ -73,6 +73,15 @@ def build_codebook(data, *, prior_count=0):
     return HuffmanCodebook(handle=handle, code_lengths=code_lengths)
 
 
+def build_codebook_from_counts(counts, *, prior_count=0):
+    counts = [int(count) for count in counts]
+    handle, code_lengths = _huffman_cpp.build_codebook_from_counts(
+        counts,
+        prior_count=int(prior_count),
+    )
+    return HuffmanCodebook(handle=handle, code_lengths=code_lengths)
+
+
 def build_decodebook(code_lengths):
     handle = _huffman_cpp.build_decodebook(code_lengths)
     return HuffmanDecodebook(handle=handle, code_lengths=code_lengths)

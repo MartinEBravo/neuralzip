@@ -502,6 +502,88 @@ PyObject* py_build_codebook(PyObject*, PyObject* args, PyObject* kwargs) {
     }
 }
 
+PyObject* py_build_codebook_from_counts(PyObject*, PyObject* args, PyObject* kwargs) {
+    PyObject* counts_object = nullptr;
+    Py_ssize_t prior_count = 0;
+    static const char* keyword_names[] = {"counts", "prior_count", nullptr};
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "O|n",
+            const_cast<char**>(keyword_names),
+            &counts_object,
+            &prior_count)) {
+        return nullptr;
+    }
+    if (prior_count < 0) {
+        PyErr_SetString(PyExc_ValueError, "prior_count must be non-negative.");
+        return nullptr;
+    }
+
+    PyObject* sequence = PySequence_Fast(
+        counts_object,
+        "counts must be a sequence of 256 non-negative integers.");
+    if (!sequence) {
+        return nullptr;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence) != 256) {
+        Py_DECREF(sequence);
+        PyErr_SetString(PyExc_ValueError, "counts must contain exactly 256 entries.");
+        return nullptr;
+    }
+
+    try {
+        Counts counts{};
+        const auto prior = static_cast<std::uint64_t>(prior_count);
+        for (Py_ssize_t symbol = 0; symbol < 256; ++symbol) {
+            PyObject* item = PySequence_Fast_GET_ITEM(sequence, symbol);
+            unsigned long long value = PyLong_AsUnsignedLongLong(item);
+            if (PyErr_Occurred()) {
+                Py_DECREF(sequence);
+                return nullptr;
+            }
+            if (value > std::numeric_limits<std::uint64_t>::max() - prior) {
+                Py_DECREF(sequence);
+                PyErr_SetString(PyExc_OverflowError, "Huffman symbol count overflow.");
+                return nullptr;
+            }
+            counts[static_cast<std::size_t>(symbol)] =
+                static_cast<std::uint64_t>(value) + prior;
+        }
+        auto codebook = std::make_unique<EncoderCodebook>();
+        codebook->lengths = make_code_lengths(counts);
+        codebook->codes = make_canonical_codes(codebook->lengths);
+        Py_DECREF(sequence);
+        sequence = nullptr;
+
+        PyObject* capsule = PyCapsule_New(
+            codebook.get(),
+            "neuralzip.EncoderCodebook",
+            destroy_codebook_capsule);
+        PyObject* lengths_object = code_lengths_to_python(codebook->lengths);
+        if (!capsule || !lengths_object) {
+            Py_XDECREF(capsule);
+            Py_XDECREF(lengths_object);
+            return nullptr;
+        }
+        codebook.release();
+
+        PyObject* result = PyTuple_Pack(2, capsule, lengths_object);
+        Py_DECREF(capsule);
+        Py_DECREF(lengths_object);
+        return result;
+    } catch (const std::bad_alloc&) {
+        Py_XDECREF(sequence);
+        PyErr_NoMemory();
+        return nullptr;
+    } catch (const std::exception& error) {
+        Py_XDECREF(sequence);
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
 PyObject* py_encode_with_code_lengths(PyObject*, PyObject* args, PyObject* kwargs) {
     Py_buffer data_view;
     Py_buffer lengths_view;
@@ -795,6 +877,7 @@ PyMethodDef methods[] = {
     {"compress", reinterpret_cast<PyCFunction>(py_compress), METH_VARARGS | METH_KEYWORDS, nullptr},
     {"build_code_lengths", reinterpret_cast<PyCFunction>(py_build_code_lengths), METH_VARARGS | METH_KEYWORDS, nullptr},
     {"build_codebook", reinterpret_cast<PyCFunction>(py_build_codebook), METH_VARARGS | METH_KEYWORDS, nullptr},
+    {"build_codebook_from_counts", reinterpret_cast<PyCFunction>(py_build_codebook_from_counts), METH_VARARGS | METH_KEYWORDS, nullptr},
     {"build_decodebook", py_build_decodebook, METH_VARARGS, nullptr},
     {"encode_with_code_lengths", reinterpret_cast<PyCFunction>(py_encode_with_code_lengths), METH_VARARGS | METH_KEYWORDS, nullptr},
     {"encode_with_codebook", reinterpret_cast<PyCFunction>(py_encode_with_codebook), METH_VARARGS | METH_KEYWORDS, nullptr},

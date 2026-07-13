@@ -238,7 +238,16 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
                     "full_compressed_pct": 100 * result.get("compression_ratio"),
                     **exponent_metrics,
                     "precompute_seconds": result.get("precompute_seconds"),
+                    "codebook_setup_seconds": result.get(
+                        "codebook_setup_seconds"
+                    ),
                     "encode_seconds": result.get("encode_seconds"),
+                    "compression_seconds": result.get(
+                        "compression_seconds", elapsed
+                    ),
+                    "total_compression_seconds": result.get(
+                        "total_compression_seconds", elapsed
+                    ),
                     "cold_encode_seconds": result.get(
                         "cold_encode_seconds",
                         elapsed,
@@ -271,7 +280,10 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
                     "exponent_compressed_bytes": None,
                     "exponent_compressed_pct": None,
                     "precompute_seconds": None,
+                    "codebook_setup_seconds": None,
                     "encode_seconds": None,
+                    "compression_seconds": None,
+                    "total_compression_seconds": None,
                     "cold_encode_seconds": None,
                     "clusters": None,
                     "codebooks": None,
@@ -1413,9 +1425,8 @@ def compress_federated_directory_amortized(
         calibration_checkpoint, calibration_tensors = load_tensors(path)
         calibration_named.extend(list(calibration_tensors.items()))
         del calibration_checkpoint, calibration_tensors
-    start = time.perf_counter()
-    codec.precompute_codebooks(calibration_named)
-    setup_seconds = time.perf_counter() - start
+    setup_timings = _prepare_neuralzip_codec(codec, calibration_named)
+    setup_seconds = setup_timings["total_setup_seconds"]
     codebooks = codec.export_codebooks()
     codebook_metadata_bytes = codec.codebook_metadata_bytes()
     total_updates = len(checkpoint_paths)
@@ -1469,6 +1480,10 @@ def compress_federated_directory_amortized(
                     else 0.0
                 ),
                 "setup_seconds_once": setup_seconds,
+                "precompute_seconds_once": setup_timings["precompute_seconds"],
+                "codebook_setup_seconds_once": setup_timings[
+                    "codebook_setup_seconds"
+                ],
                 "encode_seconds": encode_seconds,
                 "amortized_cold_seconds": encode_seconds
                 + setup_seconds / total_updates,
@@ -1582,6 +1597,22 @@ def _codec_compress_tensors(codec, tensors):
     }
 
 
+def _prepare_neuralzip_codec(codec, named_tensors):
+    named_tensors = list(named_tensors)
+    started = time.perf_counter()
+    codec.prepare_clusters(named_tensors)
+    precompute_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    codec.build_codebooks_and_select_modes(named_tensors)
+    codebook_setup_seconds = time.perf_counter() - started
+    return {
+        "precompute_seconds": precompute_seconds,
+        "codebook_setup_seconds": codebook_setup_seconds,
+        "total_setup_seconds": precompute_seconds + codebook_setup_seconds,
+    }
+
+
 def _codec_decompress_tensors(codec, payloads):
     start = time.perf_counter()
     tensors = {payload.name: codec.decompress_tensor(payload) for payload in payloads}
@@ -1662,16 +1693,18 @@ def run_federated_codec_protocol(
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
     )
-    start = time.perf_counter()
-    neuralzip_codec.precompute_codebooks(list(initial_server.items()))
-    neuralzip_setup_seconds = time.perf_counter() - start
+    neuralzip_setup = _prepare_neuralzip_codec(
+        neuralzip_codec, initial_server.items()
+    )
+    neuralzip_setup_seconds = neuralzip_setup["total_setup_seconds"]
     neuralzip_codebooks = neuralzip_codec.export_codebooks()
-    neuralzip_codec.load_codebooks(neuralzip_codebooks)
     protocols.append(
         {
             "name": "FedNeuralZip",
             "codec": neuralzip_codec,
             "setup_seconds": neuralzip_setup_seconds,
+            "precompute_seconds": neuralzip_setup["precompute_seconds"],
+            "codebook_setup_seconds": neuralzip_setup["codebook_setup_seconds"],
             "setup_bytes": neuralzip_codec.codebook_metadata_bytes(),
             "clusters": neuralzip_codec.cluster_count,
             "codebooks": len(neuralzip_codebooks),
@@ -1776,6 +1809,12 @@ def run_federated_codec_protocol(
                     "clients": client_count,
                     "dtype": str(dtype).replace("torch.", ""),
                     "setup_seconds_once": protocol["setup_seconds"],
+                    "precompute_seconds_once": protocol.get(
+                        "precompute_seconds", 0.0
+                    ),
+                    "codebook_setup_seconds_once": protocol.get(
+                        "codebook_setup_seconds", 0.0
+                    ),
                     "setup_bytes_once": protocol["setup_bytes"],
                     "clusters": protocol["clusters"],
                     "codebooks": protocol["codebooks"],
@@ -1998,16 +2037,18 @@ def run_federated_codec_protocol_online(
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
     )
-    start = time.perf_counter()
-    neuralzip_codec.precompute_codebooks(list(initial_tensors.items()))
-    neuralzip_setup_seconds = time.perf_counter() - start
+    neuralzip_setup = _prepare_neuralzip_codec(
+        neuralzip_codec, initial_tensors.items()
+    )
+    neuralzip_setup_seconds = neuralzip_setup["total_setup_seconds"]
     neuralzip_codebooks = neuralzip_codec.export_codebooks()
-    neuralzip_codec.load_codebooks(neuralzip_codebooks)
     protocols.append(
         {
             "name": "FedNeuralZip",
             "codec": neuralzip_codec,
             "setup_seconds": neuralzip_setup_seconds,
+            "precompute_seconds": neuralzip_setup["precompute_seconds"],
+            "codebook_setup_seconds": neuralzip_setup["codebook_setup_seconds"],
             "setup_bytes": neuralzip_codec.codebook_metadata_bytes(),
             "clusters": neuralzip_codec.cluster_count,
             "codebooks": len(neuralzip_codebooks),
@@ -2122,6 +2163,12 @@ def run_federated_codec_protocol_online(
                     "device": str(device),
                     "dtype": str(dtype).replace("torch.", ""),
                     "setup_seconds_once": protocol["setup_seconds"],
+                    "precompute_seconds_once": protocol.get(
+                        "precompute_seconds", 0.0
+                    ),
+                    "codebook_setup_seconds_once": protocol.get(
+                        "codebook_setup_seconds", 0.0
+                    ),
                     "setup_bytes_once": protocol["setup_bytes"],
                     "clusters": protocol["clusters"],
                     "codebooks": protocol["codebooks"],

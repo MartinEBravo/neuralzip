@@ -8,6 +8,7 @@ except ImportError as error:
     raise unittest.SkipTest("NeuralZip codec tests require torch") from error
 
 from neuralzip import Compressor
+from neuralzip.neuralzip_codec import NeuralZipCodec
 
 
 class NeuralZipCodecTests(unittest.TestCase):
@@ -30,6 +31,14 @@ class NeuralZipCodecTests(unittest.TestCase):
         result = compressor.compress(model)
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["method"], "neuralzip")
+        self.assertAlmostEqual(
+            result["compression_seconds"],
+            result["codebook_setup_seconds"] + result["encode_seconds"],
+        )
+        self.assertAlmostEqual(
+            result["total_compression_seconds"],
+            result["precompute_seconds"] + result["compression_seconds"],
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.nzip"
@@ -45,6 +54,22 @@ class NeuralZipCodecTests(unittest.TestCase):
                     tensor.contiguous().view(torch.uint8),
                 )
             )
+
+    def test_lazy_codebooks_are_built_during_encoding(self):
+        tensor = torch.tensor([1.0, 0.5], dtype=torch.bfloat16).repeat(4096)
+        named_tensors = [("encoder.0.weight", tensor)]
+        codec = NeuralZipCodec(
+            ngram_values=(),
+            max_codebook_sample_bytes=64 << 10,
+        )
+
+        with self.assertRaises(RuntimeError):
+            codec.compress_tensor(named_tensors[0][0], tensor)
+
+        codec.prepare_clusters(named_tensors)
+        self.assertGreater(codec.cluster_count, 0)
+        codec.compress_tensor(named_tensors[0][0], tensor)
+        self.assertGreater(len(codec.export_codebooks()), 0)
 
     def test_zero_packed_budget_uses_canonical_shared_huffman(self):
         repeated = torch.tensor(
@@ -76,16 +101,35 @@ class NeuralZipCodecTests(unittest.TestCase):
             "encoder.0.weight": repeated.repeat(128, 128),
             "encoder.1.weight": repeated.repeat(128, 128),
         }
-        result = Compressor(
+        compressor = Compressor(
             "neuralzip",
             verify=True,
+            keep_payloads=True,
             ngram_values=(),
             max_codebook_sample_bytes=64 << 10,
-        ).compress(model)
+        )
+        result = compressor.compress(model)
 
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["packed_ngram_chunks"], 0)
         self.assertEqual(result["selection_stats"]["packed_candidates"], 0)
+        self.assertEqual(
+            result["selection_stats"]["selection_strategy"],
+            "lazy-representative",
+        )
+        self.assertEqual(result["codebook_setup_seconds"], 0.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lazy-model.nzip"
+            compressor.save(result, path)
+            restored = compressor.decompress_file(path)
+        for name, tensor in model.items():
+            self.assertTrue(
+                torch.equal(
+                    restored[name].view(torch.uint8),
+                    tensor.contiguous().view(torch.uint8),
+                )
+            )
 
     def test_large_packed_budget_can_select_ngram_mode(self):
         pattern = torch.tensor(

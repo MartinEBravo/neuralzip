@@ -27,35 +27,39 @@ compression threshold. Huffman is implemented in the compiled C++ extension
 authors and treats its binary output as the compressed payload. Use it as the
 external baseline.
 
-`Compressor("neuralzip-fast")` is the fast NeuralZip entrypoint. It
-keeps the same ZipNN tensor byte layout, clusters tensors by Jensen-Shannon
-distance over exponent histograms, builds one Huffman codebook per tensor
-cluster and byte stream, stores those codebooks in the compressed header, and
-then reuses them during chunk encoding with raw fallback. The JS threshold is
-controlled by `cluster_js_threshold`; `clustering="architecture-aware"` switches
-back to layer-signature clusters. Codebooks are estimated from a bounded sample
-per cluster/stream, controlled by `max_codebook_sample_bytes`. During precompute,
-the codec also tests sampled streams and pre-marks poorly compressible
-cluster/stream pairs as raw, avoiding repeated failed chunk-encoding attempts in
-the hot path. This can be disabled with `test_cluster_compressibility=False` for
-ablations. The reported `precompute_seconds` is the cold cost of building those
-codebooks; `encode_seconds` is the hot compression cost when the codebooks are
-already available.
-The test is enabled by default because it improves hot compression time on the
-GPT-2 BF16 benchmark despite increasing setup time.
+`Compressor("neuralzip")` is the single NeuralZip entrypoint and produces a
+reversible full-checkpoint representation. It keeps ZipNN's dtype-aware byte
+layout and clusters tensors by Jensen-Shannon distance over exponent histograms.
+For each cluster and byte stream, a bounded sample selects one of three modes:
+raw storage, a shared canonical Huffman codebook, or a shared packed-exponent
+Huff0 codebook with `n` in `{2, 3, 4}`. Packed modes use a Top-K vocabulary,
+an escape symbol for unseen n-grams, and a raw tail, so reconstruction remains
+bitwise exact.
 
-`Compressor("neuralzip-ratio")` is the codebook-aware ratio experiment used in
-the thesis. It isolates the BF16 exponent stream and, for each Jensen-Shannon
-cluster, selects between local ZipNN-style Huffman and full-vocabulary n-gram
-arithmetic for `n in {2,3,4}`, including the n-gram codebook cost. This is an
-exponent-stream experiment rather than a full-checkpoint codec; its result
-explains the observed ratio gain and the codebook boundary. Its arithmetic
-backend is isolated in `neuralzip._arithmetic_cpp`.
+The JS threshold is controlled by `cluster_js_threshold`; sample size by
+`max_codebook_sample_bytes`; and the packed candidates by `ngram_values` and
+`top_k`. Two-dimensional exponent streams use a deterministic transposed layout
+when selected with `exponent_layout="transpose2d"`; the default layout is
+`"original"`. Codebooks and vocabularies are stored once in the compressed
+header and referenced by chunks.
+The result reports clustering as `precompute_seconds`, codebook and mode setup as
+`codebook_setup_seconds`, and tensor encoding as `encode_seconds`.
+`compression_seconds` includes codebook setup and encoding, while
+`total_compression_seconds` additionally includes clustering. Results also
+record selected modes, packed chunk counts, escape rate, and round-trip status.
 
-`Compressor("global-huffman")` is an exponent-stream baseline. It extracts the
-ZipNN exponent stream, builds a single Huffman codebook from one representative
-chunk with `prior_count=1`, and reuses that codebook for all remaining exponent
-chunks with raw fallback.
+```python
+compressed = Compressor(
+    "neuralzip",
+    verify=True,
+    keep_payloads=True,
+).compress(hf_model)
+Compressor.save(compressed, "model.nzip")
+restored = Compressor("neuralzip").decompress_file("model.nzip")
+```
+
+The `compressed_bytes` metric is the exact size of this versioned archive, not
+an entropy estimate or a sum that omits container metadata.
 
 The same compressor can also encode checkpoint deltas:
 
@@ -65,9 +69,3 @@ restored = Compressor("zipnn-local").decompress_delta(delta, base_model)
 ```
 
 The main notebook is `examples/1-model-hubs.ipynb`.
-
-On GPT-2 BF16, longer packed n-grams reduce the arithmetic-coded exponent
-payload, but explicit n-gram codebooks dominate the final size. NeuralZip-Ratio
-therefore reports the best codebook-aware selector, while the larger theoretical
-n-gram gains remain a payload-only upper bound unless the codebooks can be
-amortized or represented more compactly.

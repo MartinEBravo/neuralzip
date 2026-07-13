@@ -121,6 +121,7 @@ class NeuralZipCodec(ZipNNCodec):
         self._codebook_payloads = []
         self._codebook_payload_by_id = {}
         self._computed_cluster_map = {}
+        self._clusters_prepared = False
         self._next_codebook_id = 0
         self._selected_mode_counts = {}
         self._selection_stats = {}
@@ -164,6 +165,10 @@ class NeuralZipCodec(ZipNNCodec):
     @property
     def selected_modes(self):
         return dict(self._selected_mode_counts)
+
+    @property
+    def builds_codebooks_lazily(self):
+        return not self.ngram_values
 
     @property
     def selection_stats(self):
@@ -542,8 +547,69 @@ class NeuralZipCodec(ZipNNCodec):
             self._selected_mode_counts.get(kind, 0) + 1
         )
 
-    def precompute_codebooks(self, named_tensors):
+    def prepare_clusters(self, named_tensors):
         self._prepare_clusters(named_tensors)
+        self._clusters_prepared = True
+
+    def _build_lazy_shared_mode(self, key, stream, *, element_size, is_exponent):
+        step = self._stream_chunk_size(element_size)
+        sample = np.frombuffer(stream, dtype=np.uint8, count=min(len(stream), step))
+        if sample.size == 0:
+            return {"kind": "raw", "fixed_cost": 0}
+
+        counts = np.bincount(sample, minlength=256).astype(np.uint64)
+        prior_count = self.exponent_prior_count if is_exponent else self.prior_count
+        codebook = huffman.build_codebook_from_counts(
+            counts,
+            prior_count=prior_count,
+        )
+        mode = {
+            "kind": "shared_huffman",
+            "ngram_n": 1,
+            "vocab": b"",
+            "codebook": codebook,
+        }
+        payload = self._candidate_payload(key, mode)
+        code_lengths = np.frombuffer(codebook.code_lengths, dtype=np.uint8)
+        sample_bits = int(np.dot(counts, code_lengths.astype(np.uint64)))
+        estimated_payload_bytes = (
+            sample_bits * len(stream) + int(sample.size) * 8 - 1
+        ) // (int(sample.size) * 8)
+        chunk_count = (len(stream) + step - 1) // step
+        shared_variable_bytes = (
+            estimated_payload_bytes + chunk_count * (1 + 8 + 8 + 8)
+        )
+        shared_total_bytes = payload.metadata_bytes + shared_variable_bytes
+        raw_total_bytes = len(stream) + chunk_count * (1 + 8 + 8)
+
+        if (
+            shared_variable_bytes < len(stream) * self.compression_threshold
+            and shared_total_bytes < raw_total_bytes
+        ):
+            selected = mode
+        else:
+            selected = {"kind": "raw", "fixed_cost": 0}
+        selected = self._finalize_mode(key, selected)
+
+        if not self._selection_stats:
+            self._selection_stats = {
+                "selection_strategy": "lazy-representative",
+                "representative_bytes": 0,
+                "representative_keys": 0,
+                "packed_candidates": 0,
+                "packed_selected": 0,
+            }
+        self._selection_stats["representative_bytes"] += int(sample.size)
+        self._selection_stats["representative_keys"] += 1
+        return selected
+
+    def build_codebooks_and_select_modes(self, named_tensors):
+        if not self._clusters_prepared:
+            raise RuntimeError(
+                "Clusters must be prepared before building NeuralZip codebooks."
+            )
+        if not self.ngram_values:
+            return
         samples = {}
         sample_sizes = {}
         total_sizes = {}
@@ -644,22 +710,34 @@ class NeuralZipCodec(ZipNNCodec):
         key = self._codebook_key(name, tensor, stream_id)
         mode = self._mode_by_key.get(key)
         if mode is None:
-            evaluation = self._evaluate_modes(
-                key,
-                stream[: self.max_codebook_sample_bytes],
-                total_size=len(stream),
-                element_size=tensor.element_size(),
-                is_exponent=is_exponent,
-            )
-            mode = evaluation["base"]
-            opportunity = evaluation["opportunity"]
-            if opportunity is not None and self.packed_time_budget_ratio > 0:
-                budget = (
-                    evaluation["base_seconds"] * self.packed_time_budget_ratio
+            if not self._clusters_prepared:
+                raise RuntimeError(
+                    "Clusters must be prepared before NeuralZip compression."
                 )
-                if opportunity["extra_seconds"] <= budget:
-                    mode = opportunity["mode"]
-            mode = self._finalize_mode(key, mode)
+            if not self.ngram_values:
+                mode = self._build_lazy_shared_mode(
+                    key,
+                    stream,
+                    element_size=tensor.element_size(),
+                    is_exponent=is_exponent,
+                )
+            else:
+                evaluation = self._evaluate_modes(
+                    key,
+                    stream[: self.max_codebook_sample_bytes],
+                    total_size=len(stream),
+                    element_size=tensor.element_size(),
+                    is_exponent=is_exponent,
+                )
+                mode = evaluation["base"]
+                opportunity = evaluation["opportunity"]
+                if opportunity is not None and self.packed_time_budget_ratio > 0:
+                    budget = (
+                        evaluation["base_seconds"] * self.packed_time_budget_ratio
+                    )
+                    if opportunity["extra_seconds"] <= budget:
+                        mode = opportunity["mode"]
+                mode = self._finalize_mode(key, mode)
             self._mode_by_key[key] = mode
             self._record_selected_mode(mode)
 

@@ -215,50 +215,6 @@ def _compress_zipnn_local(fs: HfFileSystem, files: list[dict], model_name: str, 
     )
 
 
-def _compress_global_huffman(fs: HfFileSystem, files: list[dict], model_name: str, model_id: str) -> dict:
-    precompute_start = time.perf_counter()
-    representative = None
-    for _, _, data in _iter_sampled_chunks(fs, files):
-        if data:
-            representative = _nibble_stream(data)
-            break
-    if representative is None:
-        raise ValueError("No sampled data.")
-    codebook = huffman.build_codebook(representative, prior_count=1)
-    precompute_seconds = time.perf_counter() - precompute_start
-
-    encode_start = time.perf_counter()
-    raw_bytes = 0
-    compressed_bytes = CODEBOOK_HEADER_BYTES + len(codebook.code_lengths)
-    sampled_files = set()
-    huffman_chunks = 0
-    raw_chunks = 0
-    for file_index, _, data in _iter_sampled_chunks(fs, files):
-        sampled_files.add(file_index)
-        raw_bytes += len(data)
-        cost, used_huffman = _shared_huffman_cost(data, codebook)
-        compressed_bytes += cost
-        huffman_chunks += int(used_huffman)
-        raw_chunks += int(not used_huffman)
-    encode_seconds = time.perf_counter() - encode_start
-    return _common_row(
-        model_name=model_name,
-        model_id=model_id,
-        method="global-huffman-nibble",
-        raw_bytes=raw_bytes,
-        compressed_bytes=compressed_bytes,
-        sampled_files=len(sampled_files),
-        files=len(files),
-        elapsed=precompute_seconds + encode_seconds,
-        precompute_seconds=precompute_seconds,
-        encode_seconds=encode_seconds,
-        huffman_chunks=huffman_chunks,
-        raw_chunks=raw_chunks,
-        codebooks=1,
-        clusters=None,
-    )
-
-
 def _prepare_neuralzip_clusters(fs: HfFileSystem, files: list[dict]):
     clusters: list[dict] = []
     raw_bytes = 0
@@ -373,7 +329,6 @@ def main() -> None:
             if not files:
                 raise ValueError("No supported files found.")
             for compressor in (
-                _compress_global_huffman,
                 _compress_zipnn_local,
                 _compress_neuralzip,
             ):

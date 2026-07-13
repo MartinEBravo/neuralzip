@@ -1,0 +1,100 @@
+{
+  "dataset": "ImageNet-1K",
+  "recipe": "timm ResNet Strikes Back A1",
+  "source": {
+    "model_id": "timm/resnet18.a1_in1k",
+    "clustering_seconds": 0.0767668392509222,
+    "compression_seconds": 0.15170169435441494,
+    "clusters": 46,
+    "codebooks": 11
+  },
+  "targets": {
+    "timm/resnet18.a1_in1k": {
+      "coverage": {
+        "mapped_tensors": 62,
+        "total_tensors": 62,
+        "mapped_bytes_pct": 100.0
+      },
+      "roundtrip_ok": true,
+      "summary": {
+        "zipnn": {
+          "compression_seconds": 0.13463494274765253,
+          "compression_pct": 67.20271983980169,
+          "exponent_pct": 34.30278355503634
+        },
+        "neuralzip_target": {
+          "compression_seconds": 0.13553232792764902,
+          "compression_pct": 67.1781550846605,
+          "exponent_pct": 34.21505534191675
+        },
+        "neuralzip_transfer": {
+          "compression_seconds": 0.11737546510994434,
+          "compression_pct": 67.1781550846605,
+          "exponent_pct": 34.21505534191675
+        },
+        "transfer_speedup_vs_zipnn": 1.147045020196865,
+        "transfer_speedup_vs_target_neuralzip": 1.1546904440437986,
+        "transfer_ratio_penalty_vs_zipnn_pp": -0.024564755141184946,
+        "transfer_exponent_penalty_vs_zipnn_pp": -0.08772821311958978
+      }
+    },
+    "timm/resnet34.a1_in1k": {
+      "coverage": {
+        "mapped_tensors": 110,
+        "total_tensors": 110,
+        "mapped_bytes_pct": 100.0
+      },
+      "roundtrip_ok": true,
+      "summary": {
+        "zipnn": {
+          "compression_seconds": 0.24732862692326307,
+          "compression_pct": 67.00791717574243,
+          "exponent_pct": 33.91766790508638
+        },
+        "neuralzip_target": {
+          "compression_seconds": 0.23665206879377365,
+          "compression_pct": 67.05017856952797,
+          "exponent_pct": 33.96792097798333
+        },
+        "neuralzip_transfer": {
+          "compression_seconds": 0.21400116104632616,
+          "compression_pct": 67.0328051546055,
+          "exponent_pct": 33.94454233461261
+        },
+        "transfer_speedup_vs_zipnn": 1.1557349769224958,
+        "transfer_speedup_vs_target_neuralzip": 1.1058447890502057,
+        "transfer_ratio_penalty_vs_zipnn_pp": 0.024887978863063154,
+        "transfer_exponent_penalty_vs_zipnn_pp": 0.02687442952623087
+      }
+    },
+    "timm/resnet50.a1_in1k": {
+      "coverage": {
+        "mapped_tensors": 110,
+        "total_tensors": 161,
+        "mapped_bytes_pct": 80.13465726380122
+      },
+      "roundtrip_ok": true,
+      "summary": {
+        "zipnn": {
+          "compression_seconds": 0.3144742576405406,
+          "compression_pct": 67.0448685121183,
+          "exponent_pct": 33.97099084119001
+        },
+        "neuralzip_target": {
+          "compression_seconds": 0.2883525602519512,
+          "compression_pct": 67.02180049702172,
+          "exponent_pct": 33.852076406994364
+        },
+        "neuralzip_transfer": {
+          "compression_seconds": 0.2159324325621128,
+          "compression_pct": 73.75505105600682,
+          "exponent_pct": 47.36454139119128
+        },
+        "transfer_speedup_vs_zipnn": 1.4563549065288388,
+        "transfer_speedup_vs_target_neuralzip": 1.3353832809205575,
+        "transfer_ratio_penalty_vs_zipnn_pp": 6.710182543888521,
+        "transfer_exponent_penalty_vs_zipnn_pp": 13.393550550001272
+      }
+    }
+  }
+}

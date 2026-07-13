@@ -1,0 +1,108 @@
+{
+  "torchvision_resnet18_default": {
+    "legacy_ablation": {
+      "ZipNN": {
+        "exponent_pct": 33.459908334924506,
+        "packed_chunks": 0
+      },
+      "Fast only": {
+        "exponent_pct": 33.43329473463049,
+        "packed_chunks": 0
+      },
+      "Ratio only": {
+        "exponent_pct": 32.58118046330762,
+        "packed_chunks": 0
+      },
+      "NeuralZip": {
+        "exponent_pct": 32.367339201157414,
+        "packed_chunks": 36
+      }
+    },
+    "codec": {
+      "zipnn": {
+        "full_pct": 66.84240111990988,
+        "exponent_pct": 33.58214611525271,
+        "encode_seconds": 0.1253700228407979,
+        "packed_chunks": 0,
+        "selected_modes": {}
+      },
+      "packed_default": {
+        "full_pct": 66.24506651774685,
+        "exponent_pct": 32.317525316711254,
+        "encode_seconds": 0.11111431755125523,
+        "packed_chunks": 36,
+        "selected_modes": {
+          "raw": 65,
+          "shared_huffman": 9,
+          "packed_huff0_n2": 12,
+          "packed_huff0_n3": 2
+        }
+      },
+      "packed_unlimited": {
+        "full_pct": 66.23127637834668,
+        "exponent_pct": 32.27615489851073,
+        "encode_seconds": 0.1453339969739318,
+        "packed_chunks": 86,
+        "selected_modes": {
+          "raw": 65,
+          "shared_huffman": 7,
+          "packed_huff0_n2": 14,
+          "packed_huff0_n3": 2
+        }
+      }
+    }
+  },
+  "timm_resnet18_a1": {
+    "legacy_ablation": {
+      "ZipNN": {
+        "exponent_pct": 34.18466057436786,
+        "packed_chunks": 0
+      },
+      "Fast only": {
+        "exponent_pct": 34.23351633498473,
+        "packed_chunks": 0
+      },
+      "Ratio only": {
+        "exponent_pct": 33.97442938593159,
+        "packed_chunks": 0
+      },
+      "NeuralZip": {
+        "exponent_pct": 34.15688353799543,
+        "packed_chunks": 13
+      }
+    },
+    "codec": {
+      "zipnn": {
+        "full_pct": 67.20271983980169,
+        "exponent_pct": 34.30278355503634,
+        "encode_seconds": 0.130322290584445,
+        "packed_chunks": 0,
+        "selected_modes": {}
+      },
+      "packed_default": {
+        "full_pct": 67.13983868616586,
+        "exponent_pct": 34.130381148503034,
+        "encode_seconds": 0.10430501773953438,
+        "packed_chunks": 13,
+        "selected_modes": {
+          "raw": 75,
+          "shared_huffman": 5,
+          "packed_huff0_n2": 10,
+          "packed_huff0_n3": 2
+        }
+      },
+      "packed_unlimited": {
+        "full_pct": 67.082928697109,
+        "exponent_pct": 34.0027624763121,
+        "encode_seconds": 0.15507239568978548,
+        "packed_chunks": 109,
+        "selected_modes": {
+          "raw": 75,
+          "shared_huffman": 3,
+          "packed_huff0_n2": 12,
+          "packed_huff0_n3": 2
+        }
+      }
+    }
+  }
+}

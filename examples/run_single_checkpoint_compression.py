@@ -36,7 +36,7 @@ def main() -> None:
 
     methods = (
         ("ZipNN local", "zipnn-local"),
-        ("NeuralZip-Ratio", "neuralzip-ratio"),
+        ("NeuralZip", "neuralzip"),
     )
     df = pd.DataFrame(_compress_mapping(checkpoint_path.stem, tensors, methods=methods))
     df["checkpoint"] = checkpoint_path.name
@@ -44,8 +44,8 @@ def main() -> None:
     df["dtype"] = "bf16"
     df["tensor_count"] = len(tensors)
 
-    output_csv = output_dir / "ratio_vs_zipnn_checkpoint_epoch_200.csv"
-    output_json = output_dir / "ratio_vs_zipnn_checkpoint_epoch_200.json"
+    output_csv = output_dir / "neuralzip_vs_zipnn_checkpoint_epoch_200.csv"
+    output_json = output_dir / "neuralzip_vs_zipnn_checkpoint_epoch_200.json"
     df.to_csv(output_csv, index=False)
     output_json.write_text(json.dumps(df.to_dict(orient="records"), indent=2))
 
@@ -57,7 +57,7 @@ def main() -> None:
         "compressed_bytes",
         "compressed_pct",
         "exponent_compressed_pct",
-        "cold_encode_seconds",
+        "compression_seconds",
         "clusters",
     ]
     print(df[display_cols].to_string(index=False))

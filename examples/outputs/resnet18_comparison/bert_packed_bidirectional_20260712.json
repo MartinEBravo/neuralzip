@@ -1,0 +1,123 @@
+{
+  "dataset": [
+    "BookCorpus",
+    "English Wikipedia"
+  ],
+  "dtype": "bfloat16",
+  "directions": {
+    "google-bert/bert-base-uncased->google-bert/bert-large-uncased": {
+      "source": {
+        "model_id": "google-bert/bert-base-uncased",
+        "clustering_seconds": 0.6534815486520529,
+        "codebook_setup_seconds": 3.938591143116355,
+        "offline_setup_seconds": 4.592072691768408,
+        "clusters": 111,
+        "codebooks": 115,
+        "selected_modes": {
+          "raw": 107,
+          "shared_huffman": 102,
+          "packed_huff0_n3": 2,
+          "packed_huff0_n2": 7,
+          "packed_huff0_n4": 4
+        }
+      },
+      "target": {
+        "model_id": "google-bert/bert-large-uncased",
+        "architecture_coverage_pct": 100.0,
+        "roundtrip_ok": true
+      },
+      "results": {
+        "zipnn": {
+          "setup_seconds": 0.0,
+          "compression_seconds": 3.6174385752528906,
+          "one_shot_seconds": 3.6174385752528906,
+          "compression_pct": 66.401182295661,
+          "exponent_pct": 32.770843016794124,
+          "packed_chunks": 0,
+          "ngram_hit_rate": 0.0
+        },
+        "target_specific": {
+          "setup_seconds": 7.895040311850607,
+          "compression_seconds": 2.7971995444968343,
+          "one_shot_seconds": 10.760828129947186,
+          "compression_pct": 66.33708571218648,
+          "exponent_pct": 32.623606273889585,
+          "packed_chunks": 73,
+          "ngram_hit_rate": 1.0
+        },
+        "transferred": {
+          "setup_seconds": 0.0,
+          "compression_seconds": 3.39352317340672,
+          "one_shot_seconds": 3.39352317340672,
+          "compression_pct": 66.4371166280474,
+          "exponent_pct": 32.82916607547428,
+          "packed_chunks": 66,
+          "ngram_hit_rate": 0.9773070214975798
+        }
+      },
+      "comparison": {
+        "transfer_speedup_vs_zipnn": 1.0659831656966068,
+        "transfer_speedup_vs_target_specific": 0.8242759520303369,
+        "transfer_ratio_penalty_vs_zipnn_pp": 0.03593433238640387,
+        "transfer_exponent_penalty_vs_zipnn_pp": 0.058323058680151973
+      }
+    },
+    "google-bert/bert-large-uncased->google-bert/bert-base-uncased": {
+      "source": {
+        "model_id": "google-bert/bert-large-uncased",
+        "clustering_seconds": 1.6698794178664684,
+        "codebook_setup_seconds": 6.253570086322725,
+        "offline_setup_seconds": 7.923449504189193,
+        "clusters": 197,
+        "codebooks": 222,
+        "selected_modes": {
+          "raw": 172,
+          "shared_huffman": 193,
+          "packed_huff0_n3": 2,
+          "packed_huff0_n4": 7,
+          "packed_huff0_n2": 20
+        }
+      },
+      "target": {
+        "model_id": "google-bert/bert-base-uncased",
+        "architecture_coverage_pct": 100.0,
+        "roundtrip_ok": true
+      },
+      "results": {
+        "zipnn": {
+          "setup_seconds": 0.0,
+          "compression_seconds": 1.4018263099715114,
+          "one_shot_seconds": 1.4018263099715114,
+          "compression_pct": 66.38488991456514,
+          "exponent_pct": 32.761116323524256,
+          "packed_chunks": 0,
+          "ngram_hit_rate": 0.0
+        },
+        "target_specific": {
+          "setup_seconds": 4.4273530673235655,
+          "compression_seconds": 1.2274901047348976,
+          "one_shot_seconds": 5.654243572615087,
+          "compression_pct": 66.33028882127367,
+          "exponent_pct": 32.611777033425696,
+          "packed_chunks": 32,
+          "ngram_hit_rate": 1.0
+        },
+        "transferred": {
+          "setup_seconds": 0.0,
+          "compression_seconds": 0.9769746130332351,
+          "one_shot_seconds": 0.9769746130332351,
+          "compression_pct": 66.57091506348426,
+          "exponent_pct": 33.0289086156805,
+          "packed_chunks": 36,
+          "ngram_hit_rate": 0.9119196428571429
+        }
+      },
+      "comparison": {
+        "transfer_speedup_vs_zipnn": 1.4348646231648023,
+        "transfer_speedup_vs_target_specific": 1.2564196534481908,
+        "transfer_ratio_penalty_vs_zipnn_pp": 0.18602514891912847,
+        "transfer_exponent_penalty_vs_zipnn_pp": 0.2677922921562441
+      }
+    }
+  }
+}

@@ -31,12 +31,12 @@ CIFAR10_TGZ = "cifar-10-python.tar.gz"
 CIFAR10_DIR = "cifar-10-batches-py"
 CIFAR10_MEAN = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
 CIFAR10_STD = torch.tensor([0.2470, 0.2435, 0.2616]).view(3, 1, 1)
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
 METHODS = {
     "zipnn-local": ("ZipNN local", "zipnn-local"),
-    "neuralzip-ratio": ("NeuralZip-Ratio", "neuralzip-ratio"),
-    "neuralzip-fast": ("NeuralZip-Fast", "neuralzip-fast"),
-    "global-huffman": ("Global Huffman", "global-huffman"),
+    "neuralzip": ("NeuralZip", "neuralzip"),
 }
 
 
@@ -88,10 +88,22 @@ def load_cifar10(data_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
 
 
 class CIFAR10Dataset(Dataset):
-    def __init__(self, images: np.ndarray, labels: np.ndarray, *, train: bool) -> None:
+    def __init__(
+        self,
+        images: np.ndarray,
+        labels: np.ndarray,
+        *,
+        train: bool,
+        input_size: int = 32,
+        mean: torch.Tensor = CIFAR10_MEAN,
+        std: torch.Tensor = CIFAR10_STD,
+    ) -> None:
         self.images = images
         self.labels = labels
         self.train = train
+        self.input_size = int(input_size)
+        self.mean = mean
+        self.std = std
 
     def __len__(self) -> int:
         return int(self.labels.shape[0])
@@ -107,7 +119,14 @@ class CIFAR10Dataset(Dataset):
             x = x[:, top : top + 32, left : left + 32]
             if random.random() < 0.5:
                 x = torch.flip(x, dims=(2,))
-        x = (x - CIFAR10_MEAN) / CIFAR10_STD
+        if self.input_size != 32:
+            x = F.interpolate(
+                x.unsqueeze(0),
+                size=(self.input_size, self.input_size),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+        x = (x - self.mean) / self.std
         return x, torch.tensor(label, dtype=torch.long)
 
 
@@ -190,6 +209,34 @@ def resnet18_cifar10() -> ResNet:
     return ResNet(BasicBlock, [2, 2, 2, 2], num_classes=10)
 
 
+def torchvision_resnet18_cifar10(*, pretrained: bool) -> nn.Module:
+    from torchvision.models import ResNet18_Weights, resnet18
+
+    weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+    model = resnet18(weights=weights)
+    model.fc = nn.Linear(model.fc.in_features, 10)
+    return model
+
+
+def input_config(base_source: str, normalization: str, input_size: int | None):
+    if normalization == "auto":
+        normalization = (
+            "imagenet"
+            if base_source == "torchvision-imagenet1k-v1"
+            else "cifar10"
+        )
+    if normalization == "imagenet":
+        mean, std = IMAGENET_MEAN, IMAGENET_STD
+    elif normalization == "cifar10":
+        mean, std = CIFAR10_MEAN, CIFAR10_STD
+    else:
+        raise ValueError("normalization must be 'auto', 'imagenet', or 'cifar10'.")
+
+    if input_size is None:
+        input_size = 224 if base_source == "torchvision-imagenet1k-v1" else 32
+    return int(input_size), normalization, mean, std
+
+
 def accuracy_from_logits(logits: torch.Tensor, target: torch.Tensor) -> int:
     return int(logits.argmax(dim=1).eq(target).sum().item())
 
@@ -261,10 +308,34 @@ def evaluate(
     return running_loss / running_total, 100.0 * running_correct / running_total
 
 
-def load_model(base_checkpoint: Path, device: torch.device) -> tuple[nn.Module, dict]:
+def _model_for_checkpoint(checkpoint: dict) -> nn.Module:
+    architecture = checkpoint.get("architecture", "manual-resnet18-cifar10")
+    if architecture == "torchvision-resnet18-imagenet1k-v1-cifar10":
+        return torchvision_resnet18_cifar10(pretrained=False)
+    return resnet18_cifar10()
+
+
+def load_model(
+    base_checkpoint: Path,
+    device: torch.device,
+    *,
+    base_source: str = "checkpoint",
+) -> tuple[nn.Module, dict]:
+    if base_source == "torchvision-imagenet1k-v1":
+        model = torchvision_resnet18_cifar10(pretrained=True)
+        metadata = {
+            "epoch": 0,
+            "pretrain_epoch": 0,
+            "architecture": "torchvision-resnet18-imagenet1k-v1-cifar10",
+            "source_weights": "ResNet18_Weights.IMAGENET1K_V1",
+        }
+        return model.to(device), metadata
+    if base_source != "checkpoint":
+        raise ValueError("base_source must be 'checkpoint' or 'torchvision-imagenet1k-v1'.")
+
     checkpoint = torch.load(base_checkpoint, map_location="cpu", weights_only=False)
     state = checkpoint.get("model_state", checkpoint)
-    model = resnet18_cifar10()
+    model = _model_for_checkpoint(checkpoint if isinstance(checkpoint, dict) else {})
     model.load_state_dict(state)
     return model.to(device), checkpoint if isinstance(checkpoint, dict) else {}
 
@@ -300,6 +371,7 @@ def save_checkpoint(
     *,
     pretrain_epoch: int,
     finetune_epoch: int,
+    architecture: str,
     metadata: dict,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -308,7 +380,7 @@ def save_checkpoint(
             "epoch": int(pretrain_epoch + finetune_epoch),
             "pretrain_epoch": int(pretrain_epoch),
             "finetune_epoch": int(finetune_epoch),
-            "architecture": "manual-resnet18-cifar10",
+            "architecture": architecture,
             "dataset": "cifar10",
             "model_state": {
                 key: value.detach().cpu()
@@ -339,8 +411,27 @@ def finetune(args: argparse.Namespace) -> None:
         print(f"gpu={torch.cuda.get_device_name(0)}", flush=True)
 
     train_images, train_labels, test_images, test_labels = load_cifar10(args.data_dir)
-    train_set = CIFAR10Dataset(train_images, train_labels, train=True)
-    test_set = CIFAR10Dataset(test_images, test_labels, train=False)
+    input_size, normalization, mean, std = input_config(
+        args.base_source,
+        args.normalization,
+        args.input_size,
+    )
+    train_set = CIFAR10Dataset(
+        train_images,
+        train_labels,
+        train=True,
+        input_size=input_size,
+        mean=mean,
+        std=std,
+    )
+    test_set = CIFAR10Dataset(
+        test_images,
+        test_labels,
+        train=False,
+        input_size=input_size,
+        mean=mean,
+        std=std,
+    )
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
@@ -358,8 +449,13 @@ def finetune(args: argparse.Namespace) -> None:
         persistent_workers=args.num_workers > 0,
     )
 
-    model, base_metadata = load_model(args.base_checkpoint, device)
+    model, base_metadata = load_model(
+        args.base_checkpoint,
+        device,
+        base_source=args.base_source,
+    )
     pretrain_epoch = int(base_metadata.get("epoch", args.pretrain_epoch))
+    architecture = str(base_metadata.get("architecture", "manual-resnet18-cifar10"))
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -371,13 +467,17 @@ def finetune(args: argparse.Namespace) -> None:
 
     experiment_metadata = {
         "experiment": "resnet18_cifar10_finetuning_checkpoints",
-        "architecture": "manual-resnet18-cifar10",
+        "architecture": architecture,
         "dataset": "cifar10",
         "train_examples": int(len(train_set)),
         "test_examples": int(len(test_set)),
         "base_checkpoint": str(args.base_checkpoint),
+        "base_source": str(args.base_source),
+        "source_weights": base_metadata.get("source_weights"),
         "base_epoch": int(pretrain_epoch),
         "finetune_epochs": int(args.finetune_epochs),
+        "input_size": int(input_size),
+        "normalization": normalization,
         "batch_size": int(args.batch_size),
         "num_workers": int(args.num_workers),
         "optimizer": "sgd_nesterov",
@@ -400,9 +500,11 @@ def finetune(args: argparse.Namespace) -> None:
             model,
             pretrain_epoch=pretrain_epoch,
             finetune_epoch=0,
+            architecture=architecture,
             metadata={
                 "test_loss": base_test_loss,
                 "test_accuracy": base_test_acc,
+                "source_weights": base_metadata.get("source_weights"),
             },
         )
         rows.append(
@@ -439,7 +541,11 @@ def finetune(args: argparse.Namespace) -> None:
         if completed:
             latest = completed[-1]
             latest_epoch = checkpoint_finetune_epoch(latest)
-            model, latest_metadata = load_model(latest, device)
+            model, latest_metadata = load_model(
+                latest,
+                device,
+                base_source="checkpoint",
+            )
             if latest_metadata.get("optimizer_state"):
                 optimizer.load_state_dict(latest_metadata["optimizer_state"])
             start_epoch = latest_epoch + 1
@@ -484,12 +590,14 @@ def finetune(args: argparse.Namespace) -> None:
             model,
             pretrain_epoch=pretrain_epoch,
             finetune_epoch=finetune_epoch,
+            architecture=architecture,
             metadata={
                 "lr": lr,
                 "train_loss": train_loss,
                 "train_accuracy": train_acc,
                 "test_loss": test_loss,
                 "test_accuracy": test_acc,
+                "source_weights": base_metadata.get("source_weights"),
                 "optimizer_state": optimizer.state_dict(),
             },
         )
@@ -667,10 +775,21 @@ def parse_args() -> argparse.Namespace:
         / "checkpoint_epoch_200.pt"
     )
     parser.add_argument("--base-checkpoint", type=Path, default=default_base)
+    parser.add_argument(
+        "--base-source",
+        choices=["checkpoint", "torchvision-imagenet1k-v1"],
+        default="checkpoint",
+    )
     parser.add_argument("--data-dir", type=Path, default=Path.home() / "data" / "cifar10")
     parser.add_argument("--output-dir", type=Path, default=default_output)
     parser.add_argument("--finetune-epochs", type=int, default=20)
     parser.add_argument("--pretrain-epoch", type=int, default=200)
+    parser.add_argument("--input-size", type=int, default=None)
+    parser.add_argument(
+        "--normalization",
+        choices=["auto", "cifar10", "imagenet"],
+        default="auto",
+    )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=0.01)
@@ -686,7 +805,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         nargs="+",
-        default=["zipnn-local", "neuralzip-ratio"],
+        default=["zipnn-local", "neuralzip"],
     )
     return parser.parse_args()
 
@@ -709,7 +828,7 @@ def main() -> None:
             "exponent_raw_bytes",
             "exponent_compressed_bytes",
             "exponent_compressed_pct",
-            "cold_encode_seconds",
+            "compression_seconds",
             "clusters",
         ]
         print(df[display_cols].to_string(index=False), flush=True)

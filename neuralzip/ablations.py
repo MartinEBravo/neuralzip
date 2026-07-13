@@ -1,4 +1,3 @@
-import re
 import math
 import time
 import zlib
@@ -49,10 +48,13 @@ def transformer_weight_subset(model, limit=16):
 
 
 def layer_signature(name):
-    parts = []
-    for part in str(name).split("."):
-        parts.append(re.sub(r"\d+", "#", part))
-    return ".".join(parts)
+    # ModuleList/Sequential indices identify repeated blocks. Digits embedded in
+    # semantic names (for example ResNet's layer2 or conv1) identify the stage or
+    # operation and must remain part of the architecture label.
+    return ".".join(
+        "#" if part.isdigit() else part
+        for part in str(name).split(".")
+    )
 
 
 def exponent_stream(tensor):
@@ -253,6 +255,525 @@ def heterogeneity_table(model, max_tensors=None):
             .sort_values("same_signature", ascending=False)
         )
     return table, pairs, summary
+
+
+def _module_type_lookup(model):
+    module = model.model if hasattr(model, "model") else model
+    if isinstance(module, dict) or not hasattr(module, "named_modules"):
+        return {}
+    return {
+        str(name): child.__class__.__name__
+        for name, child in module.named_modules()
+    }
+
+
+def _numeric_module_groups(module_types):
+    groups = {}
+    for module_path, module_type in module_types.items():
+        parent_path, _, child_name = module_path.rpartition(".")
+        if child_name.isdigit():
+            groups.setdefault(parent_path, []).append(
+                (int(child_name), module_path, module_type)
+            )
+    return groups
+
+
+def _architecture_signature(name, repeated_numeric_parents):
+    parts = str(name).split(".")
+    normalized = []
+    for index, part in enumerate(parts):
+        parent_path = ".".join(parts[:index])
+        if part.isdigit() and parent_path in repeated_numeric_parents:
+            normalized.append("#")
+        else:
+            normalized.append(part)
+    return ".".join(normalized)
+
+
+def _partition_alignment_metrics(assignments):
+    contingency = pd.crosstab(
+        assignments["architecture_signature"],
+        assignments["js_cluster"],
+    )
+    counts = contingency.to_numpy(dtype=np.float64)
+    total = float(counts.sum())
+    if total == 0:
+        return {
+            "adjusted_rand_index": 0.0,
+            "normalized_mutual_information": 0.0,
+            "js_cluster_purity": 0.0,
+            "signature_concentration": 0.0,
+        }
+
+    row_totals = counts.sum(axis=1)
+    column_totals = counts.sum(axis=0)
+    expected = np.outer(row_totals, column_totals) / total
+    nonzero = counts > 0
+    mutual_information = float(
+        np.sum((counts[nonzero] / total) * np.log2(counts[nonzero] / expected[nonzero]))
+    )
+
+    def entropy(values):
+        probabilities = values[values > 0] / total
+        return float(-(probabilities * np.log2(probabilities)).sum())
+
+    row_entropy = entropy(row_totals)
+    column_entropy = entropy(column_totals)
+    nmi_denominator = math.sqrt(row_entropy * column_entropy)
+    if nmi_denominator:
+        normalized_mutual_information = mutual_information / nmi_denominator
+    else:
+        normalized_mutual_information = float(
+            row_entropy == 0.0 and column_entropy == 0.0
+        )
+
+    def choose_two(values):
+        return values * (values - 1.0) / 2.0
+
+    total_pairs = float(choose_two(np.array([total]))[0])
+    observed_index = float(choose_two(counts).sum())
+    row_index = float(choose_two(row_totals).sum())
+    column_index = float(choose_two(column_totals).sum())
+    if total_pairs:
+        expected_index = row_index * column_index / total_pairs
+        maximum_index = 0.5 * (row_index + column_index)
+        denominator = maximum_index - expected_index
+        adjusted_rand_index = (
+            (observed_index - expected_index) / denominator
+            if denominator
+            else 1.0
+        )
+    else:
+        adjusted_rand_index = 1.0
+
+    return {
+        "adjusted_rand_index": adjusted_rand_index,
+        "normalized_mutual_information": normalized_mutual_information,
+        "js_cluster_purity": float(counts.max(axis=0).sum() / total),
+        "signature_concentration": float(counts.max(axis=1).sum() / total),
+    }
+
+
+def _weighted_partition_purity(assignments):
+    weighted = assignments.pivot_table(
+        index="architecture_signature",
+        columns="js_cluster",
+        values="numel",
+        aggfunc="sum",
+        fill_value=0,
+    ).to_numpy(dtype=np.float64)
+    total = float(weighted.sum())
+    if total == 0:
+        return 0.0, 0.0
+    return (
+        float(weighted.max(axis=0).sum() / total),
+        float(weighted.max(axis=1).sum() / total),
+    )
+
+
+def architecture_js_alignment(model, *, cluster_js_threshold=0.05, max_tensors=None):
+    """Compare JS exponent clusters with architecture-derived parameter groups.
+
+    Hugging Face does not infer clusters. It exposes the module hierarchy through
+    ``named_modules`` and tensor paths through ``named_parameters``. The
+    architecture signature used here removes numeric layer indices from those
+    paths, so corresponding parameters in repeated blocks share one label.
+    """
+
+    named_tensors = sorted(named_floating_tensors(model), key=lambda item: item[0])
+    if max_tensors is not None:
+        named_tensors = named_tensors[: int(max_tensors)]
+
+    cluster_started = time.perf_counter()
+    codec = NeuralZipCodec(
+        cluster_js_threshold=cluster_js_threshold,
+        ngram_values=(),
+        packed_time_budget_ratio=0.0,
+    )
+    codec._prepare_clusters(named_tensors)
+    cluster_seconds = time.perf_counter() - cluster_started
+
+    module_types = _module_type_lookup(model)
+    numeric_module_groups = _numeric_module_groups(module_types)
+    repeated_numeric_parents = {
+        parent_path
+        for parent_path, children in numeric_module_groups.items()
+        if len(children) > 1 and len({child[2] for child in children}) == 1
+    }
+    repeated_block_summary = pd.DataFrame(
+        [
+            {
+                "module_path": parent_path,
+                "repeated_blocks": len(children),
+                "block_type": children[0][2],
+                "child_modules": " | ".join(
+                    child[1] for child in sorted(children)
+                ),
+            }
+            for parent_path, children in sorted(numeric_module_groups.items())
+            if parent_path in repeated_numeric_parents
+        ]
+    )
+    rows = []
+    histograms = []
+    for tensor_index, (name, tensor) in enumerate(named_tensors):
+        values = np.asarray(exponent_stream(tensor), dtype=np.uint8).reshape(-1)
+        if values.size == 0:
+            continue
+        counts = np.bincount(values, minlength=256).astype(np.float64)
+        module_path, separator, parameter_role = str(name).rpartition(".")
+        if not separator:
+            module_path = ""
+            parameter_role = str(name)
+        module_type = module_types.get(module_path, "MappingTensor")
+        rows.append(
+            {
+                "tensor_index": tensor_index,
+                "name": str(name),
+                "module_path": module_path,
+                "module_type": module_type,
+                "parameter_role": parameter_role,
+                "module_type_group": f"{module_type}.{parameter_role}",
+                "architecture_signature": _architecture_signature(
+                    name, repeated_numeric_parents
+                ),
+                "js_cluster": codec.cluster_id(name),
+                "numel": int(tensor.numel()),
+                "raw_bytes": int(tensor.numel() * tensor.element_size()),
+                "entropy_bits": zero_order_entropy(values),
+                "dominant_exponent": int(np.argmax(counts)),
+                "dominant_exponent_mass": float(counts.max() / counts.sum()),
+            }
+        )
+        histograms.append(counts / counts.sum())
+
+    assignments = pd.DataFrame(rows)
+    if assignments.empty:
+        empty = pd.DataFrame()
+        return {
+            "assignments": assignments,
+            "summary": empty,
+            "pair_summary": empty,
+            "signature_summary": empty,
+            "cluster_summary": empty,
+            "repeated_block_summary": repeated_block_summary,
+            "cluster_seconds": cluster_seconds,
+        }
+
+    pair_rows = []
+    for left_index in range(len(assignments)):
+        for right_index in range(left_index + 1, len(assignments)):
+            left = assignments.iloc[left_index]
+            right = assignments.iloc[right_index]
+            pair_rows.append(
+                {
+                    "same_signature": bool(
+                        left["architecture_signature"]
+                        == right["architecture_signature"]
+                    ),
+                    "same_module_type_group": bool(
+                        left["module_type_group"] == right["module_type_group"]
+                    ),
+                    "same_js_cluster": bool(
+                        left["js_cluster"] == right["js_cluster"]
+                    ),
+                    "js_distance": jensen_shannon(
+                        histograms[left_index], histograms[right_index]
+                    ),
+                }
+            )
+    pairs = pd.DataFrame(pair_rows)
+    if pairs.empty:
+        pair_summary = pd.DataFrame()
+    else:
+        pair_summary = (
+            pairs.groupby("same_signature", as_index=False)
+            .agg(
+                pairs=("js_distance", "size"),
+                mean_js=("js_distance", "mean"),
+                median_js=("js_distance", "median"),
+                same_js_cluster_fraction=("same_js_cluster", "mean"),
+            )
+            .sort_values("same_signature", ascending=False)
+        )
+
+    signature_rows = []
+    for signature, group in assignments.groupby("architecture_signature", sort=True):
+        cluster_counts = group["js_cluster"].value_counts()
+        modal_cluster = str(cluster_counts.index[0])
+        signature_rows.append(
+            {
+                "architecture_signature": signature,
+                "module_type": ",".join(sorted(group["module_type"].unique())),
+                "parameter_role": ",".join(
+                    sorted(group["parameter_role"].unique())
+                ),
+                "tensors": int(len(group)),
+                "numel": int(group["numel"].sum()),
+                "js_clusters": int(group["js_cluster"].nunique()),
+                "modal_js_cluster": modal_cluster,
+                "modal_cluster_fraction": float(cluster_counts.iloc[0] / len(group)),
+                "mean_entropy_bits": float(group["entropy_bits"].mean()),
+                "example_tensor": str(group.iloc[0]["name"]),
+            }
+        )
+    signature_summary = pd.DataFrame(signature_rows).sort_values(
+        ["numel", "tensors"], ascending=False
+    )
+
+    cluster_rows = []
+    for cluster_id, group in assignments.groupby("js_cluster", sort=True):
+        signature_counts = group["architecture_signature"].value_counts()
+        cluster_rows.append(
+            {
+                "js_cluster": cluster_id,
+                "tensors": int(len(group)),
+                "numel": int(group["numel"].sum()),
+                "architecture_signatures": int(
+                    group["architecture_signature"].nunique()
+                ),
+                "modal_architecture_signature": str(signature_counts.index[0]),
+                "signature_purity": float(signature_counts.iloc[0] / len(group)),
+                "example_tensors": " | ".join(group["name"].head(3)),
+            }
+        )
+    cluster_summary = pd.DataFrame(cluster_rows).sort_values(
+        ["numel", "tensors"], ascending=False
+    )
+
+    metrics = _partition_alignment_metrics(assignments)
+    weighted_purity, weighted_concentration = _weighted_partition_purity(assignments)
+    if pair_summary.empty:
+        same_signature = pair_summary
+        different_signature = pair_summary
+    else:
+        same_signature = pair_summary[pair_summary["same_signature"]]
+        different_signature = pair_summary[~pair_summary["same_signature"]]
+
+    def pair_value(frame, column):
+        return float(frame.iloc[0][column]) if not frame.empty else 0.0
+
+    summary = pd.DataFrame(
+        [
+            {
+                "tensors": int(len(assignments)),
+                "architecture_signatures": int(
+                    assignments["architecture_signature"].nunique()
+                ),
+                "module_type_groups": int(
+                    assignments["module_type_group"].nunique()
+                ),
+                "repeated_block_groups": int(len(repeated_block_summary)),
+                "js_clusters": int(assignments["js_cluster"].nunique()),
+                "js_threshold": float(cluster_js_threshold),
+                "js_clustering_seconds": cluster_seconds,
+                **metrics,
+                "element_weighted_js_cluster_purity": weighted_purity,
+                "element_weighted_signature_concentration": weighted_concentration,
+                "same_signature_mean_js": pair_value(same_signature, "mean_js"),
+                "different_signature_mean_js": pair_value(
+                    different_signature, "mean_js"
+                ),
+                "same_signature_same_cluster_fraction": pair_value(
+                    same_signature, "same_js_cluster_fraction"
+                ),
+                "different_signature_same_cluster_fraction": pair_value(
+                    different_signature, "same_js_cluster_fraction"
+                ),
+            }
+        ]
+    )
+    return {
+        "assignments": assignments,
+        "summary": summary,
+        "pair_summary": pair_summary,
+        "signature_summary": signature_summary,
+        "cluster_summary": cluster_summary,
+        "repeated_block_summary": repeated_block_summary,
+        "cluster_seconds": cluster_seconds,
+    }
+
+
+def _matched_random_cluster_map(assignments, seed):
+    labels = assignments["js_cluster"].to_numpy(copy=True)
+    generator = np.random.default_rng(int(seed))
+    generator.shuffle(labels)
+    return dict(zip(assignments["name"], labels, strict=True))
+
+
+def _exponent_field_cost(result):
+    stream_results = tuple(result.get("stream_results", ()))
+    if not stream_results:
+        return 0, 0
+    exponent_stream_id = max(int(row["stream_id"]) for row in stream_results)
+    stream = next(
+        row for row in stream_results if int(row["stream_id"]) == exponent_stream_id
+    )
+    codebook_bytes = sum(
+        codebook.metadata_bytes
+        for codebook in result.get("codebooks", ())
+        if int(codebook.stream_id) == exponent_stream_id
+    )
+    return int(stream["raw_bytes"]), int(stream["compressed_bytes"] + codebook_bytes)
+
+
+def cluster_structure_ablation(
+    model,
+    *,
+    cluster_js_threshold=0.05,
+    repeats=5,
+    random_seed=2026,
+    chunk_size=256 << 10,
+    compression_threshold=0.95,
+    max_codebook_sample_bytes=8 << 20,
+):
+    """Compare architecture-derived, random, global, and JS cluster maps."""
+
+    if int(repeats) < 1:
+        raise ValueError("repeats must be at least 1.")
+
+    from .compressor import Compressor
+
+    alignment = architecture_js_alignment(
+        model,
+        cluster_js_threshold=cluster_js_threshold,
+    )
+    assignments = alignment["assignments"]
+    names = assignments["name"].tolist()
+    cluster_maps = {
+        "Global shared": {name: "global" for name in names},
+        "Module type": dict(
+            zip(assignments["name"], assignments["module_type_group"], strict=True)
+        ),
+        "Architecture signature": dict(
+            zip(
+                assignments["name"],
+                assignments["architecture_signature"],
+                strict=True,
+            )
+        ),
+        "Random matched to JS": _matched_random_cluster_map(
+            assignments, random_seed
+        ),
+        "JS distance": dict(
+            zip(assignments["name"], assignments["js_cluster"], strict=True)
+        ),
+    }
+
+    run_rows = []
+    configurations = [("ZipNN local", None), *cluster_maps.items()]
+    for repeat in range(1, int(repeats) + 1):
+        for strategy, cluster_map in configurations:
+            if cluster_map is None:
+                compressor = Compressor(
+                    "zipnn-local",
+                    verify=False,
+                    chunk_size=chunk_size,
+                    compression_threshold=compression_threshold,
+                )
+            else:
+                compressor = Compressor(
+                    "neuralzip",
+                    verify=False,
+                    cluster_map=cluster_map,
+                    chunk_size=chunk_size,
+                    compression_threshold=compression_threshold,
+                    max_codebook_sample_bytes=max_codebook_sample_bytes,
+                    ngram_values=(),
+                    packed_time_budget_ratio=0.0,
+                )
+            result = compressor.compress(model)
+            exponent_raw, exponent_compressed = _exponent_field_cost(result)
+            run_rows.append(
+                {
+                    "strategy": strategy,
+                    "repeat": repeat,
+                    "clusters": (
+                        0 if cluster_map is None else len(set(cluster_map.values()))
+                    ),
+                    "raw_bytes": int(result["raw_bytes"]),
+                    "compressed_bytes": int(result["compressed_bytes"]),
+                    "full_model_ratio_pct": 100.0
+                    * float(result["compression_ratio"]),
+                    "exponent_raw_bytes": exponent_raw,
+                    "exponent_compressed_bytes": exponent_compressed,
+                    "exponent_ratio_pct": (
+                        100.0 * exponent_compressed / exponent_raw
+                        if exponent_raw
+                        else 0.0
+                    ),
+                    "precompute_seconds": float(
+                        result.get("precompute_seconds") or 0.0
+                    ),
+                    "codebook_setup_seconds": float(
+                        result.get("codebook_setup_seconds") or 0.0
+                    ),
+                    "encode_seconds": float(result["encode_seconds"]),
+                    "compression_seconds": float(result["compression_seconds"]),
+                    "total_compression_seconds": float(
+                        result["total_compression_seconds"]
+                    ),
+                    "codebook_bytes": int(result.get("codebook_metadata_bytes") or 0),
+                }
+            )
+
+    verification = {}
+    for strategy, cluster_map in configurations:
+        if cluster_map is None:
+            compressor = Compressor(
+                "zipnn-local",
+                verify=True,
+                chunk_size=chunk_size,
+                compression_threshold=compression_threshold,
+            )
+        else:
+            compressor = Compressor(
+                "neuralzip",
+                verify=True,
+                cluster_map=cluster_map,
+                chunk_size=chunk_size,
+                compression_threshold=compression_threshold,
+                max_codebook_sample_bytes=max_codebook_sample_bytes,
+                ngram_values=(),
+                packed_time_budget_ratio=0.0,
+            )
+        verification[strategy] = bool(compressor.compress(model)["roundtrip_ok"])
+
+    runs = pd.DataFrame(run_rows)
+    summaries = []
+    for strategy, group in runs.groupby("strategy", sort=False):
+        summaries.append(
+            {
+                "strategy": strategy,
+                "repeats": int(len(group)),
+                "clusters": int(group["clusters"].iloc[0]),
+                "full_model_ratio_pct": float(group["full_model_ratio_pct"].median()),
+                "exponent_ratio_pct": float(group["exponent_ratio_pct"].median()),
+                "precompute_seconds": float(
+                    group["precompute_seconds"].median()
+                ),
+                "codebook_setup_seconds": float(
+                    group["codebook_setup_seconds"].median()
+                ),
+                "encode_seconds": float(group["encode_seconds"].median()),
+                "compression_seconds": float(
+                    group["compression_seconds"].median()
+                ),
+                "total_compression_seconds": float(
+                    group["total_compression_seconds"].median()
+                ),
+                "encode_iqr_seconds": float(
+                    group["encode_seconds"].quantile(0.75)
+                    - group["encode_seconds"].quantile(0.25)
+                ),
+                "codebook_bytes": int(group["codebook_bytes"].median()),
+                "roundtrip_ok": verification[strategy],
+            }
+        )
+    compression_summary = pd.DataFrame(summaries)
+    alignment["compression_runs"] = runs
+    alignment["compression_summary"] = compression_summary
+    return alignment
 
 
 def _iter_chunks(data, chunk_size):
@@ -1300,8 +1821,12 @@ def neuralzip_exponent_cost(
     )
 
     precompute_start = time.perf_counter()
-    codec.precompute_codebooks(named_tensors)
+    codec.prepare_clusters(named_tensors)
     precompute_seconds = time.perf_counter() - precompute_start
+
+    codebook_start = time.perf_counter()
+    codec.build_codebooks_and_select_modes(named_tensors)
+    codebook_setup_seconds = time.perf_counter() - codebook_start
 
     raw_bytes = 0
     exponent_keys = set()
@@ -1376,7 +1901,12 @@ def neuralzip_exponent_cost(
                 ),
                 "raw_chunks": sum(group.raw_chunks for group in groups),
                 "precompute_seconds": precompute_seconds,
+                "codebook_setup_seconds": codebook_setup_seconds,
                 "encode_seconds": encode_seconds,
+                "compression_seconds": codebook_setup_seconds + encode_seconds,
+                "total_compression_seconds": (
+                    precompute_seconds + codebook_setup_seconds + encode_seconds
+                ),
             }
         ]
     )
@@ -1760,10 +2290,16 @@ def neuralzip_component_ablation(
                     "raw_bytes": int(row["raw_bytes"]),
                     "compressed_bytes": int(row["compressed_bytes"]),
                     "compression_pct": float(row["compressed_pct"]),
-                    "compression_seconds": float(row["encode_seconds"]),
+                    "compression_seconds": float(
+                        row.get("compression_seconds", row["encode_seconds"])
+                    ),
                     "precompute_seconds": float(
                         row.get("precompute_seconds", 0.0)
                     ),
+                    "codebook_setup_seconds": float(
+                        row.get("codebook_setup_seconds", 0.0)
+                    ),
+                    "encode_seconds": float(row["encode_seconds"]),
                     "clusters": int(row.get("clusters", 0)),
                     "codebook_bytes": int(row.get("codebook_bytes", 0)),
                     "selected_modes": row.get("selected_modes", {}),
@@ -1791,6 +2327,10 @@ def neuralzip_component_ablation(
                 "precompute_seconds": float(
                     group["precompute_seconds"].median()
                 ),
+                "codebook_setup_seconds": float(
+                    group["codebook_setup_seconds"].median()
+                ),
+                "encode_seconds": float(group["encode_seconds"].median()),
                 "clusters": int(first["clusters"]),
                 "codebook_bytes": int(first["codebook_bytes"]),
                 "packed_ngram_chunks": int(first["packed_ngram_chunks"]),

@@ -61,30 +61,12 @@ COMPRESSOR_SUITE = [
         "description": "the official ZipNN package from the authors.",
     },
     {
-        "name": "NeuralZip-Fast",
-        "method": "neuralzip-fast",
+        "name": "NeuralZip",
+        "method": "neuralzip",
         "verify": False,
         "description": (
-            "the fast NeuralZip codec with Jensen-Shannon "
-            "clustered codebooks reused by byte stream."
-        ),
-    },
-    {
-        "name": "NeuralZip-Ratio",
-        "method": "neuralzip-ratio",
-        "verify": False,
-        "description": (
-            "the codebook-aware exponent-stream ratio experiment selecting "
-            "between ZipNN-local Huffman and full-vocabulary n-gram arithmetic."
-        ),
-    },
-    {
-        "name": "Global Huffman",
-        "method": "global-huffman",
-        "verify": False,
-        "description": (
-            "an exponent-stream baseline that builds one Huffman tree from a "
-            "representative chunk and reuses it for the remaining chunks."
+            "the unified codec: Jensen-Shannon tensor clusters, shared Huff0 "
+            "codebooks, and packed exponent n-grams selected per cluster/stream."
         ),
     },
 ]
@@ -179,5 +161,66 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
         "representation": "distilled",
         "category": "distilled",
         "access": "open",
+    },
+]
+
+VISION_DIFFUSION_MODEL_SUITE = [
+    {
+        "name": "ResNet-18",
+        "family": "cnn",
+        "backend": "torchvision",
+        "constructor": "resnet18",
+        "weights": "DEFAULT",
+        "default_dtype": "bf16",
+    },
+    {
+        "name": "VGG-16 BN",
+        "family": "cnn",
+        "backend": "torchvision",
+        "constructor": "vgg16_bn",
+        "weights": "DEFAULT",
+        "default_dtype": "bf16",
+    },
+    {
+        "name": "ConvNeXt-Tiny",
+        "family": "cnn",
+        "backend": "torchvision",
+        "constructor": "convnext_tiny",
+        "weights": "DEFAULT",
+        "default_dtype": "bf16",
+    },
+    {
+        "name": "ViT-B/16",
+        "family": "vision-transformer",
+        "backend": "torchvision",
+        "constructor": "vit_b_16",
+        "weights": "DEFAULT",
+        "default_dtype": "bf16",
+    },
+    {
+        "name": "Swin-T",
+        "family": "vision-transformer",
+        "backend": "torchvision",
+        "constructor": "swin_t",
+        "weights": "DEFAULT",
+        "default_dtype": "bf16",
+    },
+    {
+        "name": "Stable Diffusion v1.5 UNet",
+        "family": "diffusion",
+        "backend": "diffusers-unet",
+        "loader": "UNet2DConditionModel",
+        "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "subfolder": "unet",
+        "default_dtype": "bf16",
+        "fallback": {
+            "name": "DDPM CIFAR-10 UNet (open fallback)",
+            "family": "diffusion",
+            "backend": "diffusers-unet",
+            "loader": "UNet2DModel",
+            "model_id": "google/ddpm-cifar10-32",
+            "default_dtype": "bf16",
+            "fallback_for": "Stable Diffusion v1.5 UNet",
+        },
     },
 ]

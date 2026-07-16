@@ -6,7 +6,7 @@ from neuralzip.ablations import neuralzip_component_ablation
 
 
 class ComponentAblationTests(unittest.TestCase):
-    def test_isolates_fast_and_ratio_modes(self):
+    def test_isolates_sharing_and_packing_with_the_same_setup(self):
         pattern = torch.tensor(
             [1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0, 0.25],
             dtype=torch.bfloat16,
@@ -24,13 +24,17 @@ class ComponentAblationTests(unittest.TestCase):
 
         self.assertEqual(
             list(summary["variant"]),
-            ["ZipNN", "Fast only", "Ratio only", "NeuralZip"],
+            ["ZipNN", "Sharing only", "Packing only", "NeuralZip"],
         )
         self.assertEqual(len(runs), 4)
-        fast = summary[summary["variant"] == "Fast only"].iloc[0]
-        ratio = summary[summary["variant"] == "Ratio only"].iloc[0]
-        self.assertEqual(fast["packed_ngram_chunks"], 0)
-        self.assertEqual(ratio["precompute_seconds"], 0.0)
+        zipnn = summary[summary["variant"] == "ZipNN"].iloc[0]
+        sharing = summary[summary["variant"] == "Sharing only"].iloc[0]
+        packing = summary[summary["variant"] == "Packing only"].iloc[0]
+        self.assertEqual(sharing["packed_ngram_chunks"], 0)
+        self.assertEqual(sharing["compressed_bytes"], zipnn["compressed_bytes"])
+        self.assertGreater(sharing["precompute_seconds"], 0.0)
+        self.assertGreater(packing["precompute_seconds"], 0.0)
+        self.assertNotIn("shared_huffman", packing["selected_modes"])
 
 
 if __name__ == "__main__":

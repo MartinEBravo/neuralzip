@@ -1,5 +1,4 @@
 import re
-import time
 
 import numpy as np
 import torch
@@ -55,7 +54,7 @@ def _exponent_distribution(tensor):
 
 
 class NeuralZipCodec(ZipNNCodec):
-    """JS-clustered shared Huffman with time-budgeted packed exponent modes."""
+    """JS-clustered Huffman with deterministic packed-exponent selection."""
 
     def __init__(
         self,
@@ -70,10 +69,12 @@ class NeuralZipCodec(ZipNNCodec):
         clustering="js-distance",
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
+        max_tensor_probe_bytes=256 << 10,
         ngram_values=(2, 3, 4),
         top_k=254,
         exponent_layout="original",
-        packed_time_budget_ratio=0.10,
+        packed_source_budget_ratio=0.30,
+        enable_shared_codebooks=True,
     ):
         super().__init__(
             min_saving_bytes=min_saving_bytes,
@@ -89,10 +90,12 @@ class NeuralZipCodec(ZipNNCodec):
         self.clustering = str(clustering).lower().replace("_", "-")
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
+        self.max_tensor_probe_bytes = int(max_tensor_probe_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
         self.top_k = int(top_k)
         self.exponent_layout = str(exponent_layout)
-        self.packed_time_budget_ratio = float(packed_time_budget_ratio)
+        self.packed_source_budget_ratio = float(packed_source_budget_ratio)
+        self.enable_shared_codebooks = bool(enable_shared_codebooks)
 
         if self.clustering not in {
             "js-distance",
@@ -106,14 +109,16 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError("cluster_js_threshold must be non-negative.")
         if self.max_codebook_sample_bytes <= 0:
             raise ValueError("max_codebook_sample_bytes must be positive.")
+        if self.max_tensor_probe_bytes <= 0:
+            raise ValueError("max_tensor_probe_bytes must be positive.")
         if any(value < 2 or value > 4 for value in self.ngram_values):
             raise ValueError("ngram_values must contain only values in [2, 4].")
         if not 1 <= self.top_k <= 254:
             raise ValueError("top_k must be in [1, 254].")
         if self.exponent_layout not in {"original", "transpose2d"}:
             raise ValueError("exponent_layout must be 'original' or 'transpose2d'.")
-        if self.packed_time_budget_ratio < 0:
-            raise ValueError("packed_time_budget_ratio must be non-negative.")
+        if not 0 <= self.packed_source_budget_ratio <= 1:
+            raise ValueError("packed_source_budget_ratio must be in [0, 1].")
 
         self.reset_compression()
         self.reset_decompression()
@@ -123,10 +128,16 @@ class NeuralZipCodec(ZipNNCodec):
         self._codebook_payloads = []
         self._codebook_payload_by_id = {}
         self._computed_cluster_map = {}
+        self._cluster_centroids = {}
         self._clusters_prepared = False
         self._next_codebook_id = 0
         self._selected_mode_counts = {}
         self._selection_stats = {}
+        self._mode_by_tensor_stream = {}
+        self._transfer_mode_by_tensor_stream = {}
+        self._transfer_cluster_by_name = {}
+        self._transfer_stats = {}
+        self._transfer_active = False
 
     def reset_decompression(self):
         self._decode_codebooks = {}
@@ -169,14 +180,16 @@ class NeuralZipCodec(ZipNNCodec):
         return dict(self._selected_mode_counts)
 
     @property
-    def builds_codebooks_lazily(self):
-        return not self.ngram_values
-
-    @property
     def selection_stats(self):
         return dict(self._selection_stats)
 
+    @property
+    def transfer_stats(self):
+        return dict(self._transfer_stats)
+
     def cluster_id(self, name):
+        if name in self._transfer_cluster_by_name:
+            return self._transfer_cluster_by_name[name]
         if name in self.cluster_map:
             return self.cluster_map[name]
         if name in self._computed_cluster_map:
@@ -184,11 +197,11 @@ class NeuralZipCodec(ZipNNCodec):
         return _layer_signature(name)
 
     def _prepare_clusters(self, named_tensors):
+        named_tensors = list(named_tensors)
         clusters = []
         computed = {}
+        distributions = {}
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
-            if name in self.cluster_map:
-                continue
             if (
                 not torch.is_tensor(tensor)
                 or not tensor.is_floating_point()
@@ -198,6 +211,9 @@ class NeuralZipCodec(ZipNNCodec):
 
             distribution = _exponent_distribution(tensor)
             weight = int(tensor.numel())
+            distributions[name] = (distribution, weight)
+            if name in self.cluster_map:
+                continue
             best_index = None
             best_distance = float("inf")
             for index, cluster in enumerate(clusters):
@@ -222,6 +238,19 @@ class NeuralZipCodec(ZipNNCodec):
             cluster["weight"] = total_weight
             computed[name] = cluster["cluster_id"]
         self._computed_cluster_map = computed
+        weighted_centroids = {}
+        cluster_weights = {}
+        for name, (distribution, weight) in distributions.items():
+            cluster_id = self.cluster_id(name)
+            weighted_centroids[cluster_id] = weighted_centroids.get(
+                cluster_id,
+                np.zeros(256, dtype=np.float64),
+            ) + distribution * weight
+            cluster_weights[cluster_id] = cluster_weights.get(cluster_id, 0) + weight
+        self._cluster_centroids = {
+            cluster_id: weighted / cluster_weights[cluster_id]
+            for cluster_id, weighted in weighted_centroids.items()
+        }
 
     def _codebook_key(self, name, tensor, stream_id):
         return self.cluster_id(name), _dtype_name(tensor.dtype), int(stream_id)
@@ -236,6 +265,23 @@ class NeuralZipCodec(ZipNNCodec):
         if not is_exponent or self.exponent_layout == "original":
             return bytes(stream), "original"
         return transpose_2d_stream(stream, tuple(int(dim) for dim in tensor.shape))
+
+    @staticmethod
+    def _bounded_stream_sample(stream, max_bytes, segments=8):
+        stream = bytes(stream)
+        max_bytes = min(len(stream), int(max_bytes))
+        if max_bytes <= 0:
+            return b""
+        if len(stream) <= max_bytes:
+            return stream
+        segment_count = min(int(segments), max_bytes)
+        segment_size = max(1, max_bytes // segment_count)
+        last_start = len(stream) - segment_size
+        starts = np.linspace(0, last_start, segment_count, dtype=np.int64)
+        sample = b"".join(
+            stream[int(start) : int(start) + segment_size] for start in starts
+        )
+        return sample[:max_bytes]
 
     def _source_chunk_size(self, element_size, mode):
         base = self._stream_chunk_size(element_size)
@@ -330,25 +376,57 @@ class NeuralZipCodec(ZipNNCodec):
             return None
         return candidate
 
-    def _mode_cost(self, sample, mode, element_size, codebook_payload):
-        total = codebook_payload.metadata_bytes
+    def _mode_cost(
+        self,
+        sample,
+        mode,
+        element_size,
+        codebook_payload=None,
+        sample_parts=None,
+    ):
+        parts = tuple(sample_parts) if sample_parts is not None else (sample,)
+        if mode["kind"] == "local_huffman":
+            total = 0
+            for part in parts:
+                group = super()._compress_stream_canonical(
+                    part,
+                    "sample",
+                    chunk_size=self._stream_chunk_size(element_size),
+                )
+                total += sum(chunk.compressed_bytes for chunk in group.chunks)
+            return total
+
+        total = (
+            codebook_payload.metadata_bytes if codebook_payload is not None else 0
+        )
         step = self._source_chunk_size(element_size, mode)
-        for start in range(0, len(sample), step):
-            chunk = sample[start : start + step]
-            encoded = self._encode_chunk(chunk, mode)
-            total += (encoded or self._raw_chunk(chunk)).compressed_bytes
+        for part in parts:
+            for start in range(0, len(part), step):
+                chunk = part[start : start + step]
+                encoded = (
+                    None if mode["kind"] == "raw" else self._encode_chunk(chunk, mode)
+                )
+                total += (encoded or self._raw_chunk(chunk)).compressed_bytes
         return total
 
-    def _measure_mode(self, sample, mode, element_size, codebook_payload):
-        started = time.perf_counter()
+    def _score_mode(
+        self,
+        sample,
+        mode,
+        element_size,
+        codebook_payload=None,
+        sample_parts=None,
+    ):
         mode["sample_cost"] = self._mode_cost(
             sample,
             mode,
             element_size,
             codebook_payload,
+            sample_parts,
         )
-        mode["sample_seconds"] = time.perf_counter() - started
-        mode["fixed_cost"] = codebook_payload.metadata_bytes
+        mode["fixed_cost"] = (
+            codebook_payload.metadata_bytes if codebook_payload is not None else 0
+        )
         return mode
 
     def _build_candidate(self, sample, *, kind, prior_count, ngram_n=1):
@@ -418,35 +496,57 @@ class NeuralZipCodec(ZipNNCodec):
         total_size,
         element_size,
         is_exponent,
+        sample_parts=None,
     ):
+        if sample_parts is None:
+            sample_parts = (sample,)
         raw_mode = {"kind": "raw", "fixed_cost": 0}
-        raw_step = self._stream_chunk_size(element_size)
-        started = time.perf_counter()
-        raw_mode["sample_cost"] = sum(
-            self._raw_chunk(sample[start : start + raw_step]).compressed_bytes
-            for start in range(0, len(sample), raw_step)
+        self._score_mode(
+            sample,
+            raw_mode,
+            element_size,
+            sample_parts=sample_parts,
         )
-        raw_mode["sample_seconds"] = time.perf_counter() - started
+        local_mode = {"kind": "local_huffman", "fixed_cost": 0}
+        self._score_mode(
+            sample,
+            local_mode,
+            element_size,
+            sample_parts=sample_parts,
+        )
         prior_count = self.exponent_prior_count if is_exponent else self.prior_count
 
-        shared = self._build_candidate(
-            sample,
-            kind="shared_huff0",
-            prior_count=prior_count,
-        )
+        shared = None
+        if self.enable_shared_codebooks:
+            shared = self._build_candidate(
+                sample,
+                kind="shared_huffman",
+                prior_count=prior_count,
+            )
         if shared is not None:
             payload = self._candidate_payload(key, shared)
-            self._measure_mode(
+            self._score_mode(
                 sample,
                 shared,
                 element_size,
                 payload,
+                sample_parts,
             )
 
-        base = min(
-            (raw_mode, shared) if shared is not None else (raw_mode,),
-            key=lambda candidate: int(candidate["sample_cost"]),
-        )
+        base_candidates = [raw_mode, local_mode]
+        if shared is not None:
+            base_candidates.append(shared)
+        sample_size = len(sample)
+
+        def estimated_cost(candidate):
+            return self._estimated_metric(
+                candidate,
+                sample_size,
+                total_size,
+                "sample_cost",
+            )
+
+        base = min(base_candidates, key=estimated_cost)
 
         packed_candidates = []
         if is_exponent:
@@ -460,69 +560,43 @@ class NeuralZipCodec(ZipNNCodec):
                 if packed is None:
                     continue
                 payload = self._candidate_payload(key, packed)
-                self._measure_mode(
+                self._score_mode(
                     sample,
                     packed,
                     element_size,
                     payload,
+                    sample_parts,
                 )
                 packed_candidates.append(packed)
 
         packed = (
-            min(packed_candidates, key=lambda candidate: int(candidate["sample_cost"]))
+            min(packed_candidates, key=estimated_cost)
             if packed_candidates
             else None
         )
-        sample_size = len(sample)
-        base_cost = self._estimated_metric(
-            base,
-            sample_size,
-            total_size,
-            "sample_cost",
-        )
-        base_seconds = self._estimated_metric(
-            base,
-            sample_size,
-            total_size,
-            "sample_seconds",
-        )
+        base_cost = estimated_cost(base)
         opportunity = None
         if packed is not None:
-            packed_cost = self._estimated_metric(
-                packed,
-                sample_size,
-                total_size,
-                "sample_cost",
-            )
-            packed_seconds = self._estimated_metric(
-                packed,
-                sample_size,
-                total_size,
-                "sample_seconds",
-            )
+            packed_cost = estimated_cost(packed)
             saved_bytes = base_cost - packed_cost
-            extra_seconds = max(0.0, packed_seconds - base_seconds)
             if saved_bytes > 0:
                 opportunity = {
                     "mode": packed,
                     "saved_bytes": saved_bytes,
-                    "extra_seconds": extra_seconds,
-                    "savings_per_second": (
-                        float("inf")
-                        if extra_seconds == 0
-                        else saved_bytes / extra_seconds
-                    ),
+                    "source_bytes": int(total_size),
+                    "savings_per_source_byte": saved_bytes / total_size,
                 }
         return {
             "key": key,
             "base": base,
             "base_cost": base_cost,
-            "base_seconds": base_seconds,
+            "total_size": int(total_size),
+            "is_exponent": bool(is_exponent),
             "opportunity": opportunity,
         }
 
     def _finalize_mode(self, key, selected):
-        if selected["kind"] == "raw":
+        if selected["kind"] in {"raw", "local_huffman"}:
             return selected
 
         codebook_id = self._next_codebook_id
@@ -553,66 +627,312 @@ class NeuralZipCodec(ZipNNCodec):
         self._prepare_clusters(named_tensors)
         self._clusters_prepared = True
 
-    def _build_lazy_shared_mode(self, key, stream, *, element_size, is_exponent):
-        step = self._stream_chunk_size(element_size)
-        sample = bytes(stream[:step])
-        if not sample:
-            return {"kind": "raw", "fixed_cost": 0}
+    @staticmethod
+    def _transfer_plan_key(name, tensor, stream_id):
+        return str(name), _dtype_name(tensor.dtype), int(stream_id)
 
-        prior_count = self.exponent_prior_count if is_exponent else self.prior_count
-        codebook = huff0.build_codebook(
+    def _compress_stream_with_mode(
+        self,
+        stream,
+        stream_kind,
+        *,
+        element_size,
+        mode,
+    ):
+        if mode["kind"] == "local_huffman":
+            return super()._compress_stream_canonical(
+                stream,
+                stream_kind,
+                chunk_size=self._stream_chunk_size(element_size),
+            )
+
+        step = (
+            self._stream_chunk_size(element_size)
+            if mode["kind"] == "raw"
+            else self._source_chunk_size(element_size, mode)
+        )
+        chunks = []
+        for start in range(0, len(stream), step):
+            chunk = stream[start : start + step]
+            if mode["kind"] == "raw":
+                chunks.append(self._raw_chunk(chunk))
+                continue
+
+            encoded = self._encode_chunk(chunk, mode)
+            if encoded is not None:
+                chunks.append(encoded)
+                continue
+
+            local = super()._compress_stream_canonical(
+                chunk,
+                stream_kind,
+                chunk_size=max(1, len(chunk)),
+            )
+            chunks.append(local.chunks[0])
+        return ByteGroupPayload(
+            stream_kind=stream_kind,
+            symbol_count=len(stream),
+            chunks=tuple(chunks),
+        )
+
+    def _select_transfer_mode(self, sample, source_mode, *, element_size, stream_kind):
+        raw_mode = {"kind": "raw", "fixed_cost": 0}
+        local_mode = {"kind": "local_huffman", "fixed_cost": 0}
+        raw_cost = self._compress_stream_with_mode(
             sample,
-            prior_count=prior_count,
-        )
-        mode = {
-            "kind": "shared_huff0",
-            "ngram_n": 1,
-            "vocab": b"",
-            "codebook": codebook,
-        }
-        payload = self._candidate_payload(key, mode)
-        measured = self._encode_chunk(sample, mode)
-        estimated_payload_bytes = int(
-            (len(measured.payload) if measured is not None else len(sample))
-            * len(stream)
-            / len(sample)
-        )
-        chunk_count = (len(stream) + step - 1) // step
-        shared_variable_bytes = (
-            estimated_payload_bytes + chunk_count * (1 + 8 + 8 + 8)
-        )
-        shared_total_bytes = payload.metadata_bytes + shared_variable_bytes
-        raw_total_bytes = len(stream) + chunk_count * (1 + 8 + 8)
-
-        if (
-            shared_variable_bytes < len(stream) * self.compression_threshold
-            and shared_total_bytes < raw_total_bytes
-        ):
-            selected = mode
+            stream_kind,
+            element_size=element_size,
+            mode=raw_mode,
+        ).compressed_bytes
+        local_cost = self._compress_stream_with_mode(
+            sample,
+            stream_kind,
+            element_size=element_size,
+            mode=local_mode,
+        ).compressed_bytes
+        if local_cost < raw_cost:
+            selected = local_mode
+            selected_cost = local_cost
         else:
-            selected = {"kind": "raw", "fixed_cost": 0}
-        selected = self._finalize_mode(key, selected)
+            selected = raw_mode
+            selected_cost = raw_cost
 
-        if not self._selection_stats:
-            self._selection_stats = {
-                "selection_strategy": "lazy-representative",
-                "representative_bytes": 0,
-                "representative_keys": 0,
-                "packed_candidates": 0,
-                "packed_selected": 0,
+        transfer_cost = None
+        if source_mode is not None and source_mode["kind"] != "raw":
+            transfer_cost = self._compress_stream_with_mode(
+                sample,
+                stream_kind,
+                element_size=element_size,
+                mode=source_mode,
+            ).compressed_bytes
+            if transfer_cost < selected_cost:
+                selected = source_mode
+                selected_cost = transfer_cost
+
+        return selected, {
+            "raw_cost": int(raw_cost),
+            "local_cost": int(local_cost),
+            "transfer_cost": (
+                int(transfer_cost) if transfer_cost is not None else None
+            ),
+            "selected_cost": int(selected_cost),
+            "uses_source_codebook": selected is source_mode,
+        }
+
+    def _prepare_tensor_modes(self, named_tensors):
+        used_codebook_ids = set()
+        mode_counts = {}
+        mode_symbols = {}
+        probe_bytes = 0
+
+        for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
+            if (
+                not torch.is_tensor(tensor)
+                or not tensor.is_floating_point()
+                or tensor.numel() == 0
+            ):
+                continue
+
+            original = tensor.detach().cpu().contiguous()
+            config = _zipnn_dtype_config(original.dtype)
+            reordered = _zipnn_reordered_bytes(original, config)
+            element_size = int(config["element_size"])
+            for stream_id in range(int(config["num_buffers"])):
+                is_exponent = self._is_exponent_stream(config, stream_id)
+                stream = reordered[stream_id::element_size]
+                stream, _ = self._apply_exponent_layout(
+                    original,
+                    stream,
+                    is_exponent,
+                )
+                key = self._codebook_key(name, original, stream_id)
+                source_mode = self._mode_by_key[key]
+                if source_mode["kind"] in {
+                    "raw",
+                    "local_huffman",
+                    "packed_huff0",
+                }:
+                    selected = source_mode
+                else:
+                    sample = self._bounded_stream_sample(
+                        stream,
+                        self.max_tensor_probe_bytes,
+                    )
+                    selected, _ = self._select_transfer_mode(
+                        sample,
+                        source_mode,
+                        element_size=element_size,
+                        stream_kind=("exponent" if is_exponent else "byte_group"),
+                    )
+                    probe_bytes += len(sample)
+
+                plan_key = self._transfer_plan_key(name, original, stream_id)
+                self._mode_by_tensor_stream[plan_key] = selected
+                kind = selected["kind"]
+                mode_counts[kind] = mode_counts.get(kind, 0) + 1
+                mode_symbols[kind] = mode_symbols.get(kind, 0) + len(stream)
+                codebook_id = selected.get("codebook_id")
+                if codebook_id is not None:
+                    used_codebook_ids.add(int(codebook_id))
+
+        removed_codebook_ids = {
+            int(payload.codebook_id)
+            for payload in self._codebook_payloads
+            if int(payload.codebook_id) not in used_codebook_ids
+        }
+        if removed_codebook_ids:
+            self._codebook_payloads = [
+                payload
+                for payload in self._codebook_payloads
+                if int(payload.codebook_id) in used_codebook_ids
+            ]
+            for codebook_id in removed_codebook_ids:
+                self._decode_codebooks.pop(codebook_id, None)
+                self._codebook_payload_by_id.pop(codebook_id, None)
+            for key, mode in tuple(self._mode_by_key.items()):
+                if mode.get("codebook_id") in removed_codebook_ids:
+                    self._mode_by_key[key] = {
+                        "kind": "local_huffman",
+                        "fixed_cost": 0,
+                    }
+
+        self._selected_mode_counts = {}
+        for mode in self._mode_by_key.values():
+            self._record_selected_mode(mode)
+        self._selection_stats.update(
+            {
+                "tensor_probe_bytes": probe_bytes,
+                "tensor_selected_modes": mode_counts,
+                "tensor_selected_symbols": mode_symbols,
+                "pruned_codebooks": len(removed_codebook_ids),
             }
-        self._selection_stats["representative_bytes"] += len(sample)
-        self._selection_stats["representative_keys"] += 1
-        return selected
+        )
+
+    def prepare_transfer_target(self, named_tensors, *, js_threshold=None):
+        """Prepare a target model against this codec's frozen source codebooks."""
+        if not self._clusters_prepared or not self._cluster_centroids:
+            raise RuntimeError("Source clusters must be prepared before transfer.")
+        if not self._mode_by_key:
+            raise RuntimeError("Source codebooks must be built before transfer.")
+
+        threshold = (
+            self.cluster_js_threshold
+            if js_threshold is None
+            else float(js_threshold)
+        )
+        if threshold < 0:
+            raise ValueError("Transfer JS threshold must be non-negative.")
+
+        self._transfer_mode_by_tensor_stream = {}
+        self._transfer_cluster_by_name = {}
+        mode_counts = {}
+        mode_symbols = {}
+        distances = []
+        matched_tensors = 0
+        target_tensors = 0
+        target_symbols = 0
+        matched_symbols = 0
+        probe_bytes = 0
+
+        for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
+            if (
+                not torch.is_tensor(tensor)
+                or not tensor.is_floating_point()
+                or tensor.numel() == 0
+            ):
+                continue
+
+            original = tensor.detach().cpu().contiguous()
+            config = _zipnn_dtype_config(original.dtype)
+            dtype = _dtype_name(original.dtype)
+            exponent_stream_id = int(config["element_size"]) - 1
+            candidates = [
+                (cluster_id, centroid)
+                for cluster_id, centroid in self._cluster_centroids.items()
+                if (cluster_id, dtype, exponent_stream_id) in self._mode_by_key
+            ]
+            distribution = _exponent_distribution(original)
+            if candidates:
+                cluster_id, distance = min(
+                    (
+                        (cluster_id, _jensen_shannon(distribution, centroid))
+                        for cluster_id, centroid in candidates
+                    ),
+                    key=lambda item: (item[1], item[0]),
+                )
+            else:
+                cluster_id, distance = None, float("inf")
+
+            matched = cluster_id is not None and distance <= threshold
+            target_tensors += 1
+            tensor_symbols = int(original.numel())
+            target_symbols += tensor_symbols
+            distances.append(float(distance))
+            if matched:
+                matched_tensors += 1
+                matched_symbols += tensor_symbols
+                self._transfer_cluster_by_name[str(name)] = str(cluster_id)
+            else:
+                self._transfer_cluster_by_name[str(name)] = f"transfer-local:{name}"
+
+            reordered = _zipnn_reordered_bytes(original, config)
+            element_size = int(config["element_size"])
+            for stream_id in range(int(config["num_buffers"])):
+                is_exponent = self._is_exponent_stream(config, stream_id)
+                stream = reordered[stream_id::element_size]
+                stream, _ = self._apply_exponent_layout(original, stream, is_exponent)
+                sample = stream[: self.max_codebook_sample_bytes]
+                source_mode = (
+                    self._mode_by_key.get((cluster_id, dtype, int(stream_id)))
+                    if matched
+                    else None
+                )
+                selected, probe = self._select_transfer_mode(
+                    sample,
+                    source_mode,
+                    element_size=element_size,
+                    stream_kind="exponent" if is_exponent else "byte_group",
+                )
+                plan_key = self._transfer_plan_key(name, original, stream_id)
+                self._transfer_mode_by_tensor_stream[plan_key] = selected
+                kind = selected["kind"]
+                mode_counts[kind] = mode_counts.get(kind, 0) + 1
+                mode_symbols[kind] = mode_symbols.get(kind, 0) + len(stream)
+                probe_bytes += len(sample)
+
+        finite_distances = [distance for distance in distances if np.isfinite(distance)]
+        self._transfer_stats = {
+            "js_threshold": threshold,
+            "target_tensors": target_tensors,
+            "matched_tensors": matched_tensors,
+            "matched_tensor_pct": (
+                100.0 * matched_tensors / target_tensors if target_tensors else 0.0
+            ),
+            "target_exponents": target_symbols,
+            "matched_exponents": matched_symbols,
+            "matched_exponent_pct": (
+                100.0 * matched_symbols / target_symbols if target_symbols else 0.0
+            ),
+            "mean_nearest_js": (
+                float(np.mean(finite_distances)) if finite_distances else None
+            ),
+            "max_nearest_js": (
+                float(np.max(finite_distances)) if finite_distances else None
+            ),
+            "probe_bytes": probe_bytes,
+            "selected_modes": mode_counts,
+            "selected_symbols": mode_symbols,
+        }
+        self._transfer_active = True
+        return self.transfer_stats
 
     def build_codebooks_and_select_modes(self, named_tensors):
         if not self._clusters_prepared:
             raise RuntimeError(
                 "Clusters must be prepared before building NeuralZip codebooks."
             )
-        if not self.ngram_values:
-            return
-        samples = {}
+        named_tensors = list(named_tensors)
+        sample_parts = {}
         sample_sizes = {}
         total_sizes = {}
         stream_info = {}
@@ -633,29 +953,37 @@ class NeuralZipCodec(ZipNNCodec):
                 remaining = self.max_codebook_sample_bytes - sample_sizes.get(key, 0)
                 if remaining <= 0:
                     continue
-                part = stream[:remaining]
+                part = self._bounded_stream_sample(stream, remaining)
                 if not part:
                     continue
-                samples.setdefault(key, bytearray()).extend(part)
+                sample_parts.setdefault(key, []).append(bytes(part))
                 sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
                 stream_info[key] = (element_size, is_exponent)
 
         evaluations = []
-        for key in sorted(samples):
+        for key in sorted(sample_parts):
             element_size, is_exponent = stream_info[key]
+            parts = tuple(sample_parts[key])
             evaluations.append(
                 self._evaluate_modes(
                     key,
-                    bytes(samples[key]),
+                    b"".join(parts),
                     total_size=total_sizes[key],
                     element_size=element_size,
                     is_exponent=is_exponent,
+                    sample_parts=parts,
                 )
             )
 
-        base_seconds = sum(evaluation["base_seconds"] for evaluation in evaluations)
-        packed_budget = base_seconds * self.packed_time_budget_ratio
-        packed_used = 0.0
+        exponent_source_bytes = sum(
+            evaluation["total_size"]
+            for evaluation in evaluations
+            if evaluation["is_exponent"]
+        )
+        packed_budget = int(
+            exponent_source_bytes * self.packed_source_budget_ratio
+        )
+        packed_used = 0
         packed_saved = 0.0
         selected_packed_keys = set()
         opportunities = [
@@ -665,19 +993,20 @@ class NeuralZipCodec(ZipNNCodec):
         ]
         opportunities.sort(
             key=lambda evaluation: (
-                -evaluation["opportunity"]["savings_per_second"],
+                -evaluation["opportunity"]["savings_per_source_byte"],
+                -evaluation["opportunity"]["saved_bytes"],
                 evaluation["key"],
             )
         )
         for evaluation in opportunities:
-            if self.packed_time_budget_ratio == 0:
+            if self.packed_source_budget_ratio == 0:
                 break
             opportunity = evaluation["opportunity"]
-            extra_seconds = opportunity["extra_seconds"]
-            if extra_seconds > 0 and packed_used + extra_seconds > packed_budget:
+            source_bytes = opportunity["source_bytes"]
+            if packed_used + source_bytes > packed_budget:
                 continue
             selected_packed_keys.add(evaluation["key"])
-            packed_used += extra_seconds
+            packed_used += source_bytes
             packed_saved += opportunity["saved_bytes"]
 
         for evaluation in evaluations:
@@ -689,14 +1018,25 @@ class NeuralZipCodec(ZipNNCodec):
             self._record_selected_mode(selected)
 
         self._selection_stats = {
-            "base_estimated_seconds": base_seconds,
-            "packed_time_budget_seconds": packed_budget,
-            "packed_extra_seconds": packed_used,
+            "selection_strategy": "source-byte-budget",
+            "exponent_source_bytes": exponent_source_bytes,
+            "packed_source_budget_bytes": packed_budget,
+            "packed_source_bytes": packed_used,
             "packed_estimated_bytes_saved": packed_saved,
             "packed_candidates": len(opportunities),
             "packed_selected": len(selected_packed_keys),
         }
 
+        self._prepare_tensor_modes(named_tensors)
+        self._selection_stats["packed_selected"] = sum(
+            mode["kind"] == "packed_huff0" for mode in self._mode_by_key.values()
+        )
+        self._selection_stats["actual_packed_source_bytes"] = (
+            self._selection_stats["tensor_selected_symbols"].get(
+                "packed_huff0",
+                0,
+            )
+        )
         self.load_codebooks(self._codebook_payloads)
 
     def _compress_cluster_stream(
@@ -709,76 +1049,38 @@ class NeuralZipCodec(ZipNNCodec):
         *,
         is_exponent,
     ):
+        if self._transfer_active:
+            plan_key = self._transfer_plan_key(name, tensor, stream_id)
+            mode = self._transfer_mode_by_tensor_stream.get(
+                plan_key,
+                {"kind": "local_huffman", "fixed_cost": 0},
+            )
+            return self._compress_stream_with_mode(
+                stream,
+                stream_kind,
+                element_size=tensor.element_size(),
+                mode=mode,
+            )
+
         key = self._codebook_key(name, tensor, stream_id)
-        mode = self._mode_by_key.get(key)
+        plan_key = self._transfer_plan_key(name, tensor, stream_id)
+        mode = self._mode_by_tensor_stream.get(plan_key)
+        if mode is None:
+            mode = self._mode_by_key.get(key)
         if mode is None:
             if not self._clusters_prepared:
                 raise RuntimeError(
                     "Clusters must be prepared before NeuralZip compression."
                 )
-            if not self.ngram_values:
-                mode = self._build_lazy_shared_mode(
-                    key,
-                    stream,
-                    element_size=tensor.element_size(),
-                    is_exponent=is_exponent,
-                )
-            else:
-                evaluation = self._evaluate_modes(
-                    key,
-                    stream[: self.max_codebook_sample_bytes],
-                    total_size=len(stream),
-                    element_size=tensor.element_size(),
-                    is_exponent=is_exponent,
-                )
-                mode = evaluation["base"]
-                opportunity = evaluation["opportunity"]
-                if opportunity is not None and self.packed_time_budget_ratio > 0:
-                    budget = (
-                        evaluation["base_seconds"] * self.packed_time_budget_ratio
-                    )
-                    if opportunity["extra_seconds"] <= budget:
-                        mode = opportunity["mode"]
-                mode = self._finalize_mode(key, mode)
-            self._mode_by_key[key] = mode
-            self._record_selected_mode(mode)
-
-        step = (
-            self._stream_chunk_size(tensor.element_size())
-            if mode["kind"] == "raw"
-            else self._source_chunk_size(tensor.element_size(), mode)
-        )
-        source_chunks = [
-            stream[start : start + step] for start in range(0, len(stream), step)
-        ]
-        if mode["kind"] == "shared_huff0":
-            payloads = self._encode_huff0_chunks(
-                source_chunks,
-                mode["codebook"],
-                metadata_bytes=1 + 8 + 8 + 8,
+            raise RuntimeError(
+                "Codebooks and modes must be built before NeuralZip compression."
             )
-            chunks = [
-                StreamChunk(
-                    mode="shared_huff0",
-                    symbol_count=len(chunk),
-                    payload=payload,
-                    codebook_id=mode.get("codebook_id"),
-                )
-                if payload is not None
-                else self._raw_chunk(chunk)
-                for chunk, payload in zip(source_chunks, payloads)
-            ]
-        else:
-            chunks = []
-            for chunk in source_chunks:
-                encoded = (
-                    None if mode["kind"] == "raw" else self._encode_chunk(chunk, mode)
-                )
-                chunks.append(encoded or self._raw_chunk(chunk))
-        return ByteGroupPayload(
-            stream_kind=stream_kind,
-            symbol_count=len(stream),
-            chunks=tuple(chunks),
+
+        return self._compress_stream_with_mode(
+            stream,
+            stream_kind,
+            element_size=tensor.element_size(),
+            mode=mode,
         )
 
     def compress_tensor(self, name, tensor):

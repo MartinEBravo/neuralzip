@@ -967,14 +967,431 @@ def run_quantized_bitplane_experiment(
     return df
 
 
-def build_resnet18_cifar():
+_CIFAR_ARCHITECTURES = ("resnet18", "resnet34", "vgg16_bn", "vit_b_16")
+
+
+def _canonical_cifar_architecture(architecture):
+    key = str(architecture).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "resnet_18": "resnet18",
+        "resnet_34": "resnet34",
+        "vgg16": "vgg16_bn",
+        "vgg_16": "vgg16_bn",
+        "vgg_16_bn": "vgg16_bn",
+        "vit": "vit_b_16",
+        "vit_base": "vit_b_16",
+        "vit_b16": "vit_b_16",
+    }
+    key = aliases.get(key, key)
+    if key not in _CIFAR_ARCHITECTURES:
+        choices = ", ".join(_CIFAR_ARCHITECTURES)
+        raise ValueError(f"Unsupported CIFAR architecture {architecture!r}: {choices}.")
+    return key
+
+
+def build_cifar_model(architecture="resnet18", *, num_classes=100):
+    """Build a 32x32 CIFAR classifier with a consistent output head."""
+
     import torch.nn as nn
     from torchvision import models
 
-    model = models.resnet18(weights=None, num_classes=10)
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    model.maxpool = nn.Identity()
-    return model
+    architecture = _canonical_cifar_architecture(architecture)
+    if architecture in {"resnet18", "resnet34"}:
+        constructor = getattr(models, architecture)
+        model = constructor(weights=None, num_classes=int(num_classes))
+        model.conv1 = nn.Conv2d(
+            3,
+            64,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        model.maxpool = nn.Identity()
+        return model
+
+    if architecture == "vgg16_bn":
+        model = models.vgg16_bn(weights=None)
+        model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        model.classifier = nn.Linear(512, int(num_classes))
+        return model
+
+    return models.vit_b_16(
+        weights=None,
+        image_size=32,
+        num_classes=int(num_classes),
+    )
+
+
+def build_resnet18_cifar(*, num_classes=10):
+    return build_cifar_model("resnet18", num_classes=num_classes)
+
+
+def _cifar_transforms(dataset, *, train):
+    from torchvision import transforms
+
+    dataset_key = str(dataset).lower().replace("-", "_")
+    if "100" in dataset_key:
+        mean = (0.5071, 0.4867, 0.4408)
+        std = (0.2675, 0.2565, 0.2761)
+    else:
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2470, 0.2435, 0.2616)
+
+    steps = []
+    if train:
+        steps.extend(
+            [
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+            ]
+        )
+    steps.extend([transforms.ToTensor(), transforms.Normalize(mean, std)])
+    return transforms.Compose(steps)
+
+
+def _load_cifar_datasets(dataset, data_dir, *, download=True, include_test=True):
+    from torchvision import datasets
+
+    dataset_key = str(dataset).lower().replace("-", "_")
+    is_cifar100 = "100" in dataset_key
+    num_classes = 100 if is_cifar100 else 10
+    train_transform = _cifar_transforms(dataset_key, train=True)
+    test_transform = _cifar_transforms(dataset_key, train=False)
+
+    if dataset_key in {"cifar10", "cifar100"}:
+        dataset_cls = datasets.CIFAR100 if is_cifar100 else datasets.CIFAR10
+        train_data = dataset_cls(
+            root=data_dir,
+            train=True,
+            download=download,
+            transform=train_transform,
+        )
+        test_data = (
+            dataset_cls(
+                root=data_dir,
+                train=False,
+                download=download,
+                transform=test_transform,
+            )
+            if include_test
+            else None
+        )
+        return train_data, test_data, num_classes
+
+    if dataset_key in {
+        "hf_cifar10",
+        "cifar10_hf",
+        "parquet_cifar10",
+        "hf_cifar100",
+        "cifar100_hf",
+        "parquet_cifar100",
+    }:
+        folder = "cifar100" if is_cifar100 else "plain_text"
+        train_path = data_dir / folder / "train-00000-of-00001.parquet"
+        test_path = data_dir / folder / "test-00000-of-00001.parquet"
+        required = [train_path] + ([test_path] if include_test else [])
+        missing = [str(path) for path in required if not path.exists()]
+        if missing:
+            repo = "cifar100" if is_cifar100 else "cifar10"
+            raise FileNotFoundError(
+                "Missing Hugging Face CIFAR parquet files: "
+                + ", ".join(missing)
+                + f". Download them from uoft-cs/{repo}."
+            )
+        train_data = _HFCIFARParquet(train_path, transform=train_transform)
+        test_data = (
+            _HFCIFARParquet(test_path, transform=test_transform)
+            if include_test
+            else None
+        )
+        return train_data, test_data, num_classes
+
+    if dataset_key in {"fake", "fake_cifar", "synthetic"}:
+        train_data = datasets.FakeData(
+            size=50_000,
+            image_size=(3, 32, 32),
+            num_classes=num_classes,
+            transform=train_transform,
+            random_offset=0,
+        )
+        test_data = (
+            datasets.FakeData(
+                size=10_000,
+                image_size=(3, 32, 32),
+                num_classes=num_classes,
+                transform=test_transform,
+                random_offset=50_000,
+            )
+            if include_test
+            else None
+        )
+        return train_data, test_data, num_classes
+
+    raise ValueError(
+        "dataset must be CIFAR-10/CIFAR-100, their hf-* parquet variant, or fake."
+    )
+
+
+def _limited_dataset(dataset, limit):
+    from torch.utils.data import Subset
+
+    if limit is None or int(limit) >= len(dataset):
+        return dataset
+    return Subset(dataset, list(range(max(0, int(limit)))))
+
+
+def _checkpoint_path(checkpoint_dir, architecture, epoch):
+    return checkpoint_dir / f"{architecture}_cifar100_epoch_{int(epoch):03d}.pt"
+
+
+def _save_atomic_torch(payload, path):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
+
+
+def train_cifar_checkpoints(
+    output_dir,
+    *,
+    architecture="resnet18",
+    epochs=200,
+    train_subset=None,
+    test_subset=None,
+    batch_size=128,
+    learning_rate=None,
+    seed=2026,
+    download=False,
+    dataset="hf-cifar100",
+    data_dir=None,
+    evaluate_each_epoch=True,
+    device=None,
+    num_workers=4,
+    amp=True,
+    resume=True,
+):
+    """Train one CIFAR model and save epochs 0 through ``epochs``."""
+
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import DataLoader
+
+    architecture = _canonical_cifar_architecture(architecture)
+    output_dir = _ensure_dir(output_dir)
+    checkpoint_dir = _ensure_dir(output_dir / "checkpoints")
+    if data_dir is None:
+        data_dir = output_dir / "data"
+    data_dir = _ensure_dir(data_dir)
+
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+
+    train_data, test_data, num_classes = _load_cifar_datasets(
+        dataset,
+        data_dir,
+        download=download,
+        include_test=True,
+    )
+    train_data = _limited_dataset(train_data, train_subset)
+    test_data = _limited_dataset(test_data, test_subset)
+    loader_generator = torch.Generator().manual_seed(int(seed))
+    loader_kwargs = {
+        "num_workers": int(num_workers),
+        "pin_memory": device.type == "cuda",
+        "persistent_workers": int(num_workers) > 0,
+    }
+    train_loader = DataLoader(
+        train_data,
+        batch_size=int(batch_size),
+        shuffle=True,
+        generator=loader_generator,
+        **loader_kwargs,
+    )
+    test_loader = DataLoader(
+        test_data,
+        batch_size=int(batch_size),
+        shuffle=False,
+        **loader_kwargs,
+    )
+
+    model = build_cifar_model(architecture, num_classes=num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    if architecture == "vit_b_16":
+        effective_lr = 3e-4 if learning_rate is None else float(learning_rate)
+        optimizer = optim.AdamW(model.parameters(), lr=effective_lr, weight_decay=0.05)
+    else:
+        effective_lr = 0.1 if learning_rate is None else float(learning_rate)
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=effective_lr,
+            momentum=0.9,
+            weight_decay=5e-4,
+        )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, int(epochs)),
+    )
+    amp_enabled = bool(amp and device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    state_path = output_dir / "training_state.pt"
+    metrics_path = output_dir / "training_metrics.csv"
+    metrics = (
+        pd.read_csv(metrics_path).to_dict("records")
+        if resume and metrics_path.exists()
+        else []
+    )
+    start_epoch = 0
+    if resume and state_path.exists():
+        training_state = torch.load(state_path, map_location=device)
+        model.load_state_dict(training_state["model_state"], strict=True)
+        optimizer.load_state_dict(training_state["optimizer_state"])
+        scheduler.load_state_dict(training_state["scheduler_state"])
+        scaler.load_state_dict(training_state.get("scaler_state", {}))
+        start_epoch = int(training_state["epoch"])
+
+    def evaluate():
+        model.eval()
+        correct = 0
+        total = 0
+        loss_total = 0.0
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.float16,
+                    enabled=amp_enabled,
+                ):
+                    logits = model(images)
+                    loss = criterion(logits, labels)
+                loss_total += float(loss.item()) * labels.numel()
+                correct += int((logits.argmax(dim=1) == labels).sum().item())
+                total += int(labels.numel())
+        return loss_total / max(total, 1), correct / max(total, 1)
+
+    def cpu_model_state():
+        return {
+            key: value.detach().cpu().clone()
+            for key, value in model.state_dict().items()
+        }
+
+    if start_epoch == 0:
+        initial_path = _checkpoint_path(checkpoint_dir, architecture, 0)
+        if not initial_path.exists():
+            _save_atomic_torch(
+                {"epoch": 0, "architecture": architecture, "model_state": cpu_model_state()},
+                initial_path,
+            )
+        if not any(int(row["epoch"]) == 0 for row in metrics):
+            test_loss, test_accuracy = evaluate()
+            metrics.append(
+                {
+                    "architecture": architecture,
+                    "dataset": str(dataset),
+                    "epoch": 0,
+                    "device": str(device),
+                    "learning_rate": effective_lr,
+                    "train_loss": None,
+                    "train_accuracy": None,
+                    "test_loss": test_loss,
+                    "test_accuracy": test_accuracy,
+                    "train_seconds": 0.0,
+                    "eval_seconds": 0.0,
+                    "checkpoint_path": str(initial_path),
+                }
+            )
+            pd.DataFrame(metrics).to_csv(metrics_path, index=False)
+
+    for epoch in range(start_epoch + 1, int(epochs) + 1):
+        model.train()
+        train_started = time.perf_counter()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        for images, labels in train_loader:
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=amp_enabled,
+            ):
+                logits = model(images)
+                loss = criterion(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            train_loss += float(loss.item()) * labels.numel()
+            train_correct += int((logits.argmax(dim=1) == labels).sum().item())
+            train_total += int(labels.numel())
+        train_seconds = time.perf_counter() - train_started
+        scheduler.step()
+
+        eval_started = time.perf_counter()
+        if evaluate_each_epoch:
+            test_loss, test_accuracy = evaluate()
+        else:
+            test_loss, test_accuracy = None, None
+        eval_seconds = time.perf_counter() - eval_started
+
+        model_state = cpu_model_state()
+        checkpoint_path = _checkpoint_path(checkpoint_dir, architecture, epoch)
+        _save_atomic_torch(
+            {
+                "epoch": int(epoch),
+                "architecture": architecture,
+                "model_state": model_state,
+            },
+            checkpoint_path,
+        )
+        _save_atomic_torch(
+            {
+                "epoch": int(epoch),
+                "architecture": architecture,
+                "model_state": model_state,
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "scaler_state": scaler.state_dict(),
+            },
+            state_path,
+        )
+        metrics = [row for row in metrics if int(row["epoch"]) != int(epoch)]
+        metrics.append(
+            {
+                "architecture": architecture,
+                "dataset": str(dataset),
+                "epoch": int(epoch),
+                "device": str(device),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                "train_loss": train_loss / max(train_total, 1),
+                "train_accuracy": train_correct / max(train_total, 1),
+                "test_loss": test_loss,
+                "test_accuracy": test_accuracy,
+                "train_seconds": train_seconds,
+                "eval_seconds": eval_seconds,
+                "checkpoint_path": str(checkpoint_path),
+            }
+        )
+        metrics.sort(key=lambda row: int(row["epoch"]))
+        pd.DataFrame(metrics).to_csv(metrics_path, index=False)
+        print(
+            f"{architecture} epoch={epoch}/{epochs} "
+            f"train_loss={metrics[-1]['train_loss']:.4f} "
+            f"test_accuracy={test_accuracy if test_accuracy is not None else float('nan'):.4f} "
+            f"seconds={train_seconds + eval_seconds:.1f}",
+            flush=True,
+        )
+        del model_state
+
+    return pd.DataFrame(metrics).sort_values("epoch").reset_index(drop=True)
 
 
 def train_resnet18_cifar_checkpoints(
@@ -1510,11 +1927,15 @@ def compress_federated_directory_amortized(
 
 
 def _floating_tensors_from_state(state, *, dtype):
-    return {
-        name: tensor.detach().cpu().contiguous().to(dtype=dtype)
-        for name, tensor in state.items()
-        if torch.is_tensor(tensor) and tensor.is_floating_point()
-    }
+    tensors = {}
+    for name, tensor in state.items():
+        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+            continue
+        value = tensor.detach().cpu().contiguous()
+        if dtype is not None:
+            value = value.to(dtype=dtype)
+        tensors[name] = value
+    return tensors
 
 
 def _initial_resnet18_cifar_tensors(*, dtype, seed=2026):
@@ -1540,17 +1961,27 @@ def _load_federated_client_tensors(path, *, dtype):
     return round_index, client_index, tensors
 
 
-class _HFCIFAR10Parquet(torch.utils.data.Dataset):
+class _HFCIFARParquet(torch.utils.data.Dataset):
     def __init__(self, parquet_path, *, transform=None):
         import io
 
         from PIL import Image
         import pyarrow.parquet as pq
 
-        table = pq.read_table(parquet_path, columns=["img", "label"])
+        schema_names = set(pq.read_schema(parquet_path).names)
+        if "label" in schema_names:
+            label_column = "label"
+        elif "fine_label" in schema_names:
+            label_column = "fine_label"
+        else:
+            raise ValueError(
+                f"No CIFAR label column found in {parquet_path}; "
+                f"available columns: {sorted(schema_names)}"
+            )
+        table = pq.read_table(parquet_path, columns=["img", label_column])
         rows = table.to_pylist()
         self._images = [row["img"]["bytes"] for row in rows]
-        self._labels = [int(row["label"]) for row in rows]
+        self._labels = [int(row[label_column]) for row in rows]
         self._transform = transform
         self._image_cls = Image
         self._io = io
@@ -1565,6 +1996,9 @@ class _HFCIFAR10Parquet(torch.utils.data.Dataset):
         if self._transform is not None:
             image = self._transform(image)
         return image, self._labels[int(index)]
+
+
+_HFCIFAR10Parquet = _HFCIFARParquet
 
 
 def _codec_compress_tensors(codec, tensors):
@@ -1618,6 +2052,260 @@ def _codec_decompress_tensors(codec, payloads):
     tensors = {payload.name: codec.decompress_tensor(payload) for payload in payloads}
     seconds = time.perf_counter() - start
     return tensors, seconds
+
+
+def _payload_exponent_sizes(payload):
+    if not payload.groups:
+        return 0, 0
+    exponent_group = payload.groups[int(payload.element_size) - 1]
+    return int(exponent_group.symbol_count), int(exponent_group.compressed_bytes)
+
+
+def _assert_tensor_roundtrip(expected, decoded, *, method, checkpoint):
+    if expected.keys() != decoded.keys():
+        raise AssertionError(
+            f"{method} changed the tensor names for checkpoint {checkpoint}."
+        )
+    for name, tensor in expected.items():
+        if not torch.equal(tensor, decoded[name]):
+            raise AssertionError(
+                f"{method} failed bitwise roundtrip for {checkpoint}:{name}."
+            )
+
+
+def compress_training_checkpoints(
+    checkpoint_dir,
+    output_dir,
+    *,
+    architecture,
+    dtype=None,
+    chunk_size=256 << 10,
+    compression_threshold=0.95,
+    clustering="js-distance",
+    cluster_js_threshold=0.05,
+    max_codebook_sample_bytes=8 << 20,
+    ngram_values=(2, 3, 4),
+    top_k=254,
+    packed_source_budget_ratio=0.30,
+    verify=True,
+    resume=True,
+):
+    """Compress each checkpoint with a NeuralZip setup fitted to that checkpoint."""
+
+    architecture = _canonical_cifar_architecture(architecture)
+    checkpoint_dir = Path(checkpoint_dir)
+    output_dir = _ensure_dir(output_dir)
+    result_path = output_dir / "checkpoint_compression_results.csv"
+    summary_path = output_dir / "checkpoint_compression_summary.csv"
+    checkpoint_paths = sorted(
+        checkpoint_dir.glob(f"{architecture}_cifar100_epoch_*.pt")
+    )
+    if not checkpoint_paths:
+        raise ValueError(
+            f"No {architecture} CIFAR-100 checkpoints found in {checkpoint_dir}."
+        )
+
+    zipnn_codec = ZipNNCodec(
+        chunk_size=chunk_size,
+        compression_threshold=compression_threshold,
+    )
+
+    rows = (
+        pd.read_csv(result_path).to_dict("records")
+        if resume and result_path.exists()
+        else []
+    )
+    if rows and any(row.get("setup_scope") != "per-checkpoint" for row in rows):
+        rows = []
+    completed = {
+        (str(row["method"]), int(row["epoch"]))
+        for row in rows
+        if str(row.get("status", "ok")) == "ok"
+    }
+
+    for checkpoint_path in checkpoint_paths:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        epoch = int(checkpoint["epoch"])
+        tensors = _floating_tensors_from_state(checkpoint["model_state"], dtype=dtype)
+        protocols = [
+            (
+                "ZipNN",
+                zipnn_codec,
+                {
+                    "setup_seconds": 0.0,
+                    "cluster_setup_seconds": 0.0,
+                    "codebook_setup_seconds": 0.0,
+                    "setup_bytes": 0,
+                    "exponent_codebook_bytes": 0,
+                    "clusters": 0,
+                    "codebooks": 0,
+                },
+            )
+        ]
+        if ("NeuralZip", epoch) not in completed:
+            neuralzip_codec = NeuralZipCodec(
+                chunk_size=chunk_size,
+                compression_threshold=compression_threshold,
+                clustering=clustering,
+                cluster_js_threshold=cluster_js_threshold,
+                max_codebook_sample_bytes=max_codebook_sample_bytes,
+                ngram_values=ngram_values,
+                top_k=top_k,
+                packed_source_budget_ratio=packed_source_budget_ratio,
+            )
+            neuralzip_setup = _prepare_neuralzip_codec(
+                neuralzip_codec,
+                tensors.items(),
+            )
+            codebooks = neuralzip_codec.export_codebooks()
+            element_sizes = {"float16": 2, "bfloat16": 2, "float32": 4}
+            exponent_codebook_bytes = sum(
+                int(codebook.metadata_bytes)
+                for codebook in codebooks
+                if int(codebook.stream_id)
+                == element_sizes[str(codebook.dtype)] - 1
+            )
+            protocols.append(
+                (
+                    "NeuralZip",
+                    neuralzip_codec,
+                    {
+                        "setup_seconds": neuralzip_setup["total_setup_seconds"],
+                        "cluster_setup_seconds": neuralzip_setup[
+                            "precompute_seconds"
+                        ],
+                        "codebook_setup_seconds": neuralzip_setup[
+                            "codebook_setup_seconds"
+                        ],
+                        "setup_bytes": int(
+                            neuralzip_codec.codebook_metadata_bytes()
+                        ),
+                        "exponent_codebook_bytes": int(
+                            exponent_codebook_bytes
+                        ),
+                        "clusters": int(neuralzip_codec.cluster_count),
+                        "codebooks": int(len(codebooks)),
+                    },
+                )
+            )
+        for method, codec, setup in protocols:
+            if (method, epoch) in completed:
+                continue
+            encoded = _codec_compress_tensors(codec, tensors)
+            exponent_raw_bytes = 0
+            exponent_compressed_bytes = 0
+            for payload in encoded["payloads"]:
+                raw_size, compressed_size = _payload_exponent_sizes(payload)
+                exponent_raw_bytes += raw_size
+                exponent_compressed_bytes += compressed_size
+            exponent_compressed_bytes += int(setup["exponent_codebook_bytes"])
+            stored_bytes = int(encoded["compressed_bytes"]) + int(
+                setup["setup_bytes"]
+            )
+
+            decoded, decode_seconds = _codec_decompress_tensors(
+                codec,
+                encoded["payloads"],
+            )
+            if verify:
+                _assert_tensor_roundtrip(
+                    tensors,
+                    decoded,
+                    method=method,
+                    checkpoint=checkpoint_path.name,
+                )
+            row = {
+                "experiment": "training-checkpoints",
+                "architecture": architecture,
+                "checkpoint": checkpoint_path.name,
+                "epoch": epoch,
+                "method": method,
+                "setup_scope": "per-checkpoint",
+                "dtype": (
+                    str(dtype).replace("torch.", "")
+                    if dtype is not None
+                    else "checkpoint"
+                ),
+                "tensor_count": len(tensors),
+                "raw_bytes": int(encoded["raw_bytes"]),
+                "payload_compressed_bytes": int(encoded["compressed_bytes"]),
+                "stored_bytes": stored_bytes,
+                "compression_ratio_pct": (
+                    100 * stored_bytes / encoded["raw_bytes"]
+                    if encoded["raw_bytes"]
+                    else 0.0
+                ),
+                "exponent_raw_bytes": int(exponent_raw_bytes),
+                "exponent_compressed_bytes": int(exponent_compressed_bytes),
+                "exponent_compression_ratio_pct": (
+                    100 * exponent_compressed_bytes / exponent_raw_bytes
+                    if exponent_raw_bytes
+                    else 0.0
+                ),
+                "encode_seconds": float(encoded["seconds"]),
+                "total_compression_seconds": float(encoded["seconds"])
+                + float(setup["setup_seconds"]),
+                "decode_seconds": float(decode_seconds),
+                "huffman_chunks": int(encoded["huffman_chunks"]),
+                "raw_chunks": int(encoded["raw_chunks"]),
+                "shared_codebook_refs": int(encoded["shared_refs"]),
+                "roundtrip_exact": True,
+                "status": "ok",
+                **setup,
+            }
+            rows = [
+                existing
+                for existing in rows
+                if not (
+                    str(existing["method"]) == method
+                    and int(existing["epoch"]) == epoch
+                )
+            ]
+            rows.append(row)
+            rows.sort(key=lambda item: (int(item["epoch"]), str(item["method"])))
+            pd.DataFrame(rows).to_csv(result_path, index=False)
+            print(
+                f"{architecture} checkpoint={epoch} method={method} "
+                f"ratio={row['compression_ratio_pct']:.3f}% "
+                f"exponents={row['exponent_compression_ratio_pct']:.3f}% "
+                f"setup={row['setup_seconds']:.3f}s "
+                f"encode={row['encode_seconds']:.3f}s",
+                flush=True,
+            )
+            del decoded, encoded
+        del checkpoint, tensors
+        gc.collect()
+
+    result_df = pd.DataFrame(rows)
+    summary = (
+        result_df.groupby("method", as_index=False)
+        .agg(
+            architecture=("architecture", "first"),
+            checkpoints=("epoch", "count"),
+            setup_seconds=("setup_seconds", "sum"),
+            setup_bytes=("setup_bytes", "sum"),
+            clusters_mean=("clusters", "mean"),
+            codebooks_mean=("codebooks", "mean"),
+            raw_bytes=("raw_bytes", "sum"),
+            payload_compressed_bytes=("payload_compressed_bytes", "sum"),
+            stored_bytes=("stored_bytes", "sum"),
+            exponent_raw_bytes=("exponent_raw_bytes", "sum"),
+            exponent_compressed_bytes=("exponent_compressed_bytes", "sum"),
+            encode_seconds=("encode_seconds", "sum"),
+            total_compression_seconds=("total_compression_seconds", "sum"),
+            decode_seconds=("decode_seconds", "sum"),
+        )
+    )
+    summary["compression_ratio_pct"] = (
+        100 * summary["stored_bytes"] / summary["raw_bytes"]
+    )
+    summary["exponent_compression_ratio_pct"] = (
+        100
+        * summary["exponent_compressed_bytes"]
+        / summary["exponent_raw_bytes"]
+    )
+    summary.to_csv(summary_path, index=False)
+    return result_df, summary
 
 
 def run_federated_codec_protocol(
@@ -1898,24 +2586,28 @@ def run_federated_codec_protocol(
 def run_federated_codec_protocol_online(
     output_dir,
     *,
+    architecture="resnet18",
     clients=10,
     rounds=200,
     local_batches=1,
     batch_size=64,
     learning_rate=0.02,
-    dtype=torch.bfloat16,
+    dtype=None,
     seed=2026,
-    dataset="cifar10",
+    dataset="hf-cifar100",
     data_dir=None,
-    download=True,
+    download=False,
     device=None,
     chunk_size=256 << 10,
-    compression_threshold=1.0,
+    compression_threshold=0.95,
     clustering="js-distance",
     cluster_js_threshold=0.05,
     max_codebook_sample_bytes=8 << 20,
     num_workers=0,
     progress_every=10,
+    train_subset=None,
+    amp=True,
+    verify=True,
 ):
     """Run a FedZipNN vs FedNeuralZip protocol benchmark online.
 
@@ -1929,7 +2621,7 @@ def run_federated_codec_protocol_online(
     import torch.nn as nn
     import torch.optim as optim
     from torch.utils.data import DataLoader, Subset
-    from torchvision import datasets, transforms
+    architecture = _canonical_cifar_architecture(architecture)
 
     output_dir = _ensure_dir(output_dir)
     compression_dir = _ensure_dir(output_dir / "compression")
@@ -1942,44 +2634,14 @@ def run_federated_codec_protocol_online(
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
 
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-        ]
-    )
     criterion = nn.CrossEntropyLoss()
-    dataset_key = str(dataset).lower().replace("-", "_")
-    if dataset_key == "cifar10":
-        train_data = datasets.CIFAR10(
-            root=data_dir,
-            train=True,
-            download=download,
-            transform=transform,
-        )
-    elif dataset_key in {"hf_cifar10", "cifar10_hf", "parquet_cifar10"}:
-        parquet_path = data_dir / "plain_text" / "train-00000-of-00001.parquet"
-        if not parquet_path.exists():
-            raise FileNotFoundError(
-                "Hugging Face CIFAR-10 parquet file not found at "
-                f"{parquet_path}. Download "
-                "https://huggingface.co/datasets/uoft-cs/cifar10/resolve/main/"
-                "plain_text/train-00000-of-00001.parquet?download=true"
-            )
-        train_data = _HFCIFAR10Parquet(parquet_path, transform=transform)
-    elif dataset_key in {"fake", "fake_cifar", "synthetic"}:
-        train_data = datasets.FakeData(
-            size=max(
-                int(clients) * int(local_batches) * int(batch_size),
-                50_000,
-            ),
-            image_size=(3, 32, 32),
-            num_classes=10,
-            transform=transform,
-            random_offset=0,
-        )
-    else:
-        raise ValueError("dataset must be 'cifar10', 'hf-cifar10', or 'fake'.")
+    train_data, _, num_classes = _load_cifar_datasets(
+        dataset,
+        data_dir,
+        download=download,
+        include_test=False,
+    )
+    train_data = _limited_dataset(train_data, train_subset)
 
     split_generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(train_data), generator=split_generator).tolist()
@@ -2007,7 +2669,7 @@ def run_federated_codec_protocol_online(
             batches.append(batch)
         return batches
 
-    server = build_resnet18_cifar()
+    server = build_cifar_model(architecture, num_classes=num_classes)
     server_state = {
         key: value.detach().cpu().clone()
         for key, value in server.state_dict().items()
@@ -2018,7 +2680,7 @@ def run_federated_codec_protocol_online(
 
     protocols = [
         {
-            "name": "FedZipNN",
+            "name": "ZipNN",
             "codec": ZipNNCodec(
                 chunk_size=chunk_size,
                 compression_threshold=compression_threshold,
@@ -2044,7 +2706,7 @@ def run_federated_codec_protocol_online(
     neuralzip_codebooks = neuralzip_codec.export_codebooks()
     protocols.append(
         {
-            "name": "FedNeuralZip",
+            "name": "NeuralZip",
             "codec": neuralzip_codec,
             "setup_seconds": neuralzip_setup_seconds,
             "precompute_seconds": neuralzip_setup["precompute_seconds"],
@@ -2061,10 +2723,17 @@ def run_federated_codec_protocol_online(
         downlink_metrics = {}
         for protocol in protocols:
             downlink = _codec_compress_tensors(protocol["codec"], server_tensors)
-            _, downlink_decode_seconds = _codec_decompress_tensors(
+            decoded_downlink, downlink_decode_seconds = _codec_decompress_tensors(
                 protocol["codec"],
                 downlink["payloads"],
             )
+            if verify:
+                _assert_tensor_roundtrip(
+                    server_tensors,
+                    decoded_downlink,
+                    method=protocol["name"],
+                    checkpoint=f"round-{round_index}-downlink",
+                )
             downlink_metrics[protocol["name"]] = {
                 "encode_seconds": float(downlink["seconds"]),
                 "decode_one_seconds": float(downlink_decode_seconds),
@@ -2074,29 +2743,47 @@ def run_federated_codec_protocol_online(
                 "raw_chunks": int(downlink["raw_chunks"]),
                 "shared_refs": int(downlink["shared_refs"]),
             }
-            del downlink
+            del decoded_downlink, downlink
 
         client_states = []
         train_seconds = []
         for client_index in range(int(clients)):
-            model = build_resnet18_cifar().to(device)
+            model = build_cifar_model(
+                architecture,
+                num_classes=num_classes,
+            ).to(device)
             model.load_state_dict(server_state, strict=True)
             model.train()
-            optimizer = optim.SGD(
-                model.parameters(),
-                lr=learning_rate,
-                momentum=0.9,
-                weight_decay=5e-4,
-            )
+            if architecture == "vit_b_16":
+                optimizer = optim.AdamW(
+                    model.parameters(),
+                    lr=float(learning_rate),
+                    weight_decay=0.05,
+                )
+            else:
+                optimizer = optim.SGD(
+                    model.parameters(),
+                    lr=float(learning_rate),
+                    momentum=0.9,
+                    weight_decay=5e-4,
+                )
+            amp_enabled = bool(amp and device.type == "cuda")
+            scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
             start = time.perf_counter()
             for images, labels in next_client_batches(client_index):
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
-                logits = model(images)
-                loss = criterion(logits, labels)
-                loss.backward()
-                optimizer.step()
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.float16,
+                    enabled=amp_enabled,
+                ):
+                    logits = model(images)
+                    loss = criterion(logits, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
             train_seconds.append(time.perf_counter() - start)
             client_states.append(
                 {
@@ -2104,7 +2791,7 @@ def run_federated_codec_protocol_online(
                     for key, value in model.state_dict().items()
                 }
             )
-            del model, optimizer
+            del model, optimizer, scaler
 
         for protocol in protocols:
             codec = protocol["codec"]
@@ -2119,10 +2806,17 @@ def run_federated_codec_protocol_online(
             for client_state in client_states:
                 client_tensors = _floating_tensors_from_state(client_state, dtype=dtype)
                 uplink = _codec_compress_tensors(codec, client_tensors)
-                _, decode_seconds = _codec_decompress_tensors(
+                decoded_uplink, decode_seconds = _codec_decompress_tensors(
                     codec,
                     uplink["payloads"],
                 )
+                if verify:
+                    _assert_tensor_roundtrip(
+                        client_tensors,
+                        decoded_uplink,
+                        method=protocol["name"],
+                        checkpoint=f"round-{round_index}-uplink",
+                    )
                 uplink_encode_seconds.append(float(uplink["seconds"]))
                 uplink_decode_seconds.append(float(decode_seconds))
                 uplink_bytes += int(uplink["compressed_bytes"])
@@ -2130,7 +2824,7 @@ def run_federated_codec_protocol_online(
                 huffman_chunks += int(uplink["huffman_chunks"])
                 raw_chunks += int(uplink["raw_chunks"])
                 shared_refs += int(uplink["shared_refs"])
-                del client_tensors, uplink
+                del client_tensors, decoded_uplink, uplink
 
             downlink = downlink_metrics[protocol["name"]]
             downlink_decode_sum = downlink["decode_one_seconds"] * int(clients)
@@ -2155,13 +2849,19 @@ def run_federated_codec_protocol_online(
 
             rows.append(
                 {
+                    "architecture": architecture,
+                    "dataset": str(dataset),
                     "protocol": protocol["name"],
                     "round": round_index,
                     "clients": int(clients),
                     "local_batches": int(local_batches),
                     "batch_size": int(batch_size),
                     "device": str(device),
-                    "dtype": str(dtype).replace("torch.", ""),
+                    "dtype": (
+                        str(dtype).replace("torch.", "")
+                        if dtype is not None
+                        else "model-state"
+                    ),
                     "setup_seconds_once": protocol["setup_seconds"],
                     "precompute_seconds_once": protocol.get(
                         "precompute_seconds", 0.0
@@ -2228,6 +2928,8 @@ def run_federated_codec_protocol_online(
     summary = (
         round_df.groupby("protocol", as_index=False)
         .agg(
+            architecture=("architecture", "first"),
+            dataset=("dataset", "first"),
             rounds=("round", "count"),
             clients=("clients", "mean"),
             local_batches=("local_batches", "first"),
@@ -2275,3 +2977,134 @@ def run_federated_codec_protocol_online(
         index=False,
     )
     return round_df, summary
+
+
+def run_checkpoint_experiment_suite(
+    output_dir,
+    *,
+    architectures=_CIFAR_ARCHITECTURES,
+    data_dir,
+    epochs=200,
+    batch_size=128,
+    seed=2026,
+    device=None,
+    num_workers=4,
+    train_subset=None,
+    test_subset=None,
+    verify=True,
+):
+    """Train and compress the full CIFAR-100 checkpoint suite."""
+
+    output_dir = _ensure_dir(output_dir)
+    training_frames = []
+    result_frames = []
+    summary_frames = []
+    for architecture in architectures:
+        architecture = _canonical_cifar_architecture(architecture)
+        architecture_dir = _ensure_dir(output_dir / architecture)
+        training = train_cifar_checkpoints(
+            architecture_dir,
+            architecture=architecture,
+            epochs=epochs,
+            train_subset=train_subset,
+            test_subset=test_subset,
+            batch_size=batch_size,
+            seed=seed,
+            download=False,
+            dataset="hf-cifar100",
+            data_dir=data_dir,
+            evaluate_each_epoch=True,
+            device=device,
+            num_workers=num_workers,
+            resume=True,
+        )
+        results, summary = compress_training_checkpoints(
+            architecture_dir / "checkpoints",
+            architecture_dir / "compression",
+            architecture=architecture,
+            dtype=None,
+            verify=verify,
+            resume=True,
+        )
+        training_frames.append(training)
+        result_frames.append(results)
+        summary_frames.append(summary)
+        pd.concat(training_frames, ignore_index=True).to_csv(
+            output_dir / "training_metrics.csv",
+            index=False,
+        )
+        pd.concat(result_frames, ignore_index=True).to_csv(
+            output_dir / "checkpoint_compression_results.csv",
+            index=False,
+        )
+        pd.concat(summary_frames, ignore_index=True).to_csv(
+            output_dir / "checkpoint_compression_summary.csv",
+            index=False,
+        )
+
+    return (
+        pd.concat(training_frames, ignore_index=True),
+        pd.concat(result_frames, ignore_index=True),
+        pd.concat(summary_frames, ignore_index=True),
+    )
+
+
+def run_distributed_experiment_suite(
+    output_dir,
+    *,
+    architectures=_CIFAR_ARCHITECTURES,
+    data_dir,
+    clients=10,
+    rounds=200,
+    local_batches=1,
+    batch_size=64,
+    seed=2026,
+    device=None,
+    num_workers=2,
+    train_subset=None,
+    verify=True,
+):
+    """Run the online CIFAR-100 communication suite architecture by architecture."""
+
+    output_dir = _ensure_dir(output_dir)
+    round_frames = []
+    summary_frames = []
+    for architecture in architectures:
+        architecture = _canonical_cifar_architecture(architecture)
+        learning_rate = 3e-4 if architecture == "vit_b_16" else 0.02
+        architecture_dir = _ensure_dir(output_dir / architecture)
+        round_df, summary = run_federated_codec_protocol_online(
+            architecture_dir,
+            architecture=architecture,
+            clients=clients,
+            rounds=rounds,
+            local_batches=local_batches,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            dtype=None,
+            seed=seed,
+            dataset="hf-cifar100",
+            data_dir=data_dir,
+            download=False,
+            device=device,
+            compression_threshold=0.95,
+            num_workers=num_workers,
+            progress_every=1,
+            train_subset=train_subset,
+            verify=verify,
+        )
+        round_frames.append(round_df)
+        summary_frames.append(summary)
+        pd.concat(round_frames, ignore_index=True).to_csv(
+            output_dir / "federated_protocol_round_results.csv",
+            index=False,
+        )
+        pd.concat(summary_frames, ignore_index=True).to_csv(
+            output_dir / "federated_protocol_summary.csv",
+            index=False,
+        )
+
+    return (
+        pd.concat(round_frames, ignore_index=True),
+        pd.concat(summary_frames, ignore_index=True),
+    )

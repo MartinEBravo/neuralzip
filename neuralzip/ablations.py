@@ -13,7 +13,7 @@ from . import huff0
 from . import turborc
 from .neuralzip_codec import NeuralZipCodec
 from .utils import split_fields
-from .zipnn_codec import _zipnn_dtype_config, _zipnn_reordered_bytes
+from .zipnn_codec import ZipNNCodec, _zipnn_dtype_config, _zipnn_reordered_bytes
 
 
 TRANSFORMER_WEIGHT_PATTERNS = (
@@ -388,7 +388,7 @@ def architecture_js_alignment(model, *, cluster_js_threshold=0.05, max_tensors=N
     codec = NeuralZipCodec(
         cluster_js_threshold=cluster_js_threshold,
         ngram_values=(),
-        packed_time_budget_ratio=0.0,
+        packed_source_budget_ratio=0.0,
     )
     codec._prepare_clusters(named_tensors)
     cluster_seconds = time.perf_counter() - cluster_started
@@ -680,7 +680,7 @@ def cluster_structure_ablation(
                     compression_threshold=compression_threshold,
                     max_codebook_sample_bytes=max_codebook_sample_bytes,
                     ngram_values=(),
-                    packed_time_budget_ratio=0.0,
+                    packed_source_budget_ratio=0.0,
                 )
             result = compressor.compress(model)
             exponent_raw, exponent_compressed = _exponent_field_cost(result)
@@ -735,7 +735,7 @@ def cluster_structure_ablation(
                 compression_threshold=compression_threshold,
                 max_codebook_sample_bytes=max_codebook_sample_bytes,
                 ngram_values=(),
-                packed_time_budget_ratio=0.0,
+                packed_source_budget_ratio=0.0,
             )
         verification[strategy] = bool(compressor.compress(model)["roundtrip_ok"])
 
@@ -980,31 +980,32 @@ def zipnn_exponent_huffman_cost(
     compression_threshold=None,
 ):
     encode_start = time.perf_counter()
+    codec = ZipNNCodec(
+        chunk_size=chunk_size,
+        compression_threshold=(
+            1.0 if compression_threshold is None else compression_threshold
+        ),
+    )
     rows = []
     raw_bytes = 0
     compressed_bytes = 0
     chunks = 0
-    for name, tensor in named_floating_tensors(model):
+    local_huffman_chunks = 0
+    raw_chunks = 0
+    for _, tensor in named_floating_tensors(model):
         stream = zipnn_exponent_stream(tensor, layout=layout)
         raw_bytes += len(stream)
-        for chunk in _iter_chunks(stream, chunk_size):
-            chunks += 1
-            encoded = huffman.compress(chunk, min_saving_bytes=0)
-            raw_cost = 1 + 8 + 8 + len(chunk)
-            if encoded is None:
-                compressed_bytes += raw_cost
-                continue
-            encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-            size_limit = raw_cost
-            if compression_threshold is not None:
-                size_limit = min(
-                    size_limit,
-                    int(len(chunk) * float(compression_threshold)),
-                )
-            if encoded_cost >= size_limit:
-                compressed_bytes += raw_cost
-            else:
-                compressed_bytes += min(raw_cost, encoded_cost)
+        # Component isolation keeps the beta's canonical local-Huffman baseline
+        # so its ratios remain directly comparable with the frozen results.
+        group = codec._compress_stream_canonical(
+            stream,
+            "exponent",
+            chunk_size=codec._stream_chunk_size(tensor.element_size()),
+        )
+        compressed_bytes += sum(chunk.compressed_bytes for chunk in group.chunks)
+        chunks += len(group.chunks)
+        local_huffman_chunks += group.local_huffman_chunks
+        raw_chunks += group.raw_chunks
 
     encode_seconds = time.perf_counter() - encode_start
 
@@ -1016,6 +1017,8 @@ def zipnn_exponent_huffman_cost(
             "compressed_bytes": compressed_bytes,
             "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
             "chunks": chunks,
+            "local_huffman_chunks": local_huffman_chunks,
+            "raw_chunks": raw_chunks,
             "precompute_seconds": 0.0,
             "encode_seconds": encode_seconds,
         }
@@ -1795,6 +1798,7 @@ def _select_clustered_huff0_mode(
 def neuralzip_exponent_cost(
     model,
     *,
+    enable_shared_codebooks=True,
     enable_packed_exponents=True,
     cluster_js_threshold=0.05,
     n_values=(2, 3, 4),
@@ -1803,21 +1807,29 @@ def neuralzip_exponent_cost(
     top_k=254,
     max_sample_bytes=8 << 20,
     compression_threshold=0.95,
-    packed_time_budget_ratio=0.10,
+    packed_source_budget_ratio=0.30,
 ):
     named_tensors = list(named_floating_tensors(model))
+    cluster_map = None
+    if not enable_shared_codebooks:
+        cluster_map = {
+            name: f"tensor_{index:06d}"
+            for index, (name, _) in enumerate(named_tensors)
+        }
     codec = NeuralZipCodec(
         chunk_size=chunk_size,
         compression_threshold=compression_threshold,
         clustering="js-distance",
+        cluster_map=cluster_map,
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_sample_bytes,
         ngram_values=tuple(n_values) if enable_packed_exponents else (),
         top_k=top_k,
         exponent_layout=layout,
-        packed_time_budget_ratio=(
-            packed_time_budget_ratio if enable_packed_exponents else 0.0
+        packed_source_budget_ratio=(
+            packed_source_budget_ratio if enable_packed_exponents else 0.0
         ),
+        enable_shared_codebooks=enable_shared_codebooks,
     )
 
     precompute_start = time.perf_counter()
@@ -1876,12 +1888,19 @@ def neuralzip_exponent_cost(
             kind = f"packed_huff0_n{int(mode['ngram_n'])}"
         selected_modes[kind] = selected_modes.get(kind, 0) + 1
 
+    if enable_shared_codebooks and enable_packed_exponents:
+        method = "NeuralZip"
+    elif enable_shared_codebooks:
+        method = "Sharing only"
+    elif enable_packed_exponents:
+        method = "Packing only"
+    else:
+        method = "Local Huffman"
+
     return pd.DataFrame(
         [
             {
-                "method": (
-                    "NeuralZip" if enable_packed_exponents else "Fast only"
-                ),
+                "method": method,
                 "layout": layout,
                 "clusters": codec.cluster_count,
                 "raw_bytes": raw_bytes,
@@ -1899,6 +1918,9 @@ def neuralzip_exponent_cost(
                     group.shared_codebook_refs - group.packed_ngram_chunks
                     for group in groups
                 ),
+                "local_huffman_chunks": sum(
+                    group.local_huffman_chunks for group in groups
+                ),
                 "raw_chunks": sum(group.raw_chunks for group in groups),
                 "precompute_seconds": precompute_seconds,
                 "codebook_setup_seconds": codebook_setup_seconds,
@@ -1907,220 +1929,6 @@ def neuralzip_exponent_cost(
                 "total_compression_seconds": (
                     precompute_seconds + codebook_setup_seconds + encode_seconds
                 ),
-            }
-        ]
-    )
-
-
-def _local_huffman_chunk_cost(chunk, *, compression_threshold):
-    raw_header = 1 + 8 + 8
-    raw_cost = raw_header + len(chunk)
-    if not chunk:
-        return None
-    encoded = huffman.compress(chunk, min_saving_bytes=0)
-    if encoded is None:
-        return None
-    encoded_cost = raw_header + len(encoded.code_lengths) + len(encoded.payload)
-    if encoded_cost >= len(chunk) * float(compression_threshold):
-        return None
-    return {
-        "kind": "huffman-1gram-local",
-        "cost": encoded_cost,
-        "payload_bytes": len(encoded.payload),
-        "metadata_bytes": encoded_cost - len(encoded.payload),
-        "codebook_bytes": len(encoded.code_lengths),
-        "hits": 0,
-        "escapes": 0,
-    }
-
-
-def _local_huff0_chunk_cost(chunk, *, compression_threshold):
-    raw_header = 1 + 8 + 8
-    raw_cost = raw_header + len(chunk)
-    if not chunk:
-        return None
-    try:
-        encoded = huff0.compress(chunk, min_saving_bytes=0, prior_count=0)
-    except ValueError:
-        return None
-    if encoded is None:
-        return None
-    encoded_cost = raw_header + len(encoded.codebook) + len(encoded.payload)
-    if encoded_cost >= len(chunk) * float(compression_threshold):
-        return None
-    return {
-        "kind": "huff0-1gram-local",
-        "cost": encoded_cost,
-        "payload_bytes": len(encoded.payload),
-        "metadata_bytes": encoded_cost - len(encoded.payload),
-        "codebook_bytes": len(encoded.codebook),
-        "hits": 0,
-        "escapes": 0,
-    }
-
-
-def _local_ngram_huff0_chunk_cost(chunk, *, n, top_k, compression_threshold):
-    n = int(n)
-    vocab = _topk_ngram_vocab(chunk, n, top_k)
-    if len(vocab) < 2:
-        return None
-    tokens, escape_bytes, tail, hits, escapes = _tokenize_ngrams(chunk, n, vocab)
-    if not tokens or len(set(tokens)) < 2:
-        return None
-    try:
-        encoded = huff0.compress(tokens, min_saving_bytes=0, prior_count=0)
-    except ValueError:
-        return None
-    if encoded is None:
-        return None
-
-    header_bytes = 1 + 8 + 8 + 8 + 8 + 1
-    vocab_bytes = _vocab_metadata_bytes(vocab, n)
-    codebook_bytes = len(encoded.codebook) + vocab_bytes
-    encoded_cost = (
-        header_bytes
-        + codebook_bytes
-        + len(encoded.payload)
-        + len(escape_bytes)
-        + len(tail)
-    )
-    if encoded_cost >= len(chunk) * float(compression_threshold):
-        return None
-
-    payload_bytes = len(encoded.payload) + len(escape_bytes) + len(tail)
-    return {
-        "kind": f"huff0-ngram-{n}-local",
-        "cost": encoded_cost,
-        "payload_bytes": payload_bytes,
-        "metadata_bytes": encoded_cost - payload_bytes,
-        "codebook_bytes": codebook_bytes,
-        "hits": hits,
-        "escapes": escapes,
-    }
-
-
-def selected_local_ngram_huff0_cost(
-    model,
-    *,
-    n_values=(2, 3, 4),
-    layout="transpose2d",
-    chunk_size=256 << 10,
-    top_k=254,
-    compression_threshold=1.0,
-    base_codec="huff0",
-):
-    base_codec = str(base_codec).lower().replace("_", "-")
-    if base_codec not in {"huff0", "huffman"}:
-        raise ValueError("base_codec must be 'huff0' or 'huffman'.")
-    encode_start = time.perf_counter()
-    raw_header = 1 + 8 + 8
-    max_block = huff0.max_block_size()
-    if base_codec == "huffman" and n_values:
-        effective_chunk = min(
-            int(chunk_size), int(max_block) * min(int(n) for n in n_values)
-        )
-    else:
-        effective_chunk = min(int(chunk_size), int(max_block))
-
-    raw_bytes = 0
-    total_bytes = 0
-    payload_bytes = 0
-    metadata_bytes = 0
-    codebook_bytes = 0
-    selected = {}
-    chunks = 0
-    encoded_chunks = 0
-    raw_chunks = 0
-    ngram_hits = 0
-    ngram_escapes = 0
-
-    for _, tensor in named_floating_tensors(model):
-        stream = zipnn_exponent_stream(tensor, layout=layout)
-        raw_bytes += len(stream)
-        for chunk in _iter_chunks(stream, effective_chunk):
-            if not chunk:
-                continue
-            chunks += 1
-            raw_cost = raw_header + len(chunk)
-            candidates = [
-                {
-                    "kind": "raw",
-                    "cost": raw_cost,
-                    "payload_bytes": len(chunk),
-                    "metadata_bytes": raw_header,
-                    "codebook_bytes": 0,
-                    "hits": 0,
-                    "escapes": 0,
-                }
-            ]
-
-            if base_codec == "huffman":
-                local_base = _local_huffman_chunk_cost(
-                    chunk,
-                    compression_threshold=compression_threshold,
-                )
-            else:
-                local_base = _local_huff0_chunk_cost(
-                    chunk,
-                    compression_threshold=compression_threshold,
-                )
-            if local_base is not None:
-                candidates.append(local_base)
-
-            for n in n_values:
-                ngram = _local_ngram_huff0_chunk_cost(
-                    chunk,
-                    n=int(n),
-                    top_k=int(top_k),
-                    compression_threshold=compression_threshold,
-                )
-                if ngram is not None:
-                    candidates.append(ngram)
-
-            best = min(candidates, key=lambda candidate: int(candidate["cost"]))
-            total_bytes += int(best["cost"])
-            payload_bytes += int(best["payload_bytes"])
-            metadata_bytes += int(best["metadata_bytes"])
-            codebook_bytes += int(best["codebook_bytes"])
-            ngram_hits += int(best["hits"])
-            ngram_escapes += int(best["escapes"])
-            selected[best["kind"]] = selected.get(best["kind"], 0) + 1
-            if best["kind"] == "raw":
-                raw_chunks += 1
-            else:
-                encoded_chunks += 1
-
-    encode_seconds = time.perf_counter() - encode_start
-    return pd.DataFrame(
-        [
-            {
-                "method": (
-                    "Ratio only" if base_codec == "huffman" else "local-ngram-huff0"
-                ),
-                "layout": layout,
-                "base_codec": base_codec,
-                "clusters": 0,
-                "raw_bytes": raw_bytes,
-                "payload_bytes": payload_bytes,
-                "metadata_bytes": metadata_bytes,
-                "codebook_bytes": codebook_bytes,
-                "compressed_bytes": total_bytes,
-                "compressed_pct": 100 * total_bytes / raw_bytes if raw_bytes else 0.0,
-                "selected_modes": selected,
-                "chunks": chunks,
-                "encoded_chunks": encoded_chunks,
-                "raw_chunks": raw_chunks,
-                "ngram_hits": ngram_hits,
-                "ngram_escapes": ngram_escapes,
-                "ngram_hit_rate": (
-                    ngram_hits / (ngram_hits + ngram_escapes)
-                    if (ngram_hits + ngram_escapes)
-                    else 0.0
-                ),
-                "top_k": int(top_k),
-                "precompute_seconds": 0.0,
-                "encode_seconds": encode_seconds,
-                "cold_encode_seconds": encode_seconds,
             }
         ]
     )
@@ -2230,7 +2038,7 @@ def neuralzip_component_ablation(
     top_k=254,
     max_sample_bytes=8 << 20,
     compression_threshold=0.95,
-    packed_time_budget_ratio=0.10,
+    packed_source_budget_ratio=0.30,
 ):
     if int(repeats) < 1:
         raise ValueError("repeats must be at least 1.")
@@ -2243,8 +2051,9 @@ def neuralzip_component_ablation(
             chunk_size=chunk_size,
             compression_threshold=compression_threshold,
         ).iloc[0].to_dict()
-        fast_only = neuralzip_exponent_cost(
+        sharing_only = neuralzip_exponent_cost(
             model,
+            enable_shared_codebooks=True,
             enable_packed_exponents=False,
             cluster_js_threshold=cluster_js_threshold,
             n_values=n_values,
@@ -2253,19 +2062,11 @@ def neuralzip_component_ablation(
             top_k=top_k,
             max_sample_bytes=max_sample_bytes,
             compression_threshold=compression_threshold,
-            packed_time_budget_ratio=packed_time_budget_ratio,
+            packed_source_budget_ratio=packed_source_budget_ratio,
         ).iloc[0].to_dict()
-        ratio_only = selected_local_ngram_huff0_cost(
+        packing_only = neuralzip_exponent_cost(
             model,
-            n_values=n_values,
-            layout=layout,
-            chunk_size=chunk_size,
-            top_k=top_k,
-            compression_threshold=compression_threshold,
-            base_codec="huffman",
-        ).iloc[0].to_dict()
-        neuralzip = neuralzip_exponent_cost(
-            model,
+            enable_shared_codebooks=False,
             enable_packed_exponents=True,
             cluster_js_threshold=cluster_js_threshold,
             n_values=n_values,
@@ -2274,13 +2075,26 @@ def neuralzip_component_ablation(
             top_k=top_k,
             max_sample_bytes=max_sample_bytes,
             compression_threshold=compression_threshold,
-            packed_time_budget_ratio=packed_time_budget_ratio,
+            packed_source_budget_ratio=packed_source_budget_ratio,
+        ).iloc[0].to_dict()
+        neuralzip = neuralzip_exponent_cost(
+            model,
+            enable_shared_codebooks=True,
+            enable_packed_exponents=True,
+            cluster_js_threshold=cluster_js_threshold,
+            n_values=n_values,
+            layout=layout,
+            chunk_size=chunk_size,
+            top_k=top_k,
+            max_sample_bytes=max_sample_bytes,
+            compression_threshold=compression_threshold,
+            packed_source_budget_ratio=packed_source_budget_ratio,
         ).iloc[0].to_dict()
 
         for variant, row in (
             ("ZipNN", zipnn),
-            ("Fast only", fast_only),
-            ("Ratio only", ratio_only),
+            ("Sharing only", sharing_only),
+            ("Packing only", packing_only),
             ("NeuralZip", neuralzip),
         ):
             runs.append(
@@ -2306,12 +2120,15 @@ def neuralzip_component_ablation(
                     "packed_ngram_chunks": int(
                         row.get("packed_ngram_chunks", 0)
                     ),
+                    "local_huffman_chunks": int(
+                        row.get("local_huffman_chunks", 0)
+                    ),
                 }
             )
 
     runs = pd.DataFrame(runs)
     summaries = []
-    for variant in ("ZipNN", "Fast only", "Ratio only", "NeuralZip"):
+    for variant in ("ZipNN", "Sharing only", "Packing only", "NeuralZip"):
         group = runs[runs["variant"] == variant]
         first = group.iloc[0]
         summaries.append(
@@ -2334,6 +2151,7 @@ def neuralzip_component_ablation(
                 "clusters": int(first["clusters"]),
                 "codebook_bytes": int(first["codebook_bytes"]),
                 "packed_ngram_chunks": int(first["packed_ngram_chunks"]),
+                "local_huffman_chunks": int(first["local_huffman_chunks"]),
                 "selected_modes": first["selected_modes"],
             }
         )

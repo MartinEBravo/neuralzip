@@ -139,10 +139,11 @@ class Compressor:
         clustering="js-distance",
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
+        max_tensor_probe_bytes=256 << 10,
         ngram_values=(2, 3, 4),
         top_k=254,
         exponent_layout="original",
-        packed_time_budget_ratio=0.10,
+        packed_source_budget_ratio=0.30,
     ):
         self.method = _normalize_method(method)
         self.verify = bool(verify)
@@ -163,10 +164,13 @@ class Compressor:
             codec_kwargs["clustering"] = clustering
             codec_kwargs["cluster_js_threshold"] = cluster_js_threshold
             codec_kwargs["max_codebook_sample_bytes"] = max_codebook_sample_bytes
+            codec_kwargs["max_tensor_probe_bytes"] = max_tensor_probe_bytes
             codec_kwargs["ngram_values"] = ngram_values
             codec_kwargs["top_k"] = top_k
             codec_kwargs["exponent_layout"] = exponent_layout
-            codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
+            codec_kwargs["packed_source_budget_ratio"] = (
+                packed_source_budget_ratio
+            )
         self.codec = codec_cls(**codec_kwargs)
 
     def compress(self, model: "HFModel"):
@@ -181,7 +185,7 @@ class Compressor:
                 model,
                 method_name="neuralzip",
                 method_detail=(
-                    "js-clustered-shared-huffman-time-budgeted-packed-exponents"
+                    "js-clustered-shared-local-huffman-packed-exponents"
                 ),
             )
         if self.method == "zipnn_src":
@@ -376,10 +380,7 @@ class Compressor:
             self.codec.prepare_clusters(parameters)
             precompute_seconds = time.perf_counter() - start
 
-        if (
-            hasattr(self.codec, "build_codebooks_and_select_modes")
-            and not getattr(self.codec, "builds_codebooks_lazily", False)
-        ):
+        if hasattr(self.codec, "build_codebooks_and_select_modes"):
             start = time.perf_counter()
             self.codec.build_codebooks_and_select_modes(parameters)
             codebook_setup_seconds = time.perf_counter() - start
@@ -469,11 +470,6 @@ class Compressor:
             if self.keep_payloads:
                 result["payload"] = compressed
             tensor_results.append(result)
-
-        if getattr(self.codec, "builds_codebooks_lazily", False):
-            codebooks = self.codec.export_codebooks()
-            codebook_metadata_bytes = serialized_codebooks_size(codebooks)
-            total_shared_codebook_defs = len(codebooks)
 
         total_compressed_bytes = serialized_size(
             method_name,

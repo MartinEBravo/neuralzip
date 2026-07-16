@@ -4,6 +4,8 @@ from setuptools import Extension, setup
 
 
 compile_args = ["/std:c++17"] if os.name == "nt" else ["-O3", "-std=c++17"]
+huff0_compile_args = compile_args if os.name == "nt" else [*compile_args, "-pthread"]
+huff0_link_args = [] if os.name == "nt" else ["-pthread"]
 
 
 setup(
@@ -37,7 +39,8 @@ setup(
                 ("HUF_DISABLE_FAST_DECODE", "0"),
             ],
             language="c++",
-            extra_compile_args=compile_args,
+            extra_compile_args=huff0_compile_args,
+            extra_link_args=huff0_link_args,
         ),
         Extension(
             "neuralzip._arithmetic_cpp",

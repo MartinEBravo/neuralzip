@@ -63,6 +63,7 @@ class NeuralZipCodec(ZipNNCodec):
         min_saving_bytes=0,
         chunk_size=256 << 10,
         compression_threshold=0.95,
+        threads=0,
         prior_count=1,
         exponent_prior_count=1,
         cluster_map=None,
@@ -78,6 +79,7 @@ class NeuralZipCodec(ZipNNCodec):
             min_saving_bytes=min_saving_bytes,
             chunk_size=chunk_size,
             compression_threshold=compression_threshold,
+            threads=threads,
         )
         self.prior_count = int(prior_count)
         self.exponent_prior_count = int(exponent_prior_count)
@@ -429,7 +431,7 @@ class NeuralZipCodec(ZipNNCodec):
 
         shared = self._build_candidate(
             sample,
-            kind="shared_huffman",
+            kind="shared_huff0",
             prior_count=prior_count,
         )
         if shared is not None:
@@ -553,28 +555,28 @@ class NeuralZipCodec(ZipNNCodec):
 
     def _build_lazy_shared_mode(self, key, stream, *, element_size, is_exponent):
         step = self._stream_chunk_size(element_size)
-        sample = np.frombuffer(stream, dtype=np.uint8, count=min(len(stream), step))
-        if sample.size == 0:
+        sample = bytes(stream[:step])
+        if not sample:
             return {"kind": "raw", "fixed_cost": 0}
 
-        counts = np.bincount(sample, minlength=256).astype(np.uint64)
         prior_count = self.exponent_prior_count if is_exponent else self.prior_count
-        codebook = huffman.build_codebook_from_counts(
-            counts,
+        codebook = huff0.build_codebook(
+            sample,
             prior_count=prior_count,
         )
         mode = {
-            "kind": "shared_huffman",
+            "kind": "shared_huff0",
             "ngram_n": 1,
             "vocab": b"",
             "codebook": codebook,
         }
         payload = self._candidate_payload(key, mode)
-        code_lengths = np.frombuffer(codebook.code_lengths, dtype=np.uint8)
-        sample_bits = int(np.dot(counts, code_lengths.astype(np.uint64)))
-        estimated_payload_bytes = (
-            sample_bits * len(stream) + int(sample.size) * 8 - 1
-        ) // (int(sample.size) * 8)
+        measured = self._encode_chunk(sample, mode)
+        estimated_payload_bytes = int(
+            (len(measured.payload) if measured is not None else len(sample))
+            * len(stream)
+            / len(sample)
+        )
         chunk_count = (len(stream) + step - 1) // step
         shared_variable_bytes = (
             estimated_payload_bytes + chunk_count * (1 + 8 + 8 + 8)
@@ -599,7 +601,7 @@ class NeuralZipCodec(ZipNNCodec):
                 "packed_candidates": 0,
                 "packed_selected": 0,
             }
-        self._selection_stats["representative_bytes"] += int(sample.size)
+        self._selection_stats["representative_bytes"] += len(sample)
         self._selection_stats["representative_keys"] += 1
         return selected
 
@@ -746,11 +748,33 @@ class NeuralZipCodec(ZipNNCodec):
             if mode["kind"] == "raw"
             else self._source_chunk_size(tensor.element_size(), mode)
         )
-        chunks = []
-        for start in range(0, len(stream), step):
-            chunk = stream[start : start + step]
-            encoded = None if mode["kind"] == "raw" else self._encode_chunk(chunk, mode)
-            chunks.append(encoded or self._raw_chunk(chunk))
+        source_chunks = [
+            stream[start : start + step] for start in range(0, len(stream), step)
+        ]
+        if mode["kind"] == "shared_huff0":
+            payloads = self._encode_huff0_chunks(
+                source_chunks,
+                mode["codebook"],
+                metadata_bytes=1 + 8 + 8 + 8,
+            )
+            chunks = [
+                StreamChunk(
+                    mode="shared_huff0",
+                    symbol_count=len(chunk),
+                    payload=payload,
+                    codebook_id=mode.get("codebook_id"),
+                )
+                if payload is not None
+                else self._raw_chunk(chunk)
+                for chunk, payload in zip(source_chunks, payloads)
+            ]
+        else:
+            chunks = []
+            for chunk in source_chunks:
+                encoded = (
+                    None if mode["kind"] == "raw" else self._encode_chunk(chunk, mode)
+                )
+                chunks.append(encoded or self._raw_chunk(chunk))
         return ByteGroupPayload(
             stream_kind=stream_kind,
             symbol_count=len(stream),
@@ -818,6 +842,8 @@ class NeuralZipCodec(ZipNNCodec):
                         symbol_count=chunk.symbol_count,
                     )
                 )
+            elif chunk.mode == "local_huff0":
+                decoded = huff0.decompress_block(chunk.payload, chunk.symbol_count)
             elif chunk.mode == "shared_huffman":
                 codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
                 decodebook = self._decode_codebooks.get(chunk.codebook_id)

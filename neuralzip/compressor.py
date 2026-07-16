@@ -133,6 +133,7 @@ class Compressor:
         min_saving_bytes=0,
         chunk_size=256 << 10,
         compression_threshold=None,
+        threads=0,
         zipnn_method="HUFFMAN",
         cluster_map=None,
         clustering="js-distance",
@@ -155,6 +156,7 @@ class Compressor:
             "min_saving_bytes": min_saving_bytes,
             "chunk_size": chunk_size,
             "compression_threshold": compression_threshold,
+            "threads": threads,
         }
         if self.method == "neuralzip":
             codec_kwargs["cluster_map"] = cluster_map

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from . import huffman
+from . import huff0, huffman
 from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayload
 
 
@@ -123,22 +123,28 @@ class ZipNNCodec:
         min_saving_bytes=0,
         chunk_size=256 << 10,
         compression_threshold=0.95,
+        threads=0,
     ):
         self.min_saving_bytes = int(min_saving_bytes)
         self.chunk_size = int(chunk_size)
         self.compression_threshold = float(compression_threshold)
+        self.threads = int(threads)
         if self.min_saving_bytes < 0:
             raise ValueError("min_saving_bytes must be non-negative.")
         if self.chunk_size <= 0:
             raise ValueError("chunk_size must be positive.")
         if not 0 < self.compression_threshold <= 1:
             raise ValueError("compression_threshold must be in (0, 1].")
+        if self.threads < 0:
+            raise ValueError("threads must be non-negative.")
 
     def compress_tensor(self, name, tensor):
         if not torch.is_tensor(tensor) or not tensor.is_floating_point():
             raise TypeError("ZipNNCodec only compresses floating tensors.")
 
-        original = tensor.detach().cpu().contiguous()
+        # Match the official ZipNN wrapper's ownership contract: compression may
+        # transform its working buffer, so both implementations time one private copy.
+        original = tensor.detach().cpu().contiguous().clone()
         config = _zipnn_dtype_config(original.dtype)
         return self._compress_zipnn(name, original, config)
 
@@ -210,6 +216,79 @@ class ZipNNCodec:
         return max(1, self.chunk_size // int(element_size))
 
     def _compress_stream(self, stream, stream_kind, *, chunk_size=None):
+        return self._compress_streams(((stream, stream_kind, chunk_size),))[0]
+
+    def _compress_streams(self, stream_specs):
+        prepared = []
+        flat_chunks = []
+        max_block_size = huff0.max_block_size()
+
+        for stream, stream_kind, chunk_size in stream_specs:
+            if chunk_size is None:
+                chunk_size = self.chunk_size
+            chunk_size = min(int(chunk_size), max_block_size)
+            stream_chunks = []
+            for start in range(0, len(stream), chunk_size):
+                chunk = stream[start : start + chunk_size]
+                if chunk:
+                    stream_chunks.append(chunk)
+            stream_chunks = tuple(stream_chunks)
+            prepared.append((stream_kind, len(stream), stream_chunks))
+            flat_chunks.extend(stream_chunks)
+
+        encoded_chunks = huff0.compress_many(
+            flat_chunks,
+            min_saving_bytes=self.min_saving_bytes,
+            threads=self.threads,
+        )
+        groups = []
+        offset = 0
+        for stream_kind, symbol_count, stream_chunks in prepared:
+            chunks = []
+            for chunk in stream_chunks:
+                encoded = encoded_chunks[offset]
+                offset += 1
+                if (
+                    encoded is not None
+                    and len(encoded) < len(chunk) * self.compression_threshold
+                ):
+                    chunks.append(
+                        StreamChunk(
+                            mode="local_huff0",
+                            symbol_count=len(chunk),
+                            payload=encoded,
+                        )
+                    )
+                else:
+                    chunks.append(
+                        StreamChunk(
+                            mode="raw",
+                            symbol_count=len(chunk),
+                            payload=chunk,
+                        )
+                    )
+            groups.append(
+                ByteGroupPayload(
+                    stream_kind=stream_kind,
+                    symbol_count=symbol_count,
+                    chunks=tuple(chunks),
+                )
+            )
+        return tuple(groups)
+
+    def _encode_huff0_chunks(self, chunks, codebook, *, metadata_bytes):
+        """Shared native batch executor used by ZipNN and NeuralZip paths."""
+        return huff0.encode_many_with_codebook(
+            chunks,
+            codebook,
+            min_saving_bytes=self.min_saving_bytes,
+            compression_threshold=self.compression_threshold,
+            metadata_bytes=metadata_bytes,
+            threads=self.threads,
+        )
+
+    def _compress_stream_canonical(self, stream, stream_kind, *, chunk_size=None):
+        """Legacy canonical-Huffman writer kept for compatibility experiments."""
         if chunk_size is None:
             chunk_size = self.chunk_size
 
@@ -267,6 +346,8 @@ class ZipNNCodec:
                         )
                     )
                 )
+            elif chunk.mode == "local_huff0":
+                output.extend(huff0.decompress_block(chunk.payload, chunk.symbol_count))
             else:
                 raise ValueError(f"Unsupported stream chunk mode: {chunk.mode!r}")
 
@@ -278,19 +359,32 @@ class ZipNNCodec:
         return bytes(output)
 
     def _compress_zipnn(self, name, tensor, config):
-        reordered_bytes = _zipnn_reordered_bytes(tensor, config)
         element_size = int(config["element_size"])
-        groups = []
-
-        for byte_offset in range(int(config["num_buffers"])):
-            stream = reordered_bytes[byte_offset::element_size]
-            groups.append(
-                self._compress_stream(
-                    stream,
-                    "byte_group",
-                    chunk_size=self._stream_chunk_size(element_size),
-                )
+        raw = tensor.view(torch.uint8).reshape(-1).numpy()
+        native_groups = huff0.compress_zipnn(
+            raw,
+            element_size=element_size,
+            bit_reorder=int(config["bit_reorder"]),
+            chunk_size=self._stream_chunk_size(element_size),
+            min_saving_bytes=self.min_saving_bytes,
+            threads=self.threads,
+            compression_threshold=self.compression_threshold,
+        )
+        groups = tuple(
+            ByteGroupPayload(
+                stream_kind="byte_group",
+                symbol_count=int(tensor.numel()),
+                chunks=tuple(
+                    StreamChunk(
+                        mode="local_huff0" if compressed else "raw",
+                        symbol_count=symbol_count,
+                        payload=payload,
+                    )
+                    for compressed, payload, symbol_count in native_chunks
+                ),
             )
+            for native_chunks in native_groups
+        )
 
         return TensorPayload(
             name=name,
@@ -299,7 +393,7 @@ class ZipNNCodec:
             element_size=element_size,
             numel=int(tensor.numel()),
             strategy="zipnn",
-            groups=tuple(groups),
+            groups=groups,
             byte_reorder=int(config["byte_reorder"]),
             bit_reorder=int(config["bit_reorder"]),
             num_buffers=int(config["num_buffers"]),

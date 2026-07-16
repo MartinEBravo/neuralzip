@@ -71,7 +71,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         codec.compress_tensor(named_tensors[0][0], tensor)
         self.assertGreater(len(codec.export_codebooks()), 0)
 
-    def test_zero_packed_budget_uses_canonical_shared_huffman(self):
+    def test_zero_packed_budget_uses_inherited_shared_huff0(self):
         repeated = torch.tensor(
             [[1.0, 1.0, 0.5, 1.0], [1.0, 0.5, 1.0, 1.0]],
             dtype=torch.bfloat16,
@@ -89,7 +89,7 @@ class NeuralZipCodecTests(unittest.TestCase):
 
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["packed_ngram_chunks"], 0)
-        self.assertGreater(result["selected_modes"].get("shared_huffman", 0), 0)
+        self.assertGreater(result["selected_modes"].get("shared_huff0", 0), 0)
         self.assertEqual(result["selection_stats"]["packed_selected"], 0)
 
     def test_empty_ngram_values_disable_packed_candidates(self):

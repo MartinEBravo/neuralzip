@@ -6,7 +6,8 @@ from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayl
 
 
 MAGIC = b"NZP1"
-VERSION = 1
+VERSION = 2
+SUPPORTED_VERSIONS = {1, VERSION}
 
 CHUNK_MODE_IDS = {
     "raw": 0,
@@ -15,6 +16,7 @@ CHUNK_MODE_IDS = {
     "shared_huffman": 3,
     "shared_huff0": 4,
     "packed_huff0": 5,
+    "local_huff0": 6,
 }
 CHUNK_MODES = {value: key for key, value in CHUNK_MODE_IDS.items()}
 
@@ -307,7 +309,7 @@ def load(source):
         if reader.read_exact(len(MAGIC)) != MAGIC:
             raise ValueError("Not a NeuralZip archive.")
         (version,) = reader.unpack("H")
-        if version != VERSION:
+        if version not in SUPPORTED_VERSIONS:
             raise ValueError(f"Unsupported NeuralZip archive version {version}.")
         method = reader.text()
         (codebook_count,) = reader.unpack("Q")

@@ -68,6 +68,31 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(decoded["codebooks"], (codebook,))
         self.assertEqual(decoded["tensor_results"][0]["payload"], tensor)
 
+        version_one = encoded[:4] + b"\x01\x00" + encoded[6:]
+        self.assertEqual(loads(version_one)["tensor_results"][0]["payload"], tensor)
+
+    def test_local_huff0_chunk_roundtrip(self):
+        chunk = StreamChunk(
+            mode="local_huff0",
+            symbol_count=12,
+            payload=b"huff0-frame",
+        )
+        tensor = TensorPayload(
+            name="weight",
+            shape=(6,),
+            dtype="bfloat16",
+            element_size=2,
+            numel=6,
+            strategy="zipnn",
+            groups=(ByteGroupPayload("byte_group", 12, (chunk,)),),
+        )
+        result = {
+            "method": "zipnn-local",
+            "tensor_results": [{"payload": tensor}],
+        }
+        restored = loads(dumps(result))["tensor_results"][0]["payload"]
+        self.assertEqual(restored, tensor)
+
 
 if __name__ == "__main__":
     unittest.main()

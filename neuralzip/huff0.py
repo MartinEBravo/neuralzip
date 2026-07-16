@@ -51,6 +51,39 @@ def compress(data, *, min_saving_bytes=0, prior_count=0):
     return Huff0Payload(payload=payload, codebook=codebook, symbol_count=symbol_count)
 
 
+def compress_many(chunks, *, min_saving_bytes=0, threads=0):
+    normalized = [
+        chunk if isinstance(chunk, (bytes, bytearray, memoryview)) else bytes(chunk)
+        for chunk in chunks
+    ]
+    return _huff0_cpp.compress_many(
+        normalized,
+        min_saving_bytes=int(min_saving_bytes),
+        threads=int(threads),
+    )
+
+
+def compress_zipnn(
+    data,
+    *,
+    element_size,
+    bit_reorder,
+    chunk_size,
+    min_saving_bytes=0,
+    threads=0,
+    compression_threshold=0.95,
+):
+    return _huff0_cpp.compress_zipnn(
+        data,
+        int(element_size),
+        int(bit_reorder),
+        int(chunk_size),
+        min_saving_bytes=int(min_saving_bytes),
+        threads=int(threads),
+        compression_threshold=float(compression_threshold),
+    )
+
+
 def build_codebook(data, *, prior_count=0):
     if not isinstance(data, (bytes, bytearray, memoryview)):
         data = bytes(data)
@@ -86,6 +119,29 @@ def encode_with_codebook(
         payload=payload,
         codebook=codebook.codebook,
         symbol_count=symbol_count,
+    )
+
+
+def encode_many_with_codebook(
+    chunks,
+    codebook,
+    *,
+    min_saving_bytes=0,
+    compression_threshold=0.95,
+    metadata_bytes=0,
+    threads=0,
+):
+    normalized = [
+        chunk if isinstance(chunk, (bytes, bytearray, memoryview)) else bytes(chunk)
+        for chunk in chunks
+    ]
+    return _huff0_cpp.encode_many_with_codebook(
+        normalized,
+        codebook.handle,
+        min_saving_bytes=int(min_saving_bytes),
+        compression_threshold=float(compression_threshold),
+        metadata_bytes=int(metadata_bytes),
+        threads=int(threads),
     )
 
 
@@ -131,6 +187,10 @@ def decompress(payload):
         payload.codebook,
         payload.symbol_count,
     )
+
+
+def decompress_block(payload, symbol_count):
+    return _huff0_cpp.decompress_block(payload, int(symbol_count))
 
 
 def decompress_with_decodebook(payload, decodebook):

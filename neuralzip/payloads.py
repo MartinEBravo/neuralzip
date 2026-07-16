@@ -91,12 +91,18 @@ class ByteGroupPayload:
 
     @property
     def huffman_chunks(self):
-        modes = {"huffman", "shared_huffman", "shared_huff0", "packed_huff0"}
+        modes = {
+            "huffman",
+            "local_huff0",
+            "shared_huffman",
+            "shared_huff0",
+            "packed_huff0",
+        }
         return sum(chunk.mode in modes for chunk in self.chunks)
 
     @property
     def local_huffman_chunks(self):
-        return sum(chunk.mode == "huffman" for chunk in self.chunks)
+        return sum(chunk.mode in {"huffman", "local_huff0"} for chunk in self.chunks)
 
     @property
     def raw_chunks(self):

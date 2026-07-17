@@ -142,9 +142,10 @@ class ZipNNCodec:
         if not torch.is_tensor(tensor) or not tensor.is_floating_point():
             raise TypeError("ZipNNCodec only compresses floating tensors.")
 
-        # Match the official ZipNN wrapper's ownership contract: compression may
-        # transform its working buffer, so both implementations time one private copy.
-        original = tensor.detach().cpu().contiguous().clone()
+        # The local native backend is read-only. Avoid charging ZipNN for a
+        # private tensor clone when the direct NeuralZip backend consumes the
+        # same immutable contiguous input buffer.
+        original = tensor.detach().cpu().contiguous()
         config = _zipnn_dtype_config(original.dtype)
         return self._compress_zipnn(name, original, config)
 

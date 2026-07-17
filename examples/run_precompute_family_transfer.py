@@ -27,7 +27,7 @@ from transformers import (
 )
 
 from neuralzip import Compressor
-from neuralzip.archive import serialized_group_size
+from neuralzip.archive import serialized_codebooks_size, serialized_group_size
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -195,22 +195,30 @@ def floating_parameters(model):
     ]
 
 
-def exponent_metrics(payloads):
+def exponent_metrics(payloads, codebooks=()):
     raw_symbols = 0
-    compressed_bytes = 0
+    group_bytes = 0
     mode_symbols = {}
     mode_chunks = {}
     referenced_codebooks = set()
     for payload in payloads:
         group = payload.groups[-1]
         raw_symbols += int(group.symbol_count)
-        compressed_bytes += int(serialized_group_size(group))
+        group_bytes += int(serialized_group_size(group))
         for chunk in group.chunks:
             mode = str(chunk.mode)
             mode_symbols[mode] = mode_symbols.get(mode, 0) + int(chunk.symbol_count)
             mode_chunks[mode] = mode_chunks.get(mode, 0) + 1
             if chunk.codebook_id is not None:
                 referenced_codebooks.add(int(chunk.codebook_id))
+
+    referenced_payloads = tuple(
+        codebook
+        for codebook in codebooks
+        if int(codebook.codebook_id) in referenced_codebooks
+    )
+    codebook_bytes = int(serialized_codebooks_size(referenced_payloads))
+    compressed_bytes = group_bytes + codebook_bytes
 
     def symbol_pct(modes):
         symbols = sum(mode_symbols.get(mode, 0) for mode in modes)
@@ -219,6 +227,8 @@ def exponent_metrics(payloads):
     return {
         "raw_exponents": raw_symbols,
         "compressed_exponent_bytes": compressed_bytes,
+        "compressed_exponent_group_bytes": group_bytes,
+        "exponent_codebook_metadata_bytes": codebook_bytes,
         "exponent_pct": (
             100.0 * compressed_bytes / raw_symbols if raw_symbols else 0.0
         ),
@@ -233,8 +243,14 @@ def exponent_metrics(payloads):
 
 
 def compress_with_codec(codec, named_tensors, *, verify=False):
+    named_tensors = list(named_tensors)
     started = time.perf_counter()
-    payloads = [codec.compress_tensor(name, tensor) for name, tensor in named_tensors]
+    if hasattr(codec, "compress_tensors"):
+        payloads = codec.compress_tensors(named_tensors)
+    else:
+        payloads = [
+            codec.compress_tensor(name, tensor) for name, tensor in named_tensors
+        ]
     encode_seconds = time.perf_counter() - started
     roundtrip_ok = None
     if verify:
@@ -248,16 +264,22 @@ def compress_with_codec(codec, named_tensors, *, verify=False):
     return {
         "encode_seconds": encode_seconds,
         "roundtrip_ok": roundtrip_ok,
-        **exponent_metrics(payloads),
+        **exponent_metrics(
+            payloads,
+            codec.export_codebooks() if hasattr(codec, "export_codebooks") else (),
+        ),
     }
 
 
-def setup_neuralzip(named_tensors):
+def setup_neuralzip(named_tensors, *, threads):
     codec = Compressor(
         "neuralzip",
         verify=False,
         compression_threshold=0.95,
-        threads=32,
+        threads=threads,
+        # Mode scoring and runtime use the same uncached direct-encoding
+        # boundary. No target transformation is moved into setup.
+        enable_prepacked_cache=False,
     ).codec
     started = time.perf_counter()
     codec.prepare_clusters(named_tensors)
@@ -275,31 +297,6 @@ def setup_neuralzip(named_tensors):
     }
 
 
-def direct_transfer_stats(codec, target_named):
-    source_names = set(codec.cluster_map) | set(codec._computed_cluster_map)
-    matched_tensors = 0
-    matched_exponents = 0
-    target_exponents = 0
-    for name, tensor in target_named:
-        symbols = int(tensor.numel())
-        target_exponents += symbols
-        if name in source_names:
-            matched_tensors += 1
-            matched_exponents += symbols
-    return {
-        "mapping": "exact source tensor name",
-        "target_tensors": len(target_named),
-        "matched_tensors": matched_tensors,
-        "matched_tensor_pct": 100.0 * matched_tensors / len(target_named),
-        "target_exponents": target_exponents,
-        "matched_exponents": matched_exponents,
-        "matched_exponent_pct": 100.0 * matched_exponents / target_exponents,
-        "target_histograms_computed": False,
-        "target_js_matching": False,
-        "target_mode_probing": False,
-    }
-
-
 def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str):
     torch.set_num_threads(threads)
     torch.set_num_interop_threads(1)
@@ -314,30 +311,67 @@ def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str)
     )
 
     print(f"[{spec.key}] source setup", flush=True)
-    source_codec, source_setup = setup_neuralzip(source_named)
+    source_codec, source_setup = setup_neuralzip(source_named, threads=threads)
 
     if transfer_mode == "direct":
-        print(f"[{spec.key}] direct target encoding", flush=True)
-        transfer_seconds = 0.0
-        transfer_stats = direct_transfer_stats(source_codec, target_named)
-        verification = compress_with_codec(source_codec, target_named, verify=True)
-        transferred = compress_with_codec(source_codec, target_named)
+        print(f"[{spec.key}] direct structural target mapping", flush=True)
+        started = time.perf_counter()
+        transfer_stats = source_codec.prepare_direct_transfer_target(target_named)
+        transfer_seconds = time.perf_counter() - started
     else:
         print(f"[{spec.key}] JS transfer preparation", flush=True)
         started = time.perf_counter()
         transfer_stats = source_codec.prepare_transfer_target(target_named)
         transfer_seconds = time.perf_counter() - started
-        verification = compress_with_codec(source_codec, target_named, verify=True)
-        transferred = compress_with_codec(source_codec, target_named)
+
+    # The production transfer path reuses only the frozen family plan.  Exact
+    # target materialization is deliberately disabled after the plan has been
+    # selected so the measured encode includes every target-dependent step.
+    source_codec.clear_prepacked_cache()
+    source_codec.enable_prepacked_cache = False
+    if (
+        source_codec.prepacked_cache_bytes != 0
+        or source_codec.prepacked_cache_stats["entries"] != 0
+    ):
+        raise RuntimeError("Direct transfer unexpectedly retained an exact cache.")
+
+    print(
+        f"[{spec.key}] direct-transfer uncached warmup and measurement",
+        flush=True,
+    )
+    direct_verification = compress_with_codec(
+        source_codec,
+        target_named,
+        verify=True,
+    )
+    transferred_direct = compress_with_codec(source_codec, target_named)
+    if (
+        source_codec.prepacked_cache_bytes != 0
+        or source_codec.prepacked_cache_stats["entries"] != 0
+    ):
+        raise RuntimeError("Direct transfer populated an exact target cache.")
 
     print(f"[{spec.key}] target-specific setup", flush=True)
-    native_codec, native_setup = setup_neuralzip(target_named)
-    compress_with_codec(native_codec, target_named)
+    native_codec, native_setup = setup_neuralzip(target_named, threads=threads)
+    native_codec.clear_prepacked_cache()
+    native_codec.enable_prepacked_cache = False
+    native_setup["target_materialization_performed"] = False
+    native_setup["target_materialization_bytes"] = 0
+    native_verification = compress_with_codec(native_codec, target_named, verify=True)
     native = compress_with_codec(native_codec, target_named)
+    if (
+        native_codec.prepacked_cache_bytes != 0
+        or native_codec.prepacked_cache_stats["entries"] != 0
+    ):
+        raise RuntimeError("Target-specific direct encoding populated an exact cache.")
 
     print(f"[{spec.key}] ZipNN warmup and measurement", flush=True)
     zipnn_codec = ZipNNCodec(compression_threshold=0.95, threads=threads)
-    compress_with_codec(zipnn_codec, target_named)
+    zipnn_verification = compress_with_codec(
+        zipnn_codec,
+        target_named,
+        verify=True,
+    )
     zipnn = compress_with_codec(zipnn_codec, target_named)
 
     output = {
@@ -349,7 +383,24 @@ def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str)
         "threads": threads,
         "transfer_mode": transfer_mode,
         "measured_repetitions": 1,
-        "warmup": "one pass per measured encoding path",
+        "warmup": (
+            "one uncached direct pass per measured encoding path; "
+            "no exact target materialization"
+        ),
+        "measurement_regime": "warmed direct encode without exact target cache",
+        "direct_encode_includes": [
+            "target byte reorder and stream extraction",
+            "packed-exponent tokenization",
+            "local Huff0 tree construction and fallback",
+            "entropy encoding",
+            "payload metadata assembly",
+        ],
+        "direct_encode_excludes": [
+            "family setup",
+            "target mapping",
+            "verification and decoding",
+            "metric accounting",
+        ],
         "source_parameters": sum(int(tensor.numel()) for _, tensor in source_named),
         "target_parameters": sum(int(tensor.numel()) for _, tensor in target_named),
         "source_setup": source_setup,
@@ -358,30 +409,71 @@ def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str)
             "seconds": transfer_seconds,
             **transfer_stats,
         },
-        "zipnn": zipnn,
-        "neuralzip_native": native,
+        "target_materialization": {
+            "performed": False,
+            "seconds": None,
+            "resident_bytes": 0,
+        },
+        "zipnn": {
+            **zipnn,
+            "roundtrip_ok": zipnn_verification["roundtrip_ok"],
+        },
+        "neuralzip_target_specific_direct": {
+            **native,
+            "roundtrip_ok": native_verification["roundtrip_ok"],
+        },
+        # Compatibility alias for existing consumers. This is now an uncached
+        # direct encode, not an exact-target hot-cache measurement.
+        "neuralzip_native": {
+            **native,
+            "roundtrip_ok": native_verification["roundtrip_ok"],
+        },
+        "neuralzip_transferred_direct": {
+            **transferred_direct,
+            "roundtrip_ok": direct_verification["roundtrip_ok"],
+        },
+        # Historical alias. New consumers should use the explicit direct key.
         "neuralzip_transferred": {
-            **transferred,
-            "roundtrip_ok": verification["roundtrip_ok"],
+            **transferred_direct,
+            "roundtrip_ok": direct_verification["roundtrip_ok"],
         },
         "comparison": {
             "transfer_setup_reduction_vs_native_pct": (
-                100.0
-                if transfer_mode == "direct"
-                else 100.0
-                * (1.0 - transfer_seconds / native_setup["total_seconds"])
+                100.0 * (1.0 - transfer_seconds / native_setup["total_seconds"])
             ),
+            "direct_transfer_speedup_vs_zipnn": (
+                zipnn["encode_seconds"] / transferred_direct["encode_seconds"]
+            ),
+            "direct_transfer_speedup_vs_target_specific": (
+                native["encode_seconds"] / transferred_direct["encode_seconds"]
+            ),
+            "direct_transfer_ratio_delta_vs_zipnn_pp": (
+                transferred_direct["exponent_pct"] - zipnn["exponent_pct"]
+            ),
+            "direct_transfer_ratio_delta_vs_target_specific_pp": (
+                transferred_direct["exponent_pct"] - native["exponent_pct"]
+            ),
+            # Historical comparison aliases now refer to the uncached direct
+            # regime. Explicit ``direct_*`` keys above are preferred.
             "transfer_speedup_vs_zipnn": (
-                zipnn["encode_seconds"] / transferred["encode_seconds"]
+                zipnn["encode_seconds"] / transferred_direct["encode_seconds"]
             ),
             "transfer_speedup_vs_native": (
-                native["encode_seconds"] / transferred["encode_seconds"]
+                native["encode_seconds"] / transferred_direct["encode_seconds"]
             ),
             "transfer_ratio_delta_vs_zipnn_pp": (
-                transferred["exponent_pct"] - zipnn["exponent_pct"]
+                transferred_direct["exponent_pct"] - zipnn["exponent_pct"]
             ),
             "transfer_ratio_delta_vs_native_pp": (
-                transferred["exponent_pct"] - native["exponent_pct"]
+                transferred_direct["exponent_pct"] - native["exponent_pct"]
+            ),
+            "incremental_target_seconds": (
+                transfer_seconds + transferred_direct["encode_seconds"]
+            ),
+            "first_family_member_total_seconds": (
+                source_setup["total_seconds"]
+                + transfer_seconds
+                + transferred_direct["encode_seconds"]
             ),
         },
     }

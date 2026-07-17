@@ -142,6 +142,10 @@ class Compressor:
         top_k=254,
         exponent_layout="original",
         packed_source_budget_ratio=0.30,
+        packed_time_budget_ratio=1.0,
+        speed_ratio_tolerance=0.03,
+        enable_prepacked_cache=False,
+        direct_batch_bytes=128 << 20,
     ):
         self.method = _normalize_method(method)
         self.verify = bool(verify)
@@ -169,6 +173,10 @@ class Compressor:
             codec_kwargs["packed_source_budget_ratio"] = (
                 packed_source_budget_ratio
             )
+            codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
+            codec_kwargs["speed_ratio_tolerance"] = speed_ratio_tolerance
+            codec_kwargs["enable_prepacked_cache"] = enable_prepacked_cache
+            codec_kwargs["direct_batch_bytes"] = direct_batch_bytes
         self.codec = codec_cls(**codec_kwargs)
 
     def compress(self, model: "HFModel"):
@@ -356,6 +364,8 @@ class Compressor:
         total_ngram_hits = 0
         total_ngram_escapes = 0
         precompute_seconds = 0.0
+        clustering_seconds = 0.0
+        prepack_seconds = 0.0
         codebook_setup_seconds = 0.0
         codebook_metadata_bytes = 0
         codebooks = ()
@@ -376,7 +386,7 @@ class Compressor:
         if hasattr(self.codec, "prepare_clusters"):
             start = time.perf_counter()
             self.codec.prepare_clusters(parameters)
-            precompute_seconds = time.perf_counter() - start
+            clustering_seconds = time.perf_counter() - start
 
         if hasattr(self.codec, "build_codebooks_and_select_modes"):
             start = time.perf_counter()
@@ -388,14 +398,55 @@ class Compressor:
             total_compressed_bytes += codebook_metadata_bytes
             total_shared_codebook_defs += len(codebooks)
 
-        for name, parameter in parameters:
+        if (
+            hasattr(self.codec, "materialize_precompute")
+            and getattr(self.codec, "enable_prepacked_cache", False)
+        ):
+            start = time.perf_counter()
+            self.codec.materialize_precompute(parameters)
+            prepack_seconds = time.perf_counter() - start
+        precompute_seconds = clustering_seconds + prepack_seconds
+
+        batched_payloads = None
+        batched_encode_allocations = None
+        if hasattr(self.codec, "compress_tensors"):
+            start = time.perf_counter()
+            batched_payloads = tuple(self.codec.compress_tensors(parameters))
+            batched_encode_seconds = time.perf_counter() - start
+            if len(batched_payloads) != len(parameters):
+                raise RuntimeError(
+                    "Batch compression returned a different number of tensors."
+                )
+
+            # Packed work is shared across tensors, so an exact per-tensor wall
+            # time does not exist.  Allocate the measured model time by input
+            # bytes for diagnostics while preserving the exact measured total.
+            weights = [_raw_tensor_bytes(parameter) for _, parameter in parameters]
+            total_weight = sum(weights)
+            if total_weight:
+                batched_encode_allocations = [
+                    batched_encode_seconds * weight / total_weight
+                    for weight in weights
+                ]
+            else:
+                batched_encode_allocations = [0.0] * len(parameters)
+            if batched_encode_allocations:
+                batched_encode_allocations[-1] += (
+                    batched_encode_seconds - sum(batched_encode_allocations)
+                )
+
+        for tensor_index, (name, parameter) in enumerate(parameters):
             raw_bytes = _raw_tensor_bytes(parameter)
             total_raw_bytes += raw_bytes
             total_numel += int(parameter.numel())
 
-            start = time.perf_counter()
-            compressed = self.codec.compress_tensor(name, parameter)
-            encode_seconds = time.perf_counter() - start
+            if batched_payloads is None:
+                start = time.perf_counter()
+                compressed = self.codec.compress_tensor(name, parameter)
+                encode_seconds = time.perf_counter() - start
+            else:
+                compressed = batched_payloads[tensor_index]
+                encode_seconds = batched_encode_allocations[tensor_index]
 
             compressed_bytes = serialized_tensor_size(compressed)
             compressed_payloads.append(compressed)
@@ -522,9 +573,35 @@ class Compressor:
             "selected_modes": getattr(self.codec, "selected_modes", {}),
             "selection_stats": getattr(self.codec, "selection_stats", {}),
             "precompute_seconds": precompute_seconds,
-            "clustering_seconds": precompute_seconds,
+            "precompute_total_seconds": (
+                clustering_seconds + codebook_setup_seconds + prepack_seconds
+            ),
+            "clustering_seconds": clustering_seconds,
+            "prepack_seconds": prepack_seconds,
+            "prepacked_cache_bytes": getattr(
+                self.codec,
+                "prepacked_cache_bytes",
+                0,
+            ),
+            "prepacked_cache_stats": getattr(
+                self.codec,
+                "prepacked_cache_stats",
+                {},
+            ),
+            "precomputed_codebook_memory_bytes": getattr(
+                self.codec,
+                "precomputed_codebook_memory_bytes",
+                0,
+            ),
+            "precompute_memory_bytes": getattr(
+                self.codec,
+                "precompute_memory_bytes",
+                0,
+            ),
             "codebook_setup_seconds": codebook_setup_seconds,
             "encode_seconds": total_encode_seconds,
+            "direct_encode_seconds": total_encode_seconds,
+            "hot_encode_seconds": total_encode_seconds,
             "compression_seconds": codebook_setup_seconds + total_encode_seconds,
             "total_compression_seconds": (
                 precompute_seconds + codebook_setup_seconds + total_encode_seconds
@@ -541,6 +618,12 @@ class Compressor:
                 "clustering": getattr(self.codec, "clustering", None),
                 "cluster_js_threshold": getattr(
                     self.codec, "cluster_js_threshold", None
+                ),
+                "packed_time_budget_ratio": getattr(
+                    self.codec, "packed_time_budget_ratio", None
+                ),
+                "speed_ratio_tolerance": getattr(
+                    self.codec, "speed_ratio_tolerance", None
                 ),
                 "clusters": getattr(self.codec, "cluster_count", 0),
                 "selected_modes": getattr(self.codec, "selected_modes", {}),

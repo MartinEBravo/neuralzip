@@ -2,6 +2,41 @@ ZIPNN_METHOD = "HUFFMAN"
 
 MODEL_SUITE = [
     {
+        "name": "Qwen2.5-1.5B",
+        "model_id": "Qwen/Qwen2.5-1.5B",
+        "parameters_b": 1.5,
+        "default_dtype": "bf16",
+        "access": "open",
+    },
+    {
+        "name": "Qwen2.5-3B",
+        "model_id": "Qwen/Qwen2.5-3B",
+        "parameters_b": 3.0,
+        "default_dtype": "bf16",
+        "access": "open",
+    },
+    {
+        "name": "OLMo-2-1B",
+        "model_id": "allenai/Olmo-2-0425-1B",
+        "parameters_b": 1.0,
+        "default_dtype": "bf16",
+        "access": "open",
+    },
+    {
+        "name": "OLMo-2-7B",
+        "model_id": "allenai/Olmo-2-0325-7B",
+        "parameters_b": 7.0,
+        "default_dtype": "bf16",
+        "access": "open",
+    },
+    {
+        "name": "Mistral-7B",
+        "model_id": "mistralai/Mistral-7B-v0.3",
+        "parameters_b": 7.0,
+        "default_dtype": "bf16",
+        "access": "open",
+    },
+    {
         "name": "Llama 3.3 70B Instruct",
         "model_id": "meta-llama/Llama-3.3-70B-Instruct",
         "parameters_b": 70.0,

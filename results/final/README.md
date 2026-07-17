@@ -3,6 +3,11 @@
 This directory documents the implementation and measurements frozen under the
 annotated Git tag `thesis-neuralzip-v1`.
 
+> Historical snapshot: these artifacts predate the fused mixed-stream encoder
+> and model-wide native job queue. Their timing policy below is intentionally
+> preserved for reproducibility and must not be combined with results produced
+> by the current native-batched direct path.
+
 ## Frozen method
 
 The final NeuralZip codec uses:

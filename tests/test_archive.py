@@ -93,6 +93,33 @@ class ArchiveTests(unittest.TestCase):
         restored = loads(dumps(result))["tensor_results"][0]["payload"]
         self.assertEqual(restored, tensor)
 
+    def test_contiguous_raw_memoryview_serializes_without_normalization(self):
+        raw = memoryview(b"cached-raw-stream")
+        tensor = TensorPayload(
+            name="raw.weight",
+            shape=(len(raw),),
+            dtype="uint8",
+            element_size=1,
+            numel=len(raw),
+            strategy="neuralzip",
+            groups=(
+                ByteGroupPayload(
+                    "byte_group",
+                    len(raw),
+                    (StreamChunk("raw", len(raw), raw),),
+                ),
+            ),
+        )
+        result = {
+            "method": "neuralzip",
+            "tensor_results": [{"payload": tensor}],
+        }
+
+        encoded = dumps(result)
+        self.assertEqual(len(encoded), serialized_size("neuralzip", (), (tensor,)))
+        restored = loads(encoded)["tensor_results"][0]["payload"]
+        self.assertEqual(restored.groups[0].chunks[0].payload, raw.tobytes())
+
 
 if __name__ == "__main__":
     unittest.main()

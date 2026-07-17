@@ -35,7 +35,15 @@ def _write_struct(handle, fmt, *values):
 
 
 def _write_bytes(handle, value):
-    value = bytes(value)
+    # Preserve contiguous byte-oriented memoryviews.  Both file objects and
+    # BytesIO accept the buffer protocol, while the counting writer only needs
+    # its length.  Converting every cached raw view to ``bytes`` here moved an
+    # avoidable copy outside the measured encoder hot path.
+    if isinstance(value, memoryview):
+        if value.ndim != 1 or value.itemsize != 1 or not value.c_contiguous:
+            value = value.tobytes()
+    elif not isinstance(value, (bytes, bytearray)):
+        value = bytes(value)
     _write_struct(handle, "Q", len(value))
     handle.write(value)
 

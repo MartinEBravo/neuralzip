@@ -800,6 +800,130 @@ class NeuralZipCodecTests(unittest.TestCase):
             self.assertEqual(call.kwargs["threads"], 3)
             self.assertEqual(call.kwargs["compression_threshold"], 0.75)
 
+    def test_packed_ratio_best_is_not_hidden_by_faster_non_saving_ngram(self):
+        codec = NeuralZipCodec(
+            ngram_values=(2, 3),
+            enable_shared_codebooks=False,
+            speed_ratio_tolerance=0.03,
+        )
+        costs = {
+            ("raw", 1): (120.0, 0.0),
+            ("local_huff0", 1): (100.0, 0.5),
+            ("packed_huff0", 2): (101.0, 0.1),
+            ("packed_huff0", 3): (99.0, 1.0),
+        }
+
+        def build_candidate(_sample, *, kind, prior_count, ngram_n=1):
+            del prior_count
+            return {
+                "kind": kind,
+                "ngram_n": int(ngram_n),
+                "vocab": b"v",
+                "codebook": object(),
+            }
+
+        def score_mode(
+            _sample,
+            mode,
+            _element_size,
+            _codebook_payload=None,
+            sample_parts=None,
+        ):
+            del sample_parts
+            cost, seconds = costs[(mode["kind"], int(mode.get("ngram_n", 1)))]
+            mode["sample_cost"] = cost
+            mode["sample_seconds"] = seconds
+            mode.setdefault("fixed_cost", 0)
+            return mode
+
+        with (
+            mock.patch.object(codec, "_build_candidate", side_effect=build_candidate),
+            mock.patch.object(codec, "_score_mode", side_effect=score_mode),
+            mock.patch.object(codec, "_candidate_payload", return_value=None),
+        ):
+            evaluation = codec._evaluate_modes(
+                ("cluster", "bfloat16", 1),
+                b"x" * 100,
+                total_size=100,
+                element_size=2,
+                is_exponent=True,
+            )
+
+        self.assertEqual(evaluation["base"]["kind"], "local_huff0")
+        self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 3)
+        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 1.0)
+        self.assertEqual(
+            evaluation["packed_selection"]["ratio_tolerance"],
+            0.03,
+        )
+        diagnostics = {
+            row["ngram_n"]: row
+            for row in evaluation["packed_candidate_diagnostics"]
+        }
+        self.assertFalse(diagnostics[2]["improves_selected_base"])
+        self.assertTrue(diagnostics[3]["improves_selected_base"])
+        self.assertTrue(diagnostics[3]["ratio_best"])
+        self.assertTrue(diagnostics[3]["selected_for_time_budget"])
+
+    def test_packed_selection_keeps_fastest_near_best_saving_ngram(self):
+        codec = NeuralZipCodec(
+            ngram_values=(2, 3),
+            enable_shared_codebooks=False,
+            speed_ratio_tolerance=0.03,
+        )
+        costs = {
+            ("raw", 1): (120.0, 0.0),
+            ("local_huff0", 1): (100.0, 0.5),
+            ("packed_huff0", 2): (99.0, 0.6),
+            ("packed_huff0", 3): (98.0, 10.0),
+        }
+
+        def build_candidate(_sample, *, kind, prior_count, ngram_n=1):
+            del prior_count
+            return {
+                "kind": kind,
+                "ngram_n": int(ngram_n),
+                "vocab": b"v",
+                "codebook": object(),
+            }
+
+        def score_mode(
+            _sample,
+            mode,
+            _element_size,
+            _codebook_payload=None,
+            sample_parts=None,
+        ):
+            del sample_parts
+            cost, seconds = costs[(mode["kind"], int(mode.get("ngram_n", 1)))]
+            mode["sample_cost"] = cost
+            mode["sample_seconds"] = seconds
+            mode.setdefault("fixed_cost", 0)
+            return mode
+
+        with (
+            mock.patch.object(codec, "_build_candidate", side_effect=build_candidate),
+            mock.patch.object(codec, "_score_mode", side_effect=score_mode),
+            mock.patch.object(codec, "_candidate_payload", return_value=None),
+        ):
+            evaluation = codec._evaluate_modes(
+                ("cluster", "bfloat16", 1),
+                b"x" * 100,
+                total_size=100,
+                element_size=2,
+                is_exponent=True,
+            )
+
+        self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 2)
+        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 1.0)
+        diagnostics = {
+            row["ngram_n"]: row
+            for row in evaluation["packed_candidate_diagnostics"]
+        }
+        self.assertTrue(diagnostics[3]["ratio_best"])
+        self.assertFalse(diagnostics[3]["selected_for_time_budget"])
+        self.assertTrue(diagnostics[2]["selected_for_time_budget"])
+
     def test_fast_path_is_selected_per_tensor(self):
         codec = NeuralZipCodec(threads=2, exponent_layout="original")
         tensor = torch.ones((8, 8), dtype=torch.float32)
@@ -873,6 +997,27 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(
             result["selection_stats"]["selection_strategy"],
             "fastest-within-ratio-and-time-budget",
+        )
+        self.assertGreater(
+            result["selection_stats"]["packed_modes_evaluated"],
+            0,
+        )
+        self.assertEqual(
+            result["selection_diagnostics"],
+            compressor.codec.selection_diagnostics,
+        )
+        self.assertTrue(
+            all(
+                diagnostic["decision"]
+                in {
+                    "no-packed-mode",
+                    "no-ratio-saving",
+                    "time-budget",
+                    "source-budget",
+                    "selected",
+                }
+                for diagnostic in result["selection_diagnostics"]
+            )
         )
 
         with tempfile.TemporaryDirectory() as directory:

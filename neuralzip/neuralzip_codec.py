@@ -153,6 +153,7 @@ class NeuralZipCodec(ZipNNCodec):
         self._next_codebook_id = 0
         self._selected_mode_counts = {}
         self._selection_stats = {}
+        self._selection_diagnostics = ()
         self._mode_by_tensor_stream = {}
         self._transfer_mode_by_tensor_stream = {}
         self._transfer_cluster_by_name = {}
@@ -203,6 +204,10 @@ class NeuralZipCodec(ZipNNCodec):
     @property
     def selection_stats(self):
         return dict(self._selection_stats)
+
+    @property
+    def selection_diagnostics(self):
+        return tuple(self._selection_diagnostics)
 
     @property
     def transfer_stats(self):
@@ -783,6 +788,8 @@ class NeuralZipCodec(ZipNNCodec):
             ratio_tolerance=self.speed_ratio_tolerance,
         )
         base = base_selection.selected
+        base_cost = estimated_cost(base)
+        base_seconds = estimated_seconds(base)
 
         packed_candidates = []
         if is_exponent:
@@ -805,17 +812,56 @@ class NeuralZipCodec(ZipNNCodec):
                 )
                 packed_candidates.append(packed)
 
+        ratio_best_packed = (
+            min(packed_candidates, key=estimated_cost)
+            if packed_candidates
+            else None
+        )
+        improving_packed_candidates = [
+            candidate
+            for candidate in packed_candidates
+            if estimated_cost(candidate) < base_cost
+        ]
         packed_selection = None
-        if packed_candidates:
+        if improving_packed_candidates:
+            # Reject non-saving packed modes before applying the speed
+            # tolerance. Otherwise a faster n-gram that is slightly larger
+            # than the selected base can hide another n that saves bytes. The
+            # surviving opportunity remains time-aware here and is then
+            # subject to the model-wide packed-time budget below.
             packed_selection = select_fastest_within_ratio(
-                packed_candidates,
+                improving_packed_candidates,
                 estimated_bytes=estimated_cost,
                 estimated_seconds=estimated_seconds,
                 ratio_tolerance=self.speed_ratio_tolerance,
             )
         packed = packed_selection.selected if packed_selection is not None else None
-        base_cost = estimated_cost(base)
-        base_seconds = estimated_seconds(base)
+        ratio_best_base_cost = float(
+            base_selection.metrics["ratio_best_estimated_bytes"]
+        )
+        packed_candidate_diagnostics = tuple(
+            {
+                "ngram_n": int(candidate["ngram_n"]),
+                "top_k": int(self.top_k),
+                "estimated_bytes": float(estimated_cost(candidate)),
+                "estimated_seconds": float(estimated_seconds(candidate)),
+                "saved_bytes_vs_selected_base": float(
+                    base_cost - estimated_cost(candidate)
+                ),
+                "saved_bytes_vs_ratio_best_base": float(
+                    ratio_best_base_cost - estimated_cost(candidate)
+                ),
+                "improves_selected_base": bool(
+                    estimated_cost(candidate) < base_cost
+                ),
+                "improves_ratio_best_base": bool(
+                    estimated_cost(candidate) < ratio_best_base_cost
+                ),
+                "ratio_best": bool(candidate is ratio_best_packed),
+                "selected_for_time_budget": bool(candidate is packed),
+            }
+            for candidate in packed_candidates
+        )
         opportunity = None
         if packed is not None:
             packed_cost = estimated_cost(packed)
@@ -841,6 +887,7 @@ class NeuralZipCodec(ZipNNCodec):
                 if packed_selection is not None
                 else None
             ),
+            "packed_candidate_diagnostics": packed_candidate_diagnostics,
             "total_size": int(total_size),
             "is_exponent": bool(is_exponent),
             "opportunity": opportunity,
@@ -1999,6 +2046,64 @@ class NeuralZipCodec(ZipNNCodec):
             packed_used += source_bytes
             packed_saved += opportunity["saved_bytes"]
 
+        selection_diagnostics = []
+        for evaluation in evaluations:
+            if not evaluation["is_exponent"]:
+                continue
+            key = evaluation["key"]
+            candidate_diagnostics = evaluation[
+                "packed_candidate_diagnostics"
+            ]
+            opportunity = evaluation["opportunity"]
+            if not candidate_diagnostics:
+                decision = "no-packed-mode"
+            elif opportunity is None:
+                decision = "no-ratio-saving"
+            elif key not in time_selection.selected_keys:
+                decision = "time-budget"
+            elif key not in selected_packed_keys:
+                decision = "source-budget"
+            else:
+                decision = "selected"
+            cluster_id, dtype, stream_id = key
+            selection_diagnostics.append(
+                {
+                    "cluster_id": str(cluster_id),
+                    "dtype": str(dtype),
+                    "stream_id": int(stream_id),
+                    "source_bytes": int(evaluation["total_size"]),
+                    "base_kind": str(evaluation["base"]["kind"]),
+                    "base_estimated_bytes": float(evaluation["base_cost"]),
+                    "ratio_best_base_kind": str(
+                        evaluation["base_selection"]["ratio_best_kind"]
+                    ),
+                    "ratio_best_base_estimated_bytes": float(
+                        evaluation["base_selection"][
+                            "ratio_best_estimated_bytes"
+                        ]
+                    ),
+                    "base_estimated_seconds": float(
+                        evaluation["base_seconds"]
+                    ),
+                    "selected_candidate_ngram_n": (
+                        int(opportunity["mode"]["ngram_n"])
+                        if opportunity is not None
+                        else None
+                    ),
+                    "ratio_best_ngram_n": next(
+                        (
+                            int(candidate["ngram_n"])
+                            for candidate in candidate_diagnostics
+                            if candidate["ratio_best"]
+                        ),
+                        None,
+                    ),
+                    "decision": decision,
+                    "candidates": candidate_diagnostics,
+                }
+            )
+        self._selection_diagnostics = tuple(selection_diagnostics)
+
         for evaluation in evaluations:
             selected = evaluation["base"]
             if evaluation["key"] in selected_packed_keys:
@@ -2025,6 +2130,40 @@ class NeuralZipCodec(ZipNNCodec):
             "packed_source_budget_bytes": packed_source_budget,
             "packed_source_bytes": packed_used,
             "packed_estimated_bytes_saved": packed_saved,
+            "packed_modes_evaluated": sum(
+                len(evaluation["packed_candidate_diagnostics"])
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+            ),
+            "packed_improving_selected_base_modes": sum(
+                int(candidate["improves_selected_base"])
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+                for candidate in evaluation["packed_candidate_diagnostics"]
+            ),
+            "packed_improving_ratio_best_base_modes": sum(
+                int(candidate["improves_ratio_best_base"])
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+                for candidate in evaluation["packed_candidate_diagnostics"]
+            ),
+            "packed_rejected_no_ratio_saving_modes": sum(
+                not candidate["improves_selected_base"]
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+                for candidate in evaluation["packed_candidate_diagnostics"]
+            ),
+            "packed_opportunities": sum(
+                evaluation["opportunity"] is not None
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+            ),
+            "packed_keys_rejected_no_ratio_saving": sum(
+                bool(evaluation["packed_candidate_diagnostics"])
+                and evaluation["opportunity"] is None
+                for evaluation in evaluations
+                if evaluation["is_exponent"]
+            ),
             "packed_time_selected": len(time_selection.selected_keys),
             "packed_rejected_by_source_budget": (
                 len(time_selection.selected_keys) - len(selected_packed_keys)

@@ -149,6 +149,7 @@ class PackedTimeBudgetSelectionTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics["packed_extra_seconds"], 0.9)
         self.assertEqual(result.metrics["packed_estimated_bytes_saved"], 190.0)
         self.assertEqual(result.metrics["packed_candidates"], 4)
+        self.assertEqual(result.metrics["packed_opportunities"], 4)
         self.assertEqual(result.metrics["packed_selected"], 3)
         self.assertEqual(result.metrics["packed_rejected_by_time_budget"], 1)
         self.assertEqual(result.metrics["packed_zero_extra_selected"], 1)
@@ -178,6 +179,7 @@ class PackedTimeBudgetSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.metrics["packed_candidates"], 0)
+        self.assertEqual(result.metrics["packed_opportunities"], 0)
         self.assertEqual(result.selected_keys, frozenset())
 
     def test_invalid_time_metrics_are_rejected(self):

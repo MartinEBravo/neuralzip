@@ -572,6 +572,11 @@ class Compressor:
             "clusters": getattr(self.codec, "cluster_count", 0),
             "selected_modes": getattr(self.codec, "selected_modes", {}),
             "selection_stats": getattr(self.codec, "selection_stats", {}),
+            "selection_diagnostics": getattr(
+                self.codec,
+                "selection_diagnostics",
+                (),
+            ),
             "precompute_seconds": precompute_seconds,
             "precompute_total_seconds": (
                 clustering_seconds + codebook_setup_seconds + prepack_seconds

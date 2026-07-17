@@ -70,6 +70,7 @@ def measured_compression(method, view, threads):
         "exponent": exponent_metrics(result),
         "selected_modes": result.get("selected_modes") or {},
         "selection_stats": result.get("selection_stats") or {},
+        "selection_diagnostics": result.get("selection_diagnostics") or (),
         "roundtrip_ok": bool(result["roundtrip_ok"]),
     }
     del result

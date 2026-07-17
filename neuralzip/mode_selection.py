@@ -210,7 +210,11 @@ def select_packed_time_budget(
         "packed_time_budget_seconds": budget_seconds,
         "packed_extra_seconds": used_seconds,
         "packed_estimated_bytes_saved": saved_bytes,
+        # ``packed_candidates`` is retained for compatibility with existing
+        # result readers.  It counts positive byte-saving opportunities, not
+        # every packed mode that the precompute evaluated.
         "packed_candidates": len(opportunities),
+        "packed_opportunities": len(opportunities),
         "packed_selected": len(selected_keys),
         "packed_rejected_by_time_budget": len(opportunities) - len(selected_keys),
         "packed_zero_extra_selected": zero_extra_selected,

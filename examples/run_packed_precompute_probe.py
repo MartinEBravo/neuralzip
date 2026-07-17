@@ -33,6 +33,11 @@ def parse_args():
     parser.add_argument("--threads", type=int, default=12)
     parser.add_argument("--ngram-values", type=int, nargs="+", default=(2, 3, 4))
     parser.add_argument("--top-k", type=int, default=254)
+    parser.add_argument(
+        "--packed-granularity",
+        choices=("js-cluster", "tensor"),
+        default="js-cluster",
+    )
     parser.add_argument("--packed-source-budget-ratio", type=float, default=0.30)
     parser.add_argument("--packed-time-budget-ratio", type=float, default=1.0)
     parser.add_argument("--speed-ratio-tolerance", type=float, default=0.03)
@@ -69,6 +74,14 @@ def main():
     model = load_hf_model(spec.kind, model_path)
     named_tensors = floating_parameters(model)
     parameters = sum(int(tensor.numel()) for _, tensor in named_tensors)
+    cluster_map = None
+    enable_shared_codebooks = True
+    if args.packed_granularity == "tensor":
+        cluster_map = {
+            name: f"tensor_{index:06d}"
+            for index, (name, _) in enumerate(named_tensors)
+        }
+        enable_shared_codebooks = False
 
     codec = NeuralZipCodec(
         threads=args.threads,
@@ -78,6 +91,8 @@ def main():
         packed_source_budget_ratio=args.packed_source_budget_ratio,
         packed_time_budget_ratio=args.packed_time_budget_ratio,
         speed_ratio_tolerance=args.speed_ratio_tolerance,
+        cluster_map=cluster_map,
+        enable_shared_codebooks=enable_shared_codebooks,
         enable_prepacked_cache=False,
     )
 
@@ -133,6 +148,8 @@ def main():
             "packed_time_budget_ratio": codec.packed_time_budget_ratio,
             "speed_ratio_tolerance": codec.speed_ratio_tolerance,
             "compression_threshold": codec.compression_threshold,
+            "packed_granularity": args.packed_granularity,
+            "enable_shared_codebooks": enable_shared_codebooks,
         },
         "clustering_seconds": clustering_seconds,
         "selection_seconds": selection_seconds,

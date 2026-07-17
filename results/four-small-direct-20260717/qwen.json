@@ -1,0 +1,218 @@
+{
+  "pair": "qwen",
+  "family": "Qwen 3.5",
+  "source_model": "Qwen/Qwen3.5-2B-Base",
+  "target_model": "Qwen/Qwen3.5-0.8B-Base",
+  "dtype": "bfloat16",
+  "threads": 12,
+  "transfer_mode": "direct",
+  "measured_repetitions": 1,
+  "warmup": "one uncached direct pass per measured encoding path; no exact target materialization",
+  "measurement_regime": "warmed direct encode without exact target cache",
+  "direct_encode_includes": [
+    "target byte reorder and stream extraction",
+    "packed-exponent tokenization",
+    "local Huff0 tree construction and fallback",
+    "entropy encoding",
+    "payload metadata assembly"
+  ],
+  "direct_encode_excludes": [
+    "family setup",
+    "target mapping",
+    "verification and decoding",
+    "metric accounting"
+  ],
+  "source_parameters": 1881825088,
+  "target_parameters": 752393024,
+  "source_setup": {
+    "clustering_seconds": 8.10788362286985,
+    "codebook_seconds": 16.75849650334567,
+    "total_seconds": 24.866380126215518,
+    "clusters": 134,
+    "codebooks": 4,
+    "selected_modes": {
+      "raw": 137,
+      "local_huff0": 127,
+      "packed_huff0_n2": 2,
+      "shared_huff0": 1,
+      "packed_huff0_n4": 1
+    }
+  },
+  "target_native_setup": {
+    "clustering_seconds": 2.89773434586823,
+    "codebook_seconds": 12.921736309304833,
+    "total_seconds": 15.819470655173063,
+    "clusters": 134,
+    "codebooks": 3,
+    "selected_modes": {
+      "raw": 125,
+      "local_huff0": 140,
+      "packed_huff0_n2": 2,
+      "shared_huff0": 1
+    },
+    "target_materialization_performed": false,
+    "target_materialization_bytes": 0
+  },
+  "transfer_setup": {
+    "seconds": 0.001032629981637001,
+    "mapping": "exact source tensor name, dtype, and stream",
+    "target_tensors": 320,
+    "matched_tensors": 320,
+    "matched_tensor_pct": 100.0,
+    "target_exponents": 752393024,
+    "matched_exponents": 752393024,
+    "matched_exponent_pct": 100.0,
+    "missing_streams": 0,
+    "selected_modes": {
+      "raw": 296,
+      "local_huff0": 334,
+      "packed_huff0": 8,
+      "shared_huff0": 2
+    },
+    "selected_symbols": {
+      "raw": 728509424,
+      "local_huff0": 776125072,
+      "packed_huff0": 149504,
+      "shared_huff0": 2048
+    },
+    "target_histograms_computed": false,
+    "target_js_matching": false,
+    "target_mode_probing": false
+  },
+  "target_materialization": {
+    "performed": false,
+    "seconds": null,
+    "resident_bytes": 0
+  },
+  "zipnn": {
+    "encode_seconds": 0.5318027622997761,
+    "roundtrip_ok": true,
+    "raw_exponents": 752393024,
+    "compressed_exponent_bytes": 250159998,
+    "compressed_exponent_group_bytes": 250159998,
+    "exponent_codebook_metadata_bytes": 0,
+    "exponent_pct": 33.248580199488934,
+    "shared_exponent_pct": 0.0,
+    "packed_exponent_pct": 0.0,
+    "local_exponent_pct": 99.99992344426627,
+    "raw_exponent_pct": 7.655573372248598e-05,
+    "mode_symbols": {
+      "local_huff0": 752392448,
+      "raw": 576
+    },
+    "mode_chunks": {
+      "local_huff0": 5865,
+      "raw": 36
+    },
+    "referenced_codebooks": 0
+  },
+  "neuralzip_target_specific_direct": {
+    "encode_seconds": 0.3244785340502858,
+    "roundtrip_ok": true,
+    "raw_exponents": 752393024,
+    "compressed_exponent_bytes": 250159171,
+    "compressed_exponent_group_bytes": 250156799,
+    "exponent_codebook_metadata_bytes": 2372,
+    "exponent_pct": 33.24847028353096,
+    "shared_exponent_pct": 0.01959826783295641,
+    "packed_exponent_pct": 0.01959826783295641,
+    "local_exponent_pct": 99.98032517643333,
+    "raw_exponent_pct": 7.655573372248598e-05,
+    "mode_symbols": {
+      "local_huff0": 752244992,
+      "raw": 576,
+      "packed_huff0": 147456
+    },
+    "mode_chunks": {
+      "local_huff0": 5859,
+      "raw": 36,
+      "packed_huff0": 6
+    },
+    "referenced_codebooks": 2
+  },
+  "neuralzip_native": {
+    "encode_seconds": 0.3244785340502858,
+    "roundtrip_ok": true,
+    "raw_exponents": 752393024,
+    "compressed_exponent_bytes": 250159171,
+    "compressed_exponent_group_bytes": 250156799,
+    "exponent_codebook_metadata_bytes": 2372,
+    "exponent_pct": 33.24847028353096,
+    "shared_exponent_pct": 0.01959826783295641,
+    "packed_exponent_pct": 0.01959826783295641,
+    "local_exponent_pct": 99.98032517643333,
+    "raw_exponent_pct": 7.655573372248598e-05,
+    "mode_symbols": {
+      "local_huff0": 752244992,
+      "raw": 576,
+      "packed_huff0": 147456
+    },
+    "mode_chunks": {
+      "local_huff0": 5859,
+      "raw": 36,
+      "packed_huff0": 6
+    },
+    "referenced_codebooks": 2
+  },
+  "neuralzip_transferred_direct": {
+    "encode_seconds": 0.306911027058959,
+    "roundtrip_ok": true,
+    "raw_exponents": 752393024,
+    "compressed_exponent_bytes": 250159967,
+    "compressed_exponent_group_bytes": 250157351,
+    "exponent_codebook_metadata_bytes": 2616,
+    "exponent_pct": 33.24857607930187,
+    "shared_exponent_pct": 0.019870465997303025,
+    "packed_exponent_pct": 0.019870465997303025,
+    "local_exponent_pct": 99.9800359658837,
+    "raw_exponent_pct": 9.356811899414953e-05,
+    "mode_symbols": {
+      "local_huff0": 752242816,
+      "raw": 704,
+      "packed_huff0": 149504
+    },
+    "mode_chunks": {
+      "local_huff0": 5856,
+      "raw": 37,
+      "packed_huff0": 8
+    },
+    "referenced_codebooks": 3
+  },
+  "neuralzip_transferred": {
+    "encode_seconds": 0.306911027058959,
+    "roundtrip_ok": true,
+    "raw_exponents": 752393024,
+    "compressed_exponent_bytes": 250159967,
+    "compressed_exponent_group_bytes": 250157351,
+    "exponent_codebook_metadata_bytes": 2616,
+    "exponent_pct": 33.24857607930187,
+    "shared_exponent_pct": 0.019870465997303025,
+    "packed_exponent_pct": 0.019870465997303025,
+    "local_exponent_pct": 99.9800359658837,
+    "raw_exponent_pct": 9.356811899414953e-05,
+    "mode_symbols": {
+      "local_huff0": 752242816,
+      "raw": 704,
+      "packed_huff0": 149504
+    },
+    "mode_chunks": {
+      "local_huff0": 5856,
+      "raw": 37,
+      "packed_huff0": 8
+    },
+    "referenced_codebooks": 3
+  },
+  "comparison": {
+    "transfer_setup_reduction_vs_native_pct": 99.99347241128261,
+    "direct_transfer_speedup_vs_zipnn": 1.7327587327046883,
+    "direct_transfer_speedup_vs_target_specific": 1.0572397386945371,
+    "direct_transfer_ratio_delta_vs_zipnn_pp": -4.120187064415859e-06,
+    "direct_transfer_ratio_delta_vs_target_specific_pp": 0.00010579577090652492,
+    "transfer_speedup_vs_zipnn": 1.7327587327046883,
+    "transfer_speedup_vs_native": 1.0572397386945371,
+    "transfer_ratio_delta_vs_zipnn_pp": -4.120187064415859e-06,
+    "transfer_ratio_delta_vs_native_pp": 0.00010579577090652492,
+    "incremental_target_seconds": 0.307943657040596,
+    "first_family_member_total_seconds": 25.174323783256114
+  }
+}

@@ -1,0 +1,211 @@
+{
+  "pair": "whisper",
+  "family": "Whisper",
+  "source_model": "openai/whisper-large-v3",
+  "target_model": "openai/whisper-large-v3-turbo",
+  "dtype": "bfloat16",
+  "threads": 12,
+  "transfer_mode": "direct",
+  "measured_repetitions": 1,
+  "warmup": "one uncached direct pass per measured encoding path; no exact target materialization",
+  "measurement_regime": "warmed direct encode without exact target cache",
+  "direct_encode_includes": [
+    "target byte reorder and stream extraction",
+    "packed-exponent tokenization",
+    "local Huff0 tree construction and fallback",
+    "entropy encoding",
+    "payload metadata assembly"
+  ],
+  "direct_encode_excludes": [
+    "family setup",
+    "target mapping",
+    "verification and decoding",
+    "metric accounting"
+  ],
+  "source_parameters": 1543490560,
+  "target_parameters": 808878080,
+  "source_setup": {
+    "clustering_seconds": 12.20222444459796,
+    "codebook_seconds": 35.053128832019866,
+    "total_seconds": 47.255353276617825,
+    "clusters": 676,
+    "codebooks": 65,
+    "selected_modes": {
+      "raw": 497,
+      "local_huff0": 790,
+      "shared_huff0": 48,
+      "packed_huff0_n4": 4,
+      "packed_huff0_n2": 12,
+      "packed_huff0_n3": 1
+    }
+  },
+  "target_native_setup": {
+    "clustering_seconds": 4.218158779665828,
+    "codebook_seconds": 26.987014004029334,
+    "total_seconds": 31.20517278369516,
+    "clusters": 370,
+    "codebooks": 50,
+    "selected_modes": {
+      "local_huff0": 426,
+      "raw": 264,
+      "packed_huff0_n2": 14,
+      "shared_huff0": 33,
+      "packed_huff0_n3": 1,
+      "packed_huff0_n4": 2
+    },
+    "target_materialization_performed": false,
+    "target_materialization_bytes": 0
+  },
+  "transfer_setup": {
+    "seconds": 0.0019156299531459808,
+    "mapping": "exact source tensor name, dtype, and stream",
+    "target_tensors": 587,
+    "matched_tensors": 587,
+    "matched_tensor_pct": 100.0,
+    "target_exponents": 808878080,
+    "matched_exponents": 808878080,
+    "matched_exponent_pct": 100.0,
+    "missing_streams": 0,
+    "selected_modes": {
+      "raw": 455,
+      "local_huff0": 665,
+      "shared_huff0": 29,
+      "packed_huff0": 25
+    },
+    "selected_symbols": {
+      "raw": 752887040,
+      "local_huff0": 777103360,
+      "shared_huff0": 148480,
+      "packed_huff0": 87617280
+    },
+    "target_histograms_computed": false,
+    "target_js_matching": false,
+    "target_mode_probing": false
+  },
+  "target_materialization": {
+    "performed": false,
+    "seconds": null,
+    "resident_bytes": 0
+  },
+  "zipnn": {
+    "encode_seconds": 0.6546872584149241,
+    "roundtrip_ok": true,
+    "raw_exponents": 808878080,
+    "compressed_exponent_bytes": 273970389,
+    "compressed_exponent_group_bytes": 273970389,
+    "exponent_codebook_metadata_bytes": 0,
+    "exponent_pct": 33.8704182711936,
+    "shared_exponent_pct": 0.0,
+    "packed_exponent_pct": 0.0,
+    "local_exponent_pct": 100.0,
+    "raw_exponent_pct": 0.0,
+    "mode_symbols": {
+      "local_huff0": 808878080
+    },
+    "mode_chunks": {
+      "local_huff0": 6599
+    },
+    "referenced_codebooks": 0
+  },
+  "neuralzip_target_specific_direct": {
+    "encode_seconds": 0.6181104648858309,
+    "roundtrip_ok": true,
+    "raw_exponents": 808878080,
+    "compressed_exponent_bytes": 273589554,
+    "compressed_exponent_group_bytes": 273571560,
+    "exponent_codebook_metadata_bytes": 17994,
+    "exponent_pct": 33.82333639205552,
+    "shared_exponent_pct": 14.07341882722301,
+    "packed_exponent_pct": 14.07341882722301,
+    "local_exponent_pct": 85.92658117277699,
+    "raw_exponent_pct": 0.0,
+    "mode_symbols": {
+      "packed_huff0": 113836800,
+      "local_huff0": 695041280
+    },
+    "mode_chunks": {
+      "packed_huff0": 882,
+      "local_huff0": 5717
+    },
+    "referenced_codebooks": 17
+  },
+  "neuralzip_native": {
+    "encode_seconds": 0.6181104648858309,
+    "roundtrip_ok": true,
+    "raw_exponents": 808878080,
+    "compressed_exponent_bytes": 273589554,
+    "compressed_exponent_group_bytes": 273571560,
+    "exponent_codebook_metadata_bytes": 17994,
+    "exponent_pct": 33.82333639205552,
+    "shared_exponent_pct": 14.07341882722301,
+    "packed_exponent_pct": 14.07341882722301,
+    "local_exponent_pct": 85.92658117277699,
+    "raw_exponent_pct": 0.0,
+    "mode_symbols": {
+      "packed_huff0": 113836800,
+      "local_huff0": 695041280
+    },
+    "mode_chunks": {
+      "packed_huff0": 882,
+      "local_huff0": 5717
+    },
+    "referenced_codebooks": 17
+  },
+  "neuralzip_transferred_direct": {
+    "encode_seconds": 0.7481527449563146,
+    "roundtrip_ok": true,
+    "raw_exponents": 808878080,
+    "compressed_exponent_bytes": 274292875,
+    "compressed_exponent_group_bytes": 274276986,
+    "exponent_codebook_metadata_bytes": 15889,
+    "exponent_pct": 33.91028657866461,
+    "shared_exponent_pct": 10.831951336844238,
+    "packed_exponent_pct": 10.831951336844238,
+    "local_exponent_pct": 89.16804866315576,
+    "raw_exponent_pct": 0.0,
+    "mode_symbols": {
+      "packed_huff0": 87617280,
+      "local_huff0": 721260800
+    },
+    "mode_chunks": {
+      "packed_huff0": 678,
+      "local_huff0": 5921
+    },
+    "referenced_codebooks": 16
+  },
+  "neuralzip_transferred": {
+    "encode_seconds": 0.7481527449563146,
+    "roundtrip_ok": true,
+    "raw_exponents": 808878080,
+    "compressed_exponent_bytes": 274292875,
+    "compressed_exponent_group_bytes": 274276986,
+    "exponent_codebook_metadata_bytes": 15889,
+    "exponent_pct": 33.91028657866461,
+    "shared_exponent_pct": 10.831951336844238,
+    "packed_exponent_pct": 10.831951336844238,
+    "local_exponent_pct": 89.16804866315576,
+    "raw_exponent_pct": 0.0,
+    "mode_symbols": {
+      "packed_huff0": 87617280,
+      "local_huff0": 721260800
+    },
+    "mode_chunks": {
+      "packed_huff0": 678,
+      "local_huff0": 5921
+    },
+    "referenced_codebooks": 16
+  },
+  "comparison": {
+    "transfer_setup_reduction_vs_native_pct": 99.99386117818855,
+    "direct_transfer_speedup_vs_zipnn": 0.8750716519166846,
+    "direct_transfer_speedup_vs_target_specific": 0.8261821787767724,
+    "direct_transfer_ratio_delta_vs_zipnn_pp": 0.03986830747101067,
+    "direct_transfer_ratio_delta_vs_target_specific_pp": 0.08695018660908715,
+    "transfer_speedup_vs_zipnn": 0.8750716519166846,
+    "transfer_speedup_vs_native": 0.8261821787767724,
+    "transfer_ratio_delta_vs_zipnn_pp": 0.03986830747101067,
+    "transfer_ratio_delta_vs_native_pp": 0.08695018660908715,
+    "incremental_target_seconds": 0.7500683749094605,
+    "first_family_member_total_seconds": 48.005421651527286
+  }
+}

@@ -9,7 +9,7 @@ import pandas as pd
 from huggingface_hub import HfFileSystem
 
 from config import LOSSY_LOSSLESS_MODEL_SUITE
-from neuralzip import huffman
+from neuralzip import huff0
 
 
 OUTPUT_DIR = Path("examples/outputs/lossy_lossless/quantized_nibbles")
@@ -19,6 +19,7 @@ EXTENSIONS = (".safetensors", ".bin", ".pt", ".gguf")
 RAW_CHUNK_BYTES = 256 << 10
 MAX_SAMPLE_BYTES_PER_FILE = 64 << 20
 CHUNK_HEADER_BYTES = 1 + 8 + 8
+SHARED_CHUNK_HEADER_BYTES = CHUNK_HEADER_BYTES + 8
 CODEBOOK_HEADER_BYTES = 8 + len("nibble".encode("utf-8")) + 8
 CLUSTER_JS_THRESHOLD = 0.05
 MAX_CLUSTER_SAMPLE_BYTES = 16 << 20
@@ -113,33 +114,66 @@ def _raw_chunk_cost(data: bytes) -> int:
     return CHUNK_HEADER_BYTES + len(data)
 
 
-def _local_huffman_cost(data: bytes) -> tuple[int, bool]:
-    nibbles = _nibble_stream(data)
-    encoded = huffman.compress(nibbles, min_saving_bytes=0)
-    raw_cost = _raw_chunk_cost(data)
-    if encoded is None:
-        return raw_cost, False
-    encoded_cost = CHUNK_HEADER_BYTES + len(encoded.code_lengths) + len(encoded.payload)
-    if encoded_cost >= raw_cost:
-        return raw_cost, False
-    return encoded_cost, True
+def _nibble_source_chunks(data: bytes) -> tuple[tuple[bytes, bytes], ...]:
+    source_bytes = max(1, huff0.max_block_size() // 2)
+    return tuple(
+        (part, _nibble_stream(part))
+        for start in range(0, len(data), source_bytes)
+        if (part := data[start : start + source_bytes])
+    )
 
 
-def _shared_huffman_cost(data: bytes, codebook) -> tuple[int, bool]:
-    raw_cost = _raw_chunk_cost(data)
-    max_payload_bytes = max(0, raw_cost - CHUNK_HEADER_BYTES)
-    encoded = huffman.encode_with_codebook(
-        _nibble_stream(data),
+def _local_huff0_cost(data: bytes) -> tuple[int, int, int]:
+    chunks = _nibble_source_chunks(data)
+    encoded_chunks = huff0.compress_many(
+        (nibbles for _, nibbles in chunks),
+        min_saving_bytes=0,
+        threads=0,
+    )
+    total = 0
+    compressed = 0
+    raw = 0
+    for (source, _), encoded in zip(chunks, encoded_chunks, strict=True):
+        raw_cost = _raw_chunk_cost(source)
+        encoded_cost = (
+            CHUNK_HEADER_BYTES + len(encoded) if encoded is not None else raw_cost
+        )
+        if encoded is not None and encoded_cost < raw_cost:
+            total += encoded_cost
+            compressed += 1
+        else:
+            total += raw_cost
+            raw += 1
+    return total, compressed, raw
+
+
+def _shared_huff0_cost(data: bytes, codebook) -> tuple[int, int, int]:
+    chunks = _nibble_source_chunks(data)
+    encoded_chunks = huff0.encode_many_with_codebook(
+        (nibbles for _, nibbles in chunks),
         codebook,
         min_saving_bytes=0,
-        max_output_bytes=max_payload_bytes,
+        compression_threshold=1.0,
+        metadata_bytes=SHARED_CHUNK_HEADER_BYTES,
+        threads=0,
     )
-    if encoded is None:
-        return raw_cost, False
-    encoded_cost = CHUNK_HEADER_BYTES + len(encoded.payload)
-    if encoded_cost >= raw_cost:
-        return raw_cost, False
-    return encoded_cost, True
+    total = 0
+    compressed = 0
+    raw = 0
+    for (source, _), encoded in zip(chunks, encoded_chunks, strict=True):
+        raw_cost = _raw_chunk_cost(source)
+        encoded_cost = (
+            SHARED_CHUNK_HEADER_BYTES + len(encoded)
+            if encoded is not None
+            else raw_cost
+        )
+        if encoded is not None and encoded_cost < raw_cost:
+            total += encoded_cost
+            compressed += 1
+        else:
+            total += raw_cost
+            raw += 1
+    return total, compressed, raw
 
 
 def _common_row(
@@ -194,10 +228,10 @@ def _compress_zipnn_local(fs: HfFileSystem, files: list[dict], model_name: str, 
     for file_index, _, data in _iter_sampled_chunks(fs, files):
         sampled_files.add(file_index)
         raw_bytes += len(data)
-        cost, used_huffman = _local_huffman_cost(data)
+        cost, compressed, raw = _local_huff0_cost(data)
         compressed_bytes += cost
-        huffman_chunks += int(used_huffman)
-        raw_chunks += int(not used_huffman)
+        huffman_chunks += compressed
+        raw_chunks += raw
     elapsed = time.perf_counter() - start
     return _common_row(
         model_name=model_name,
@@ -268,14 +302,16 @@ def _compress_neuralzip(fs: HfFileSystem, files: list[dict], model_name: str, mo
     if not clusters:
         raise ValueError("No sampled data.")
     codebooks = [
-        huffman.build_codebook(bytes(cluster["sample"]), prior_count=1)
+        huff0.build_codebook(bytes(cluster["sample"]), prior_count=1)
         for cluster in clusters
     ]
     precompute_seconds = time.perf_counter() - precompute_start
 
     encode_start = time.perf_counter()
     raw_bytes = 0
-    compressed_bytes = sum(CODEBOOK_HEADER_BYTES + len(book.code_lengths) for book in codebooks)
+    compressed_bytes = sum(
+        CODEBOOK_HEADER_BYTES + len(book.codebook) for book in codebooks
+    )
     sampled_files = set()
     huffman_chunks = 0
     raw_chunks = 0
@@ -283,10 +319,10 @@ def _compress_neuralzip(fs: HfFileSystem, files: list[dict], model_name: str, mo
         sampled_files.add(file_index)
         raw_bytes += len(data)
         cluster_index = _nearest_cluster(clusters, data)
-        cost, used_huffman = _shared_huffman_cost(data, codebooks[cluster_index])
+        cost, compressed, raw = _shared_huff0_cost(data, codebooks[cluster_index])
         compressed_bytes += cost
-        huffman_chunks += int(used_huffman)
-        raw_chunks += int(not used_huffman)
+        huffman_chunks += compressed
+        raw_chunks += raw
     encode_seconds = time.perf_counter() - encode_start
 
     if raw_bytes != raw_bytes_seen or sampled_files != sampled_files_seen:

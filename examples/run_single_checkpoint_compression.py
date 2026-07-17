@@ -35,7 +35,6 @@ def main() -> None:
     }
 
     methods = (
-        ("ZipNN local", "zipnn-local"),
         ("NeuralZip", "neuralzip"),
     )
     df = pd.DataFrame(_compress_mapping(checkpoint_path.stem, tensors, methods=methods))

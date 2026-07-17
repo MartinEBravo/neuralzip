@@ -78,7 +78,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertGreater(len(codec.export_codebooks()), 0)
         codec.compress_tensor(named_tensors[0][0], tensor)
 
-    def test_zero_packed_budget_uses_canonical_shared_huffman(self):
+    def test_zero_packed_budget_uses_shared_huff0(self):
         repeated = torch.tensor(
             [[1.0, 1.0, 0.5, 1.0], [1.0, 0.5, 1.0, 1.0]],
             dtype=torch.bfloat16,
@@ -95,9 +95,9 @@ class NeuralZipCodecTests(unittest.TestCase):
         ).compress(model)
 
         self.assertTrue(result["roundtrip_ok"])
-        self.assertEqual(result["compressed_bytes"], 66_915)
+        self.assertEqual(result["compressed_bytes"], 66_162)
         self.assertEqual(result["packed_ngram_chunks"], 0)
-        self.assertGreater(result["selected_modes"].get("shared_huffman", 0), 0)
+        self.assertGreater(result["selected_modes"].get("shared_huff0", 0), 0)
         self.assertEqual(result["selection_stats"]["packed_selected"], 0)
 
     def test_empty_ngram_values_disable_packed_candidates(self):
@@ -183,60 +183,59 @@ class NeuralZipCodecTests(unittest.TestCase):
             len({result["compressed_bytes"] for result in results}),
             1,
         )
-        self.assertEqual(results[0]["compressed_bytes"], 12_272)
+        self.assertEqual(results[0]["compressed_bytes"], 12_015)
         self.assertEqual(
             len({repr(result["selected_modes"]) for result in results}),
             1,
         )
         self.assertTrue(all(result["roundtrip_ok"] for result in results))
 
-    def test_shared_codebook_failure_falls_back_to_local_huffman(self):
+    def test_shared_codebook_failure_falls_back_to_local_huff0(self):
         codec = NeuralZipCodec(ngram_values=())
         mode = codec._build_candidate(
-            bytes([1]) * 4096,
-            kind="shared_huffman",
-            prior_count=0,
+            bytes([1, 3]) * 2048,
+            kind="shared_huff0",
+            prior_count=1,
         )
+        mode["codebook_id"] = 0
         group = codec._compress_stream_with_mode(
-            bytes([2]) * 4096,
+            bytes([2, 4]) * 2048,
             "exponent",
             element_size=2,
             mode=mode,
         )
 
-        self.assertEqual(group.chunks[0].mode, "huffman")
-        self.assertEqual(codec._decompress_stream(group), bytes([2]) * 4096)
+        self.assertEqual(group.chunks[0].mode, "local_huff0")
+        self.assertEqual(codec._decompress_stream(group), bytes([2, 4]) * 2048)
 
     def test_tensor_probe_rejects_cluster_codebook_for_outlier(self):
-        common = torch.tensor(
-            [1.0, 1.0, 1.0, 1.0, 0.5],
-            dtype=torch.bfloat16,
-        ).repeat(1000)
-        outlier = torch.tensor(
-            [0.5, 0.5, 0.5, 0.25],
-            dtype=torch.bfloat16,
-        ).repeat(1000)
-        named_tensors = [
-            (f"common.{index}", common.clone()) for index in range(9)
-        ] + [("outlier", outlier)]
-        codec = NeuralZipCodec(
-            cluster_map={name: "cluster" for name, _ in named_tensors},
-            ngram_values=(),
-            max_codebook_sample_bytes=1 << 20,
-            max_tensor_probe_bytes=64 << 10,
+        codec = NeuralZipCodec(ngram_values=())
+        common = bytes(range(4)) * 2048
+        outlier = bytes([0, 0, 0, 0, 1, 2, 3]) * 585
+        source_mode = codec._build_candidate(
+            common,
+            kind="shared_huff0",
+            prior_count=0,
+        )
+        source_mode["codebook_id"] = 0
+
+        common_mode, common_probe = codec._select_transfer_mode(
+            common,
+            source_mode,
+            element_size=2,
+            stream_kind="exponent",
+        )
+        outlier_mode, outlier_probe = codec._select_transfer_mode(
+            outlier,
+            source_mode,
+            element_size=2,
+            stream_kind="exponent",
         )
 
-        codec.prepare_clusters(named_tensors)
-        codec.build_codebooks_and_select_modes(named_tensors)
-
-        self.assertEqual(
-            codec._mode_by_tensor_stream[("common.0", "bfloat16", 1)]["kind"],
-            "shared_huffman",
-        )
-        self.assertEqual(
-            codec._mode_by_tensor_stream[("outlier", "bfloat16", 1)]["kind"],
-            "local_huffman",
-        )
+        self.assertEqual(common_mode["kind"], "shared_huff0")
+        self.assertTrue(common_probe["uses_source_codebook"])
+        self.assertEqual(outlier_mode["kind"], "local_huff0")
+        self.assertFalse(outlier_probe["uses_source_codebook"])
 
     def test_transfer_assigns_matching_target_by_js_distance(self):
         pattern = torch.tensor(
@@ -264,7 +263,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(stats["matched_exponent_pct"], 100.0)
         self.assertTrue(
             any(
-                chunk.mode == "shared_huffman"
+                chunk.mode == "shared_huff0"
                 for group in payload.groups
                 for chunk in group.chunks
             )
@@ -298,7 +297,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(stats["matched_tensors"], 0)
         self.assertFalse(
             any(
-                chunk.mode in {"shared_huffman", "shared_huff0", "packed_huff0"}
+                chunk.mode in {"shared_huff0", "packed_huff0"}
                 for group in payload.groups
                 for chunk in group.chunks
             )

@@ -15,7 +15,6 @@ from .zipnn_codec import ZipNNCodec
 
 
 DEFAULT_METHODS = (
-    ("ZipNN local", "zipnn-local"),
     ("NeuralZip", "neuralzip"),
 )
 
@@ -242,16 +241,9 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
                         "codebook_setup_seconds"
                     ),
                     "encode_seconds": result.get("encode_seconds"),
-                    "compression_seconds": result.get(
-                        "compression_seconds", elapsed
-                    ),
-                    "total_compression_seconds": result.get(
-                        "total_compression_seconds", elapsed
-                    ),
-                    "cold_encode_seconds": result.get(
-                        "cold_encode_seconds",
-                        elapsed,
-                    ),
+                    "compression_seconds": result.get("encode_seconds", elapsed),
+                    "total_compression_seconds": result.get("encode_seconds", elapsed),
+                    "cold_encode_seconds": result.get("encode_seconds", elapsed),
                     "clusters": result.get("clusters"),
                     "codebooks": (
                         len(result.get("codebooks"))
@@ -1907,7 +1899,7 @@ def compress_federated_directory_amortized(
                 "clusters": codec.cluster_count,
                 "codebooks": len(codebooks),
                 "codebook_metadata_bytes_once": codebook_metadata_bytes,
-                "shared_huffman_chunks": shared_refs,
+                "shared_huff0_chunks": shared_refs,
                 "huffman_chunks": huffman_chunks,
                 "raw_chunks": raw_chunks,
                 "dtype": str(dtype).replace("torch.", ""),

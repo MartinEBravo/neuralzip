@@ -34,7 +34,7 @@ class ComponentAblationTests(unittest.TestCase):
         self.assertEqual(sharing["compressed_bytes"], zipnn["compressed_bytes"])
         self.assertGreater(sharing["precompute_seconds"], 0.0)
         self.assertGreater(packing["precompute_seconds"], 0.0)
-        self.assertNotIn("shared_huffman", packing["selected_modes"])
+        self.assertNotIn("shared_huff0", packing["selected_modes"])
 
 
 if __name__ == "__main__":

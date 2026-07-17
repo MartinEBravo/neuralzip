@@ -218,6 +218,36 @@ class ZipNNCodec:
     def _compress_stream(self, stream, stream_kind, *, chunk_size=None):
         return self._compress_streams(((stream, stream_kind, chunk_size),))[0]
 
+    def _compress_local_huff0_chunks(self, chunks):
+        chunks = tuple(bytes(chunk) for chunk in chunks)
+        encoded_chunks = huff0.compress_many(
+            chunks,
+            min_saving_bytes=self.min_saving_bytes,
+            threads=self.threads,
+        )
+        output = []
+        for chunk, encoded in zip(chunks, encoded_chunks, strict=True):
+            if (
+                encoded is not None
+                and len(encoded) < len(chunk) * self.compression_threshold
+            ):
+                output.append(
+                    StreamChunk(
+                        mode="local_huff0",
+                        symbol_count=len(chunk),
+                        payload=encoded,
+                    )
+                )
+            else:
+                output.append(
+                    StreamChunk(
+                        mode="raw",
+                        symbol_count=len(chunk),
+                        payload=chunk,
+                    )
+                )
+        return tuple(output)
+
     def _compress_streams(self, stream_specs):
         prepared = []
         flat_chunks = []
@@ -236,37 +266,15 @@ class ZipNNCodec:
             prepared.append((stream_kind, len(stream), stream_chunks))
             flat_chunks.extend(stream_chunks)
 
-        encoded_chunks = huff0.compress_many(
-            flat_chunks,
-            min_saving_bytes=self.min_saving_bytes,
-            threads=self.threads,
-        )
+        encoded_chunks = self._compress_local_huff0_chunks(flat_chunks)
         groups = []
         offset = 0
         for stream_kind, symbol_count, stream_chunks in prepared:
             chunks = []
-            for chunk in stream_chunks:
+            for _ in stream_chunks:
                 encoded = encoded_chunks[offset]
                 offset += 1
-                if (
-                    encoded is not None
-                    and len(encoded) < len(chunk) * self.compression_threshold
-                ):
-                    chunks.append(
-                        StreamChunk(
-                            mode="local_huff0",
-                            symbol_count=len(chunk),
-                            payload=encoded,
-                        )
-                    )
-                else:
-                    chunks.append(
-                        StreamChunk(
-                            mode="raw",
-                            symbol_count=len(chunk),
-                            payload=chunk,
-                        )
-                    )
+                chunks.append(encoded)
             groups.append(
                 ByteGroupPayload(
                     stream_kind=stream_kind,
@@ -285,48 +293,6 @@ class ZipNNCodec:
             compression_threshold=self.compression_threshold,
             metadata_bytes=metadata_bytes,
             threads=self.threads,
-        )
-
-    def _compress_stream_canonical(self, stream, stream_kind, *, chunk_size=None):
-        """Legacy canonical-Huffman writer kept for compatibility experiments."""
-        if chunk_size is None:
-            chunk_size = self.chunk_size
-
-        chunks = []
-        for start in range(0, len(stream), chunk_size):
-            chunk = stream[start : start + chunk_size]
-            if not chunk:
-                continue
-
-            encoded = huffman.compress(
-                chunk,
-                min_saving_bytes=self.min_saving_bytes,
-            )
-            if encoded is not None:
-                encoded_size = len(encoded.payload) + len(encoded.code_lengths)
-                if encoded_size < len(chunk) * self.compression_threshold:
-                    chunks.append(
-                        StreamChunk(
-                            mode="huffman",
-                            symbol_count=encoded.symbol_count,
-                            payload=encoded.payload,
-                            code_lengths=encoded.code_lengths,
-                        )
-                    )
-                    continue
-
-            chunks.append(
-                StreamChunk(
-                    mode="raw",
-                    symbol_count=len(chunk),
-                    payload=chunk,
-                )
-            )
-
-        return ByteGroupPayload(
-            stream_kind=stream_kind,
-            symbol_count=len(stream),
-            chunks=tuple(chunks),
         )
 
     def _decompress_stream(self, group):

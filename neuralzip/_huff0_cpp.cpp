@@ -345,13 +345,13 @@ std::vector<std::uint8_t> decode_with_dtable(
 std::vector<std::uint8_t> restore_ngram_tokens(
     const std::vector<std::uint8_t>& tokens,
     int n,
-    const std::vector<std::uint32_t>& vocab,
+    const std::vector<std::uint64_t>& vocab,
     const std::uint8_t* escapes,
     Py_ssize_t escape_len,
     const std::uint8_t* tail,
     Py_ssize_t tail_len) {
-    if (n < 2 || n > 4) {
-        throw std::runtime_error("n must be in [2, 4].");
+    if (n < 2 || n > 8) {
+        throw std::runtime_error("n must be in [2, 8].");
     }
     if (tail_len < 0 || tail_len >= n) {
         throw std::runtime_error("Packed n-gram tail length is invalid.");
@@ -374,7 +374,7 @@ std::vector<std::uint8_t> restore_ngram_tokens(
         if (static_cast<std::size_t>(token) >= vocab.size()) {
             throw std::runtime_error("Packed n-gram token is outside the vocabulary.");
         }
-        std::uint32_t symbol = vocab[token];
+        std::uint64_t symbol = vocab[token];
         for (int offset = 0; offset < n; ++offset) {
             output.push_back(static_cast<std::uint8_t>((symbol >> (8 * offset)) & 0xFFU));
         }
@@ -386,26 +386,34 @@ std::vector<std::uint8_t> restore_ngram_tokens(
     return output;
 }
 
-std::uint32_t pack_ngram_symbol(const std::uint8_t* data, int n) {
-    std::uint32_t symbol = 0;
+std::uint64_t pack_ngram_symbol(const std::uint8_t* data, int n) {
+    std::uint64_t symbol = 0;
     for (int index = 0; index < n; ++index) {
-        symbol |= static_cast<std::uint32_t>(data[index]) << (8 * index);
+        symbol |= static_cast<std::uint64_t>(data[index]) << (8 * index);
     }
     return symbol;
 }
 
-std::vector<std::uint32_t> vocab_from_view(const Py_buffer& vocab_view) {
-    if (vocab_view.len % 4 != 0) {
-        throw std::runtime_error("ngram vocab must contain little-endian uint32 values.");
+std::vector<std::uint64_t> vocab_from_view(const Py_buffer& vocab_view, int n) {
+    if (n < 1 || n > 8) {
+        throw std::runtime_error("ngram vocab requires n in [1, 8].");
+    }
+    const Py_ssize_t symbol_bytes = n <= 4 ? 4 : 8;
+    if (vocab_view.len % symbol_bytes != 0) {
+        throw std::runtime_error(
+            "ngram vocab must contain fixed-width little-endian integer values.");
     }
     const auto* data = static_cast<const std::uint8_t*>(vocab_view.buf);
-    std::vector<std::uint32_t> vocab(static_cast<std::size_t>(vocab_view.len / 4));
+    std::vector<std::uint64_t> vocab(
+        static_cast<std::size_t>(vocab_view.len / symbol_bytes));
     for (std::size_t index = 0; index < vocab.size(); ++index) {
-        std::uint32_t value = 0;
-        value |= static_cast<std::uint32_t>(data[index * 4]);
-        value |= static_cast<std::uint32_t>(data[index * 4 + 1]) << 8;
-        value |= static_cast<std::uint32_t>(data[index * 4 + 2]) << 16;
-        value |= static_cast<std::uint32_t>(data[index * 4 + 3]) << 24;
+        std::uint64_t value = 0;
+        for (Py_ssize_t offset = 0; offset < symbol_bytes; ++offset) {
+            value |= static_cast<std::uint64_t>(
+                         data[index * static_cast<std::size_t>(symbol_bytes)
+                              + static_cast<std::size_t>(offset)])
+                     << (8 * offset);
+        }
         vocab[index] = value;
     }
     if (vocab.size() > 255) {
@@ -429,9 +437,9 @@ NGramTokenization tokenize_ngrams(
     const std::uint8_t* data,
     Py_ssize_t data_len,
     int n,
-    const std::vector<std::uint32_t>& vocab) {
-    if (n < 1 || n > 4) {
-        throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 4].");
+    const std::vector<std::uint64_t>& vocab) {
+    if (n < 1 || n > 8) {
+        throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 8].");
     }
     if (vocab.empty()) {
         throw std::runtime_error("ngram vocab is empty.");
@@ -451,7 +459,7 @@ NGramTokenization tokenize_ngrams(
 
     for (Py_ssize_t token_index = 0; token_index < token_count; ++token_index) {
         const std::uint8_t* pointer = data + token_index * n;
-        std::uint32_t symbol = pack_ngram_symbol(pointer, n);
+        std::uint64_t symbol = pack_ngram_symbol(pointer, n);
         auto iterator = std::lower_bound(vocab.begin(), vocab.end(), symbol);
         if (iterator != vocab.end() && *iterator == symbol) {
             std::size_t position = static_cast<std::size_t>(iterator - vocab.begin());
@@ -832,10 +840,10 @@ PyObject* py_encode_ngram_with_codebook(PyObject*, PyObject* args, PyObject* kwa
             &max_output_bytes)) {
         return nullptr;
     }
-    if (n < 1 || n > 4) {
+    if (n < 1 || n > 8) {
         PyBuffer_Release(&data_view);
         PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, "n must be in [1, 4].");
+        PyErr_SetString(PyExc_ValueError, "n must be in [1, 8].");
         return nullptr;
     }
     if (min_saving_bytes < 0) {
@@ -848,7 +856,8 @@ PyObject* py_encode_ngram_with_codebook(PyObject*, PyObject* args, PyObject* kwa
     try {
         Huff0Codebook* codebook = codebook_from_capsule(capsule);
         const auto* data = static_cast<const std::uint8_t*>(data_view.buf);
-        std::vector<std::uint32_t> vocab = vocab_from_view(vocab_view);
+        std::vector<std::uint64_t> vocab = vocab_from_view(
+            vocab_view, static_cast<int>(n));
         NGramTokenization tokens =
             tokenize_ngrams(data, data_view.len, static_cast<int>(n), vocab);
 
@@ -1069,7 +1078,8 @@ PyObject* py_decompress_ngram_with_decodebook(PyObject*, PyObject* args) {
             payload_view.len,
             symbol_count,
             decodebook->dtable.data());
-        std::vector<std::uint32_t> vocab = vocab_from_view(vocab_view);
+        std::vector<std::uint64_t> vocab = vocab_from_view(
+            vocab_view, static_cast<int>(n));
         std::vector<std::uint8_t> decoded = restore_ngram_tokens(
             tokens,
             static_cast<int>(n),

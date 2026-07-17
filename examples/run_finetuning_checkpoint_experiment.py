@@ -35,7 +35,6 @@ IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
 METHODS = {
-    "zipnn-local": ("ZipNN local", "zipnn-local"),
     "neuralzip": ("NeuralZip", "neuralzip"),
 }
 
@@ -805,7 +804,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--methods",
         nargs="+",
-        default=["zipnn-local", "neuralzip"],
+        default=["neuralzip"],
     )
     return parser.parse_args()
 

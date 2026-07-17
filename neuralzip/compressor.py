@@ -90,8 +90,8 @@ def _stream_summaries(tensor_payloads):
                     "payload_bytes": 0,
                     "metadata_bytes": 0,
                     "compressed_bytes": 0,
-                    "local_huffman_chunks": 0,
-                    "shared_huffman_chunks": 0,
+                    "local_huff0_chunks": 0,
+                    "shared_huff0_chunks": 0,
                     "packed_ngram_chunks": 0,
                     "raw_chunks": 0,
                     "zero_chunks": 0,
@@ -104,10 +104,8 @@ def _stream_summaries(tensor_payloads):
             entry["payload_bytes"] += group.payload_bytes
             entry["metadata_bytes"] += serialized_group_bytes - group.payload_bytes
             entry["compressed_bytes"] += serialized_group_bytes
-            entry["local_huffman_chunks"] += group.local_huffman_chunks
-            entry["shared_huffman_chunks"] += (
-                group.shared_codebook_refs - group.packed_ngram_chunks
-            )
+            entry["local_huff0_chunks"] += group.local_huff0_chunks
+            entry["shared_huff0_chunks"] += group.shared_huff0_chunks
             entry["packed_ngram_chunks"] += group.packed_ngram_chunks
             entry["raw_chunks"] += group.raw_chunks
             entry["zero_chunks"] += group.zero_chunks
@@ -126,7 +124,7 @@ def _stream_summaries(tensor_payloads):
 class Compressor:
     def __init__(
         self,
-        method="zipnn",
+        method="neuralzip",
         *,
         verify=True,
         keep_payloads=False,
@@ -353,7 +351,7 @@ class Compressor:
         total_zero_chunks = 0
         total_shared_codebook_defs = 0
         total_shared_codebook_refs = 0
-        total_local_huffman_chunks = 0
+        total_local_huff0_chunks = 0
         total_packed_ngram_chunks = 0
         total_ngram_hits = 0
         total_ngram_escapes = 0
@@ -412,8 +410,8 @@ class Compressor:
             total_raw_chunks += compressed.raw_chunks
             total_zero_chunks += compressed.zero_chunks
             total_shared_codebook_refs += getattr(compressed, "shared_codebook_refs", 0)
-            total_local_huffman_chunks += getattr(
-                compressed, "local_huffman_chunks", 0
+            total_local_huff0_chunks += getattr(
+                compressed, "local_huff0_chunks", 0
             )
             total_packed_ngram_chunks += getattr(
                 compressed, "packed_ngram_chunks", 0
@@ -454,8 +452,8 @@ class Compressor:
                 "zero_chunks": compressed.zero_chunks,
                 "shared_codebook_defs": getattr(compressed, "shared_codebook_defs", 0),
                 "shared_codebook_refs": getattr(compressed, "shared_codebook_refs", 0),
-                "local_huffman_chunks": getattr(
-                    compressed, "local_huffman_chunks", 0
+                "local_huff0_chunks": getattr(
+                    compressed, "local_huff0_chunks", 0
                 ),
                 "packed_ngram_chunks": getattr(
                     compressed, "packed_ngram_chunks", 0
@@ -506,10 +504,11 @@ class Compressor:
             "zero_chunks": total_zero_chunks,
             "shared_codebook_defs": total_shared_codebook_defs,
             "shared_codebook_refs": total_shared_codebook_refs,
-            "shared_huffman_chunks": (
-                total_shared_codebook_refs - total_packed_ngram_chunks
+            "shared_huff0_chunks": sum(
+                getattr(payload, "shared_huff0_chunks", 0)
+                for payload in compressed_payloads
             ),
-            "local_huffman_chunks": total_local_huffman_chunks,
+            "local_huff0_chunks": total_local_huff0_chunks,
             "packed_ngram_chunks": total_packed_ngram_chunks,
             "ngram_hits": total_ngram_hits,
             "ngram_escapes": total_ngram_escapes,

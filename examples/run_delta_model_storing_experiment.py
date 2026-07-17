@@ -13,9 +13,9 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 
 from config import MODEL_SUITE, VISION_DIFFUSION_MODEL_SUITE
-from neuralzip import huffman
 from neuralzip.ablations import _delta_stream, zipnn_exponent_stream
 from neuralzip.experiment_scenarios import _load_vision_diffusion_mapping, _normalise_dtype
+from neuralzip.zipnn_codec import ZipNNCodec
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "deferred"
@@ -54,17 +54,6 @@ def _entropy_from_counts(counts):
     return float(-(probabilities * np.log2(probabilities)).sum())
 
 
-def _huffman_chunk_cost(data):
-    raw_cost = 1 + 8 + 8 + len(data)
-    encoded = huffman.compress(data, min_saving_bytes=0)
-    if encoded is None:
-        return raw_cost, len(data), False
-    encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-    if encoded_cost >= raw_cost:
-        return raw_cost, len(data), False
-    return encoded_cost, len(encoded.payload), True
-
-
 def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):
     target_dtype = _normalise_dtype(dtype)
     if target_dtype == "auto":
@@ -85,6 +74,10 @@ def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):
     zipnn_raw_chunks = 0
     delta_huffman_chunks = 0
     delta_raw_chunks = 0
+    codec = ZipNNCodec(
+        chunk_size=chunk_size,
+        compression_threshold=1.0,
+    )
 
     for _, tensor in named_tensors:
         if not torch.is_tensor(tensor) or not tensor.is_floating_point():
@@ -108,24 +101,25 @@ def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):
         delta_values = np.frombuffer(delta, dtype=np.uint8)
         delta_counts += np.bincount(delta_values, minlength=256)
 
-        for chunk in _iter_chunks(stream, chunk_size):
-            chunks += 1
-            cost, payload, compressed = _huffman_chunk_cost(chunk)
-            zipnn_compressed_bytes += cost
-            zipnn_payload_bytes += payload
-            if compressed:
-                zipnn_huffman_chunks += 1
-            else:
-                zipnn_raw_chunks += 1
-
-        for chunk in _iter_chunks(delta, chunk_size):
-            cost, payload, compressed = _huffman_chunk_cost(chunk)
-            delta_compressed_bytes += cost
-            delta_payload_bytes += payload
-            if compressed:
-                delta_huffman_chunks += 1
-            else:
-                delta_raw_chunks += 1
+        zipnn_group, delta_group = codec._compress_streams(
+            (
+                (stream, "exponent", chunk_size),
+                (delta, "delta", chunk_size),
+            )
+        )
+        chunks += len(zipnn_group.chunks)
+        zipnn_compressed_bytes += sum(
+            chunk.compressed_bytes for chunk in zipnn_group.chunks
+        )
+        zipnn_payload_bytes += zipnn_group.payload_bytes
+        zipnn_huffman_chunks += zipnn_group.local_huff0_chunks
+        zipnn_raw_chunks += zipnn_group.raw_chunks
+        delta_compressed_bytes += sum(
+            chunk.compressed_bytes for chunk in delta_group.chunks
+        )
+        delta_payload_bytes += delta_group.payload_bytes
+        delta_huffman_chunks += delta_group.local_huff0_chunks
+        delta_raw_chunks += delta_group.raw_chunks
 
         del value
 
@@ -286,9 +280,7 @@ def _read_baseline(paths):
                 if not model or not compressor:
                     continue
                 pct = row.get("exponent_compressed_pct") or row.get("compressed_pct")
-                seconds = row.get("compression_seconds") or row.get(
-                    "cold_encode_seconds"
-                )
+                seconds = row.get("encode_seconds")
                 if pct in (None, ""):
                     continue
                 baseline[(model, compressor)] = {

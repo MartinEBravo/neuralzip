@@ -45,22 +45,6 @@ MODEL_SUITE = [
 
 COMPRESSOR_SUITE = [
     {
-        "name": "ZipNN local",
-        "method": "zipnn-local",
-        "verify": False,
-        "description": (
-            "the local ZipNN-compatible codec applied tensor by tensor with "
-            "dtype-aware byte reordering and Huffman compression."
-        ),
-    },
-    {
-        "name": "ZipNN src",
-        "method": "zipnn-src",
-        "zipnn_method": ZIPNN_METHOD,
-        "verify": False,
-        "description": "the official ZipNN package from the authors.",
-    },
-    {
         "name": "NeuralZip",
         "method": "neuralzip",
         "verify": False,

@@ -13,8 +13,8 @@ import numpy as np
 import torch
 from transformers import AutoModel
 
-from neuralzip import huffman
 from neuralzip.ablations import zipnn_exponent_stream
+from neuralzip.zipnn_codec import ZipNNCodec
 
 
 DEFAULT_CHECKPOINT = (
@@ -94,17 +94,11 @@ def _export_pair(output_dir, slug, tensors, names):
 
 
 def _zipnn_size(raw):
-    total = 0
-    for start in range(0, len(raw), CHUNK_SIZE):
-        chunk = raw[start : start + CHUNK_SIZE]
-        raw_cost = 1 + 8 + 8 + len(chunk)
-        encoded = huffman.compress(chunk, min_saving_bytes=0)
-        if encoded is None:
-            total += raw_cost
-            continue
-        encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-        total += min(raw_cost, encoded_cost)
-    return total
+    codec = ZipNNCodec(
+        chunk_size=CHUNK_SIZE,
+        compression_threshold=1.0,
+    )
+    return codec._compress_stream(raw, "exponent").compressed_bytes
 
 
 def _benchmark_zipnn(raw, repeats):

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 import torchvision
-import zipnn
 from torchvision.models import ResNet18_Weights, resnet18
 from transformers import AutoModel
 
@@ -72,13 +71,14 @@ def main() -> None:
     detailed_rows = []
 
     for model_name, source, tensors in _load_models():
-        local = _compress_once(tensors, "zipnn-local")
-        official = _compress_once(tensors, "zipnn-src")
+        # Keep this probe on the unified native backend only.  Comparing it
+        # with the retired Python/official implementation mixed cold-start
+        # and backend effects into the timing table.
+        local = _compress_once(tensors, "neuralzip")
         rows.append(
             {
                 "model": model_name,
-                "zipnn_local_seconds": local["seconds"],
-                "zipnn_src_seconds": official["seconds"],
+                "neuralzip_seconds": local["seconds"],
             }
         )
         detailed_rows.append(
@@ -88,15 +88,10 @@ def main() -> None:
                 "dtype": "bfloat16",
                 "parameters": sum(tensor.numel() for tensor in tensors.values()),
                 "raw_bytes": local["raw_bytes"],
-                "zipnn_local": local,
-                "zipnn_src": official,
+                "neuralzip": local,
             }
         )
-        print(
-            f"{model_name}: local={local['seconds']:.6f}s, "
-            f"src={official['seconds']:.6f}s",
-            flush=True,
-        )
+        print(f"{model_name}: neuralzip={local['seconds']:.6f}s", flush=True)
 
     csv_path = OUTPUT_DIR / "zipnn_implementation_ablation.csv"
     with csv_path.open("w", newline="") as handle:
@@ -109,7 +104,7 @@ def main() -> None:
             "repetitions": 1,
             "warmup_runs": 0,
             "dtype": "bfloat16",
-            "zipnn_method": "HUFFMAN",
+            "backend": "native huff0 unified NeuralZip",
             "compression_threshold": 0.95,
             "time_metric": "sum of per-tensor encode wall times",
             "verification": "bitwise round trip in the same run",
@@ -117,7 +112,6 @@ def main() -> None:
             "python": platform.python_version(),
             "torch": torch.__version__,
             "torchvision": torchvision.__version__,
-            "zipnn": getattr(zipnn, "__version__", "unknown"),
         },
         "results": detailed_rows,
     }

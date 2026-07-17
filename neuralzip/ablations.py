@@ -930,29 +930,24 @@ def delta_exponent_huffman_cost(
     chunks = 0
     huffman_chunks = 0
     raw_chunks = 0
+    codec = ZipNNCodec(
+        chunk_size=chunk_size,
+        compression_threshold=1.0,
+    )
 
+    stream_specs = []
     for _, tensor in named_floating_tensors(model):
         stream = zipnn_exponent_stream(tensor, layout=layout)
         raw_bytes += len(stream)
         delta = _delta_stream(stream)
-        for chunk in _iter_chunks(delta, chunk_size):
-            chunks += 1
-            raw_cost = 1 + 8 + 8 + len(chunk)
-            encoded = huffman.compress(chunk, min_saving_bytes=0)
-            if encoded is None:
-                compressed_bytes += raw_cost
-                payload_bytes += len(chunk)
-                raw_chunks += 1
-                continue
-            encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-            if encoded_cost >= raw_cost:
-                compressed_bytes += raw_cost
-                payload_bytes += len(chunk)
-                raw_chunks += 1
-                continue
-            compressed_bytes += encoded_cost
-            payload_bytes += len(encoded.payload)
-            huffman_chunks += 1
+        stream_specs.append((delta, "delta", chunk_size))
+
+    for group in codec._compress_streams(stream_specs):
+        compressed_bytes += sum(chunk.compressed_bytes for chunk in group.chunks)
+        payload_bytes += group.payload_bytes
+        chunks += len(group.chunks)
+        huffman_chunks += group.local_huff0_chunks
+        raw_chunks += group.raw_chunks
 
     return pd.DataFrame(
         [
@@ -979,7 +974,7 @@ def zipnn_exponent_huffman_cost(
     chunk_size=256 << 10,
     compression_threshold=None,
 ):
-    encode_start = time.perf_counter()
+    precompute_start = time.perf_counter()
     codec = ZipNNCodec(
         chunk_size=chunk_size,
         compression_threshold=(
@@ -990,21 +985,27 @@ def zipnn_exponent_huffman_cost(
     raw_bytes = 0
     compressed_bytes = 0
     chunks = 0
-    local_huffman_chunks = 0
+    local_huff0_chunks = 0
     raw_chunks = 0
+    stream_specs = []
     for _, tensor in named_floating_tensors(model):
         stream = zipnn_exponent_stream(tensor, layout=layout)
         raw_bytes += len(stream)
-        # Component isolation keeps the beta's canonical local-Huffman baseline
-        # so its ratios remain directly comparable with the frozen results.
-        group = codec._compress_stream_canonical(
-            stream,
-            "exponent",
-            chunk_size=codec._stream_chunk_size(tensor.element_size()),
+        stream_specs.append(
+            (
+                stream,
+                "exponent",
+                codec._stream_chunk_size(tensor.element_size()),
+            )
         )
+
+    # Submit every exponent block through the same native Huff0 worker pool.
+    precompute_seconds = time.perf_counter() - precompute_start
+    encode_start = time.perf_counter()
+    for group in codec._compress_streams(stream_specs):
         compressed_bytes += sum(chunk.compressed_bytes for chunk in group.chunks)
         chunks += len(group.chunks)
-        local_huffman_chunks += group.local_huffman_chunks
+        local_huff0_chunks += group.local_huff0_chunks
         raw_chunks += group.raw_chunks
 
     encode_seconds = time.perf_counter() - encode_start
@@ -1017,9 +1018,9 @@ def zipnn_exponent_huffman_cost(
             "compressed_bytes": compressed_bytes,
             "compressed_pct": 100 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
             "chunks": chunks,
-            "local_huffman_chunks": local_huffman_chunks,
+            "local_huff0_chunks": local_huff0_chunks,
             "raw_chunks": raw_chunks,
-            "precompute_seconds": 0.0,
+            "precompute_seconds": precompute_seconds,
             "encode_seconds": encode_seconds,
         }
     )
@@ -1914,12 +1915,11 @@ def neuralzip_exponent_cost(
                 "packed_ngram_chunks": sum(
                     group.packed_ngram_chunks for group in groups
                 ),
-                "shared_huffman_chunks": sum(
-                    group.shared_codebook_refs - group.packed_ngram_chunks
-                    for group in groups
+                "shared_huff0_chunks": sum(
+                    group.shared_huff0_chunks for group in groups
                 ),
-                "local_huffman_chunks": sum(
-                    group.local_huffman_chunks for group in groups
+                "local_huff0_chunks": sum(
+                    group.local_huff0_chunks for group in groups
                 ),
                 "raw_chunks": sum(group.raw_chunks for group in groups),
                 "precompute_seconds": precompute_seconds,
@@ -2120,8 +2120,8 @@ def neuralzip_component_ablation(
                     "packed_ngram_chunks": int(
                         row.get("packed_ngram_chunks", 0)
                     ),
-                    "local_huffman_chunks": int(
-                        row.get("local_huffman_chunks", 0)
+                    "local_huff0_chunks": int(
+                        row.get("local_huff0_chunks", 0)
                     ),
                 }
             )
@@ -2151,7 +2151,7 @@ def neuralzip_component_ablation(
                 "clusters": int(first["clusters"]),
                 "codebook_bytes": int(first["codebook_bytes"]),
                 "packed_ngram_chunks": int(first["packed_ngram_chunks"]),
-                "local_huffman_chunks": int(first["local_huffman_chunks"]),
+                "local_huff0_chunks": int(first["local_huff0_chunks"]),
                 "selected_modes": first["selected_modes"],
             }
         )
@@ -2242,13 +2242,8 @@ def selected_turborc_range_cost(
 
 
 def _zipnn_local_stream_cost(streams):
-    total = 0
-    for stream in streams:
-        encoded = huffman.compress(stream, min_saving_bytes=0)
-        raw_cost = 1 + 8 + 8 + len(stream)
-        if encoded is None:
-            total += raw_cost
-            continue
-        encoded_cost = 1 + 8 + 8 + len(encoded.code_lengths) + len(encoded.payload)
-        total += min(raw_cost, encoded_cost)
-    return total
+    codec = ZipNNCodec(compression_threshold=1.0)
+    groups = codec._compress_streams(
+        (stream, "exponent", None) for stream in streams
+    )
+    return sum(group.compressed_bytes for group in groups)

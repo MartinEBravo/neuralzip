@@ -48,25 +48,26 @@ class Huff0Tests(unittest.TestCase):
 
     def test_packed_ngram_roundtrip_in_cpp(self):
         source = (bytes([127, 127, 126, 127, 127, 127, 124, 127]) * 1024) + b"x"
-        n = 3
-        vocab = topk_vocab(source, n, top_k=16)
-        tokens, _, _, _, _ = tokenize_ngrams(source, n, vocab)
-        codebook = huff0.build_codebook(tokens, prior_count=1)
-        payload = huff0.encode_ngram_with_codebook(
-            source,
-            codebook,
-            vocab,
-            n=n,
-        )
-        self.assertIsNotNone(payload)
-        decodebook = huff0.build_decodebook(codebook.codebook)
-        restored = huff0.decompress_ngram_with_decodebook(
-            payload,
-            decodebook,
-            vocab,
-            n=n,
-        )
-        self.assertEqual(restored, source)
+        for n in (3, 8):
+            with self.subTest(n=n):
+                vocab = topk_vocab(source, n, top_k=16)
+                tokens, _, _, _, _ = tokenize_ngrams(source, n, vocab)
+                codebook = huff0.build_codebook(tokens, prior_count=1)
+                payload = huff0.encode_ngram_with_codebook(
+                    source,
+                    codebook,
+                    vocab,
+                    n=n,
+                )
+                self.assertIsNotNone(payload)
+                decodebook = huff0.build_decodebook(codebook.codebook)
+                restored = huff0.decompress_ngram_with_decodebook(
+                    payload,
+                    decodebook,
+                    vocab,
+                    n=n,
+                )
+                self.assertEqual(restored, source)
 
 
 if __name__ == "__main__":

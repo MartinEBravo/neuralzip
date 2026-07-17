@@ -12,7 +12,7 @@ from neuralzip.packed_exponents import (
 class PackedExponentTests(unittest.TestCase):
     def test_ngram_escape_roundtrip(self):
         source = bytes([127, 127, 126, 127, 127, 127, 130, 129, 5])
-        for n in (2, 3, 4):
+        for n in (2, 3, 4, 8):
             with self.subTest(n=n):
                 vocab = topk_vocab(source[:6], n, top_k=2)
                 tokens, escapes, tail, _, _ = tokenize_ngrams(source, n, vocab)
@@ -30,6 +30,14 @@ class PackedExponentTests(unittest.TestCase):
         tokens, escapes, tail, hits, misses = tokenize_ngrams(source, 3, b"")
         self.assertEqual((hits, misses), (0, 2))
         self.assertEqual(restore_ngrams(tokens, 3, b"", escapes, tail), source)
+
+    def test_ngram8_vocabulary_hit_and_escape_roundtrip(self):
+        source = b"abcdefgh" + b"ijklmnop" + b"z"
+        vocab = topk_vocab(source[:8], 8, top_k=1)
+        tokens, escapes, tail, hits, misses = tokenize_ngrams(source, 8, vocab)
+        self.assertEqual((hits, misses), (1, 1))
+        self.assertEqual(len(vocab), 8)
+        self.assertEqual(restore_ngrams(tokens, 8, vocab, escapes, tail), source)
 
 
 if __name__ == "__main__":

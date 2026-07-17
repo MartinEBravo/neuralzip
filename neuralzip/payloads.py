@@ -8,8 +8,8 @@ class CodebookPayload:
     stream_id: int
     dtype: str
     code_lengths: bytes = b""
-    codec: str = "canonical-huffman"
-    mode: str = "shared_huffman"
+    codec: str = "huff0"
+    mode: str = "shared_huff0"
     codebook: bytes = b""
     ngram_n: int = 1
     vocab: bytes = b""
@@ -103,6 +103,14 @@ class ByteGroupPayload:
     @property
     def local_huffman_chunks(self):
         return sum(chunk.mode in {"huffman", "local_huff0"} for chunk in self.chunks)
+
+    @property
+    def local_huff0_chunks(self):
+        return sum(chunk.mode == "local_huff0" for chunk in self.chunks)
+
+    @property
+    def shared_huff0_chunks(self):
+        return sum(chunk.mode == "shared_huff0" for chunk in self.chunks)
 
     @property
     def raw_chunks(self):
@@ -222,6 +230,14 @@ class TensorPayload:
     @property
     def local_huffman_chunks(self):
         return sum(getattr(group, "local_huffman_chunks", 0) for group in self.groups)
+
+    @property
+    def local_huff0_chunks(self):
+        return sum(getattr(group, "local_huff0_chunks", 0) for group in self.groups)
+
+    @property
+    def shared_huff0_chunks(self):
+        return sum(getattr(group, "shared_huff0_chunks", 0) for group in self.groups)
 
     @property
     def packed_ngram_chunks(self):

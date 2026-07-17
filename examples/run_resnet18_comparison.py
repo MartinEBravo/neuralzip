@@ -16,7 +16,6 @@ from neuralzip import Compressor
 
 
 METHODS = (
-    ("ZipNN local", "zipnn-local"),
     ("NeuralZip", "neuralzip"),
 )
 
@@ -60,8 +59,8 @@ def run_once(
         "clusters": int(result.get("clusters") or 0),
         "codebooks": len(result.get("codebooks") or ()),
         "packed_ngram_chunks": int(result.get("packed_ngram_chunks") or 0),
-        "shared_huffman_chunks": int(result.get("shared_huffman_chunks") or 0),
-        "local_huffman_chunks": int(result.get("local_huffman_chunks") or 0),
+        "shared_huff0_chunks": int(result.get("shared_huff0_chunks") or 0),
+        "local_huff0_chunks": int(result.get("local_huff0_chunks") or 0),
         "raw_chunks": int(result.get("raw_chunks") or 0),
         "selected_modes": result.get("selected_modes") or {},
         "selection_stats": result.get("selection_stats") or {},
@@ -96,8 +95,8 @@ def median_row(label: str, method: str, rows: list[dict[str, object]]) -> dict[s
         "clusters": first["clusters"],
         "codebooks": first["codebooks"],
         "packed_ngram_chunks": first["packed_ngram_chunks"],
-        "shared_huffman_chunks": first["shared_huffman_chunks"],
-        "local_huffman_chunks": first["local_huffman_chunks"],
+        "shared_huff0_chunks": first["shared_huff0_chunks"],
+        "local_huff0_chunks": first["local_huff0_chunks"],
         "raw_chunks": first["raw_chunks"],
     }
 

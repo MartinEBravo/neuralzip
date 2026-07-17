@@ -1,6 +1,6 @@
 import torch
 
-from . import huffman
+from . import huff0
 
 
 FLOAT_LAYOUTS = {
@@ -87,7 +87,7 @@ def entropic_encode(data, method="huffman", *, min_saving_bytes=16):
     if method_key != "huffman":
         raise ValueError("Only method='huffman' is implemented.")
     stream = _as_byte_stream(data).numpy().tobytes()
-    return huffman.compress(stream, min_saving_bytes=min_saving_bytes)
+    return huff0.compress(stream, min_saving_bytes=min_saving_bytes)
 
 
 def is_compressible(data, *, min_saving_bytes=16):

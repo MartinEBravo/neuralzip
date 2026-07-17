@@ -111,8 +111,8 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError("max_codebook_sample_bytes must be positive.")
         if self.max_tensor_probe_bytes <= 0:
             raise ValueError("max_tensor_probe_bytes must be positive.")
-        if any(value < 2 or value > 4 for value in self.ngram_values):
-            raise ValueError("ngram_values must contain only values in [2, 4].")
+        if any(value < 2 or value > 8 for value in self.ngram_values):
+            raise ValueError("ngram_values must contain only values in [2, 8].")
         if not 1 <= self.top_k <= 254:
             raise ValueError("top_k must be in [1, 254].")
         if self.exponent_layout not in {"original", "transpose2d"}:
@@ -298,31 +298,7 @@ class NeuralZipCodec(ZipNNCodec):
         return StreamChunk(mode="raw", symbol_count=len(chunk), payload=bytes(chunk))
 
     def _encode_chunk(self, chunk, mode):
-        if mode["kind"] == "shared_huffman":
-            max_payload_bytes = max(
-                0,
-                int(len(chunk) * self.compression_threshold) - (1 + 8 + 8 + 8),
-            )
-            try:
-                encoded = huffman.encode_with_codebook(
-                    chunk,
-                    mode["codebook"],
-                    min_saving_bytes=self.min_saving_bytes,
-                    max_output_bytes=max_payload_bytes,
-                )
-            except ValueError as error:
-                if "missing" not in str(error):
-                    raise
-                encoded = None
-            if encoded is None:
-                return None
-            candidate = StreamChunk(
-                mode="shared_huffman",
-                symbol_count=len(chunk),
-                payload=encoded.payload,
-                codebook_id=mode.get("codebook_id"),
-            )
-        elif mode["kind"] == "shared_huff0":
+        if mode["kind"] == "shared_huff0":
             max_payload_bytes = max(
                 0,
                 int(len(chunk) * self.compression_threshold) - (1 + 8 + 8 + 8),
@@ -385,10 +361,10 @@ class NeuralZipCodec(ZipNNCodec):
         sample_parts=None,
     ):
         parts = tuple(sample_parts) if sample_parts is not None else (sample,)
-        if mode["kind"] == "local_huffman":
+        if mode["kind"] == "local_huff0":
             total = 0
             for part in parts:
-                group = super()._compress_stream_canonical(
+                group = super()._compress_stream(
                     part,
                     "sample",
                     chunk_size=self._stream_chunk_size(element_size),
@@ -430,7 +406,7 @@ class NeuralZipCodec(ZipNNCodec):
         return mode
 
     def _build_candidate(self, sample, *, kind, prior_count, ngram_n=1):
-        if kind in {"shared_huffman", "shared_huff0"}:
+        if kind == "shared_huff0":
             tokens = sample
             vocab = b""
         else:
@@ -441,10 +417,7 @@ class NeuralZipCodec(ZipNNCodec):
         if not tokens:
             return None
         try:
-            if kind == "shared_huffman":
-                codebook = huffman.build_codebook(tokens, prior_count=prior_count)
-            else:
-                codebook = huff0.build_codebook(tokens, prior_count=prior_count)
+            codebook = huff0.build_codebook(tokens, prior_count=prior_count)
         except ValueError:
             return None
         return {
@@ -456,14 +429,9 @@ class NeuralZipCodec(ZipNNCodec):
 
     def _candidate_payload(self, key, mode, codebook_id=-1):
         cluster_id, dtype, stream_id = key
-        if mode["kind"] == "shared_huffman":
-            codec = "canonical-huffman"
-            code_lengths = mode["codebook"].code_lengths
-            codebook = b""
-        else:
-            codec = "huff0"
-            code_lengths = b""
-            codebook = mode["codebook"].codebook
+        codec = "huff0"
+        code_lengths = b""
+        codebook = mode["codebook"].codebook
         return CodebookPayload(
             codebook_id=int(codebook_id),
             cluster_id=cluster_id,
@@ -507,7 +475,7 @@ class NeuralZipCodec(ZipNNCodec):
             element_size,
             sample_parts=sample_parts,
         )
-        local_mode = {"kind": "local_huffman", "fixed_cost": 0}
+        local_mode = {"kind": "local_huff0", "fixed_cost": 0}
         self._score_mode(
             sample,
             local_mode,
@@ -520,7 +488,7 @@ class NeuralZipCodec(ZipNNCodec):
         if self.enable_shared_codebooks:
             shared = self._build_candidate(
                 sample,
-                kind="shared_huffman",
+                kind="shared_huff0",
                 prior_count=prior_count,
             )
         if shared is not None:
@@ -596,7 +564,7 @@ class NeuralZipCodec(ZipNNCodec):
         }
 
     def _finalize_mode(self, key, selected):
-        if selected["kind"] in {"raw", "local_huffman"}:
+        if selected["kind"] in {"raw", "local_huff0"}:
             return selected
 
         codebook_id = self._next_codebook_id
@@ -605,14 +573,9 @@ class NeuralZipCodec(ZipNNCodec):
         payload = self._candidate_payload(key, selected, codebook_id=codebook_id)
         self._codebook_payloads.append(payload)
         self._codebook_payload_by_id[codebook_id] = payload
-        if payload.codec == "huff0":
-            self._decode_codebooks[codebook_id] = huff0.build_decodebook(
-                payload.codebook
-            )
-        else:
-            self._decode_codebooks[codebook_id] = huffman.build_decodebook(
-                payload.code_lengths
-            )
+        self._decode_codebooks[codebook_id] = huff0.build_decodebook(
+            payload.codebook
+        )
         return selected
 
     def _record_selected_mode(self, mode):
@@ -639,8 +602,8 @@ class NeuralZipCodec(ZipNNCodec):
         element_size,
         mode,
     ):
-        if mode["kind"] == "local_huffman":
-            return super()._compress_stream_canonical(
+        if mode["kind"] == "local_huff0":
+            return super()._compress_stream(
                 stream,
                 stream_kind,
                 chunk_size=self._stream_chunk_size(element_size),
@@ -651,24 +614,52 @@ class NeuralZipCodec(ZipNNCodec):
             if mode["kind"] == "raw"
             else self._source_chunk_size(element_size, mode)
         )
-        chunks = []
-        for start in range(0, len(stream), step):
-            chunk = stream[start : start + step]
-            if mode["kind"] == "raw":
-                chunks.append(self._raw_chunk(chunk))
-                continue
-
-            encoded = self._encode_chunk(chunk, mode)
-            if encoded is not None:
-                chunks.append(encoded)
-                continue
-
-            local = super()._compress_stream_canonical(
-                chunk,
-                stream_kind,
-                chunk_size=max(1, len(chunk)),
+        source_chunks = tuple(
+            stream[start : start + step]
+            for start in range(0, len(stream), step)
+            if stream[start : start + step]
+        )
+        if mode["kind"] == "raw":
+            chunks = [self._raw_chunk(chunk) for chunk in source_chunks]
+            return ByteGroupPayload(
+                stream_kind=stream_kind,
+                symbol_count=len(stream),
+                chunks=tuple(chunks),
             )
-            chunks.append(local.chunks[0])
+
+        encoded_chunks = [None] * len(source_chunks)
+        if mode["kind"] == "shared_huff0":
+            payloads = self._encode_huff0_chunks(
+                source_chunks,
+                mode["codebook"],
+                metadata_bytes=1 + 8 + 8 + 8,
+            )
+            for index, (chunk, payload) in enumerate(
+                zip(source_chunks, payloads, strict=True)
+            ):
+                if payload is not None:
+                    encoded_chunks[index] = StreamChunk(
+                        mode="shared_huff0",
+                        symbol_count=len(chunk),
+                        payload=payload,
+                        codebook_id=mode.get("codebook_id"),
+                    )
+        else:
+            for index, chunk in enumerate(source_chunks):
+                encoded_chunks[index] = self._encode_chunk(chunk, mode)
+
+        fallback_indices = [
+            index for index, encoded in enumerate(encoded_chunks) if encoded is None
+        ]
+        if fallback_indices:
+            fallback_chunks = super()._compress_local_huff0_chunks(
+                source_chunks[index] for index in fallback_indices
+            )
+            for index, fallback in zip(
+                fallback_indices, fallback_chunks, strict=True
+            ):
+                encoded_chunks[index] = fallback
+        chunks = encoded_chunks
         return ByteGroupPayload(
             stream_kind=stream_kind,
             symbol_count=len(stream),
@@ -677,7 +668,7 @@ class NeuralZipCodec(ZipNNCodec):
 
     def _select_transfer_mode(self, sample, source_mode, *, element_size, stream_kind):
         raw_mode = {"kind": "raw", "fixed_cost": 0}
-        local_mode = {"kind": "local_huffman", "fixed_cost": 0}
+        local_mode = {"kind": "local_huff0", "fixed_cost": 0}
         raw_cost = self._compress_stream_with_mode(
             sample,
             stream_kind,
@@ -749,7 +740,7 @@ class NeuralZipCodec(ZipNNCodec):
                 source_mode = self._mode_by_key[key]
                 if source_mode["kind"] in {
                     "raw",
-                    "local_huffman",
+                    "local_huff0",
                     "packed_huff0",
                 }:
                     selected = source_mode
@@ -792,7 +783,7 @@ class NeuralZipCodec(ZipNNCodec):
             for key, mode in tuple(self._mode_by_key.items()):
                 if mode.get("codebook_id") in removed_codebook_ids:
                     self._mode_by_key[key] = {
-                        "kind": "local_huffman",
+                        "kind": "local_huff0",
                         "fixed_cost": 0,
                     }
 
@@ -1053,7 +1044,7 @@ class NeuralZipCodec(ZipNNCodec):
             plan_key = self._transfer_plan_key(name, tensor, stream_id)
             mode = self._transfer_mode_by_tensor_stream.get(
                 plan_key,
-                {"kind": "local_huffman", "fixed_cost": 0},
+                {"kind": "local_huff0", "fixed_cost": 0},
             )
             return self._compress_stream_with_mode(
                 stream,

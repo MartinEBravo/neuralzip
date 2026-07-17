@@ -6,28 +6,33 @@ ESCAPE_SYMBOL = 255
 
 def _validate_ngram(n):
     n = int(n)
-    if not 2 <= n <= 4:
-        raise ValueError("Packed exponent n-grams require n in [2, 4].")
+    if not 2 <= n <= 8:
+        raise ValueError("Packed exponent n-grams require n in [2, 8].")
     return n
 
 
+def _symbol_dtype(n):
+    return np.dtype("<u4" if n <= 4 else "<u8")
+
+
 def pack_ngram_symbols(data, n):
-    """Pack consecutive bytes into little-endian uint32 symbols."""
+    """Pack consecutive bytes into little-endian uint32/uint64 symbols."""
     n = _validate_ngram(n)
+    dtype = _symbol_dtype(n)
     data = bytes(data)
     complete_length = (len(data) // n) * n
     if complete_length == 0:
-        return np.empty(0, dtype=np.dtype("<u4")), data
+        return np.empty(0, dtype=dtype), data
 
     values = np.frombuffer(data[:complete_length], dtype=np.uint8).reshape(-1, n)
-    packed = np.zeros(values.shape[0], dtype=np.dtype("<u4"))
+    packed = np.zeros(values.shape[0], dtype=dtype)
     for offset in range(n):
-        packed |= values[:, offset].astype(np.uint32) << np.uint32(8 * offset)
+        packed |= values[:, offset].astype(dtype) << (8 * offset)
     return packed, data[complete_length:]
 
 
 def topk_vocab(data, n, top_k=254):
-    """Return a sorted little-endian uint32 vocabulary for frequent n-grams."""
+    """Return a sorted little-endian integer vocabulary for frequent n-grams."""
     n = _validate_ngram(n)
     top_k = int(top_k)
     if not 1 <= top_k <= 254:
@@ -38,7 +43,7 @@ def topk_vocab(data, n, top_k=254):
         return b""
     symbols, counts = np.unique(packed, return_counts=True)
     order = np.argsort(counts, kind="stable")[::-1]
-    selected = np.sort(symbols[order[:top_k]]).astype(np.dtype("<u4"), copy=False)
+    selected = np.sort(symbols[order[:top_k]]).astype(_symbol_dtype(n), copy=False)
     return selected.tobytes()
 
 
@@ -46,7 +51,7 @@ def tokenize_ngrams(data, n, vocab):
     """Tokenize n-grams with byte IDs and an explicit lossless escape stream."""
     n = _validate_ngram(n)
     packed, tail = pack_ngram_symbols(data, n)
-    vocab_values = np.frombuffer(bytes(vocab), dtype=np.dtype("<u4"))
+    vocab_values = np.frombuffer(bytes(vocab), dtype=_symbol_dtype(n))
     if packed.size == 0:
         return b"", b"", tail, 0, 0
     if vocab_values.size == 0:
@@ -70,7 +75,7 @@ def tokenize_ngrams(data, n, vocab):
 def restore_ngrams(tokens, n, vocab, escapes, tail):
     """Inverse of :func:`tokenize_ngrams`, used as a portable fallback."""
     n = _validate_ngram(n)
-    vocab_values = np.frombuffer(bytes(vocab), dtype=np.dtype("<u4"))
+    vocab_values = np.frombuffer(bytes(vocab), dtype=_symbol_dtype(n))
     escape_view = memoryview(bytes(escapes))
     escape_offset = 0
     output = bytearray()
@@ -86,7 +91,7 @@ def restore_ngrams(tokens, n, vocab, escapes, tail):
         if token >= vocab_values.size:
             raise ValueError(f"Packed exponent token {token} is outside the vocabulary.")
         value = int(vocab_values[token])
-        output.extend(value.to_bytes(4, "little")[:n])
+        output.extend(value.to_bytes(_symbol_dtype(n).itemsize, "little")[:n])
 
     if escape_offset != len(escape_view):
         raise ValueError("Packed exponent escape stream contains unused bytes.")

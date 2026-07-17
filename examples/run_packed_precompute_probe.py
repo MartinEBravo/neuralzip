@@ -13,9 +13,11 @@ import torch
 from neuralzip.neuralzip_codec import NeuralZipCodec
 from run_precompute_family_transfer import (
     PAIR_SPECS,
+    compress_with_codec,
     floating_parameters,
     load_hf_model,
 )
+from neuralzip.zipnn_codec import ZipNNCodec, _zipnn_dtype_config
 
 
 MODEL_SPECS = {
@@ -42,6 +44,7 @@ def parse_args():
     parser.add_argument("--packed-time-budget-ratio", type=float, default=1.0)
     parser.add_argument("--speed-ratio-tolerance", type=float, default=0.03)
     parser.add_argument("--revision")
+    parser.add_argument("--encode-selected", action="store_true")
     return parser.parse_args()
 
 
@@ -128,9 +131,51 @@ def main():
                 candidate["sample_escape_bytes"]
             )
 
+    selected_tensors = []
+    for name, tensor in named_tensors:
+        config = _zipnn_dtype_config(tensor.dtype)
+        exponent_stream_id = int(config["element_size"]) - 1
+        mode = codec._mode_for_tensor_stream(name, tensor, exponent_stream_id)
+        if mode["kind"] == "packed_huff0":
+            selected_tensors.append((name, tensor))
+
+    selected_encode = None
+    if args.encode_selected and selected_tensors:
+        print(
+            f"[{args.model}] encoding {len(selected_tensors)} selected tensors",
+            flush=True,
+        )
+        zipnn = ZipNNCodec(
+            threads=args.threads,
+            compression_threshold=0.95,
+        )
+        zipnn_result = compress_with_codec(zipnn, selected_tensors, verify=True)
+        neuralzip_result = compress_with_codec(
+            codec,
+            selected_tensors,
+            verify=True,
+        )
+        selected_encode = {
+            "scope": "selected-packed-tensors-only",
+            "zipnn": zipnn_result,
+            "neuralzip": neuralzip_result,
+            "compressed_exponent_bytes_saved": (
+                zipnn_result["compressed_exponent_bytes"]
+                - neuralzip_result["compressed_exponent_bytes"]
+            ),
+            "exponent_ratio_gain_pp": (
+                zipnn_result["exponent_pct"]
+                - neuralzip_result["exponent_pct"]
+            ),
+        }
+
     output = {
-        "probe": "packed-precompute-only",
-        "encode_performed": False,
+        "probe": (
+            "packed-precompute-with-selected-encode"
+            if args.encode_selected
+            else "packed-precompute-only"
+        ),
+        "encode_performed": bool(args.encode_selected and selected_tensors),
         "revision": args.revision or current_revision(),
         "model": args.model,
         "model_id": spec.target_id,
@@ -158,6 +203,7 @@ def main():
         "codebooks": len(codec.export_codebooks()),
         "codebook_metadata_bytes": int(codec.codebook_metadata_bytes()),
         "selected_modes": codec.selected_modes,
+        "selected_packed_tensors": [name for name, _ in selected_tensors],
         "planned_packed_coverage_pct": (
             100.0 * packed_source_bytes / exponent_source_bytes
             if exponent_source_bytes
@@ -185,6 +231,7 @@ def main():
         },
         "selection_stats": stats,
         "selection_diagnostics": diagnostics,
+        "selected_encode": selected_encode,
     }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

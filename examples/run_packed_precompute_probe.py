@@ -98,12 +98,20 @@ def main():
     decision_counts = Counter(row["decision"] for row in diagnostics)
     candidate_counts_by_n = Counter()
     improving_counts_by_n = Counter()
+    sample_hits_by_n = Counter()
+    sample_misses_by_n = Counter()
+    sample_escape_bytes_by_n = Counter()
     for row in diagnostics:
         for candidate in row["candidates"]:
             n = int(candidate["ngram_n"])
             candidate_counts_by_n[n] += 1
             if candidate["improves_selected_base"]:
                 improving_counts_by_n[n] += 1
+            sample_hits_by_n[n] += int(candidate["sample_ngram_hits"])
+            sample_misses_by_n[n] += int(candidate["sample_ngram_misses"])
+            sample_escape_bytes_by_n[n] += int(
+                candidate["sample_escape_bytes"]
+            )
 
     output = {
         "probe": "packed-precompute-only",
@@ -144,6 +152,19 @@ def main():
         },
         "improving_counts_by_n": {
             str(key): value for key, value in sorted(improving_counts_by_n.items())
+        },
+        "sample_hit_rate_by_n": {
+            str(n): (
+                sample_hits_by_n[n]
+                / (sample_hits_by_n[n] + sample_misses_by_n[n])
+                if sample_hits_by_n[n] + sample_misses_by_n[n]
+                else 0.0
+            )
+            for n in sorted(candidate_counts_by_n)
+        },
+        "sample_escape_bytes_by_n": {
+            str(key): value
+            for key, value in sorted(sample_escape_bytes_by_n.items())
         },
         "selection_stats": stats,
         "selection_diagnostics": diagnostics,

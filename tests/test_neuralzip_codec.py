@@ -1190,6 +1190,25 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(group.chunks[0].mode, "local_huff0")
         self.assertEqual(codec._decompress_stream(group), bytes([2, 4]) * 2048)
 
+    def test_packed_candidate_records_sample_hit_diagnostics(self):
+        codec = NeuralZipCodec(top_k=16)
+        source = bytes([1, 2, 1, 2]) * 1024
+        mode = codec._build_candidate(
+            source,
+            kind="packed_huff0",
+            prior_count=1,
+            ngram_n=2,
+        )
+
+        self.assertEqual(mode["sample_token_count"], len(source) // 2)
+        self.assertEqual(
+            mode["sample_ngram_hits"] + mode["sample_ngram_misses"],
+            len(source) // 2,
+        )
+        self.assertEqual(mode["sample_ngram_misses"], 0)
+        self.assertEqual(mode["sample_escape_bytes"], 0)
+        self.assertEqual(mode["sample_tail_bytes"], 0)
+
     def test_tensor_probe_rejects_cluster_codebook_for_outlier(self):
         codec = NeuralZipCodec(ngram_values=())
         # With the new four-stream shared frame, this distribution keeps the

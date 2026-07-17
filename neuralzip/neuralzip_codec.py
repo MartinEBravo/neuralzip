@@ -660,11 +660,19 @@ class NeuralZipCodec(ZipNNCodec):
         if kind == "shared_huff0":
             tokens = sample
             vocab = b""
+            escapes = b""
+            tail = b""
+            hits = 0
+            misses = 0
         else:
             vocab = topk_vocab(sample, ngram_n, self.top_k)
             if not vocab:
                 return None
-            tokens, _, _, _, _ = tokenize_ngrams(sample, ngram_n, vocab)
+            tokens, escapes, tail, hits, misses = tokenize_ngrams(
+                sample,
+                ngram_n,
+                vocab,
+            )
         if not tokens:
             return None
         try:
@@ -676,6 +684,11 @@ class NeuralZipCodec(ZipNNCodec):
             "ngram_n": int(ngram_n),
             "vocab": vocab,
             "codebook": codebook,
+            "sample_token_count": len(tokens),
+            "sample_ngram_hits": int(hits),
+            "sample_ngram_misses": int(misses),
+            "sample_escape_bytes": len(escapes),
+            "sample_tail_bytes": len(tail),
             # New codebooks use the same four-stream Huff0 payload shape as
             # ZipNN local blocks.  The archive mode records this explicitly so
             # legacy one-stream archives remain decodable.
@@ -859,6 +872,23 @@ class NeuralZipCodec(ZipNNCodec):
                 ),
                 "ratio_best": bool(candidate is ratio_best_packed),
                 "selected_for_time_budget": bool(candidate is packed),
+                "sample_token_count": int(candidate.get("sample_token_count", 0)),
+                "sample_ngram_hits": int(candidate.get("sample_ngram_hits", 0)),
+                "sample_ngram_misses": int(
+                    candidate.get("sample_ngram_misses", 0)
+                ),
+                "sample_ngram_hit_rate": (
+                    candidate.get("sample_ngram_hits", 0)
+                    / (
+                        candidate.get("sample_ngram_hits", 0)
+                        + candidate.get("sample_ngram_misses", 0)
+                    )
+                    if candidate.get("sample_ngram_hits", 0)
+                    + candidate.get("sample_ngram_misses", 0)
+                    else 0.0
+                ),
+                "sample_escape_bytes": int(candidate.get("sample_escape_bytes", 0)),
+                "sample_tail_bytes": int(candidate.get("sample_tail_bytes", 0)),
             }
             for candidate in packed_candidates
         )

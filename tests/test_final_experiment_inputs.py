@@ -27,19 +27,21 @@ from examples.run_quantized_nibble_compression import (
 
 
 class _FakeHfFileSystem:
-    def __init__(self, model_id, files, contents=None):
+    def __init__(self, model_id, files, contents=None, *, revision_in_path=False):
         self.model_id = model_id
         self.files = dict(files)
         self.contents = dict(contents or {})
+        self.revision_in_path = revision_in_path
 
     def ls(self, model_id, *, detail, revision):
         assert model_id == self.model_id
         assert detail is True
         assert revision
+        prefix = f"{model_id}@{revision}" if self.revision_in_path else model_id
         return [
             {
                 "type": "file",
-                "name": f"{model_id}/{path}",
+                "name": f"{prefix}/{path}",
                 "size": size,
             }
             for path, size in self.files.items()
@@ -194,6 +196,30 @@ def test_quantized_index_selects_only_authoritative_safetensors_shards():
         "model-00001-of-00002.safetensors",
         "model-00002-of-00002.safetensors",
     ]
+
+
+def test_quantized_index_accepts_revision_qualified_hf_filesystem_paths():
+    spec = {
+        "model_id": "owner/model",
+        "artifact_selector": {
+            "kind": "safetensors-index",
+            "index": "model.safetensors.index.json",
+        },
+    }
+    index = {"weight_map": {"a.weight": "model.safetensors"}}
+    fs = _FakeHfFileSystem(
+        spec["model_id"],
+        {
+            "model.safetensors.index.json": 100,
+            "model.safetensors": 1_000,
+        },
+        {"model.safetensors.index.json": json.dumps(index).encode()},
+        revision_in_path=True,
+    )
+
+    selected = _hf_model_files(fs, spec, "d" * 40)
+
+    assert [row["relative_path"] for row in selected] == ["model.safetensors"]
 
 
 def test_quantized_index_rejects_non_safetensors_weight_artifact():

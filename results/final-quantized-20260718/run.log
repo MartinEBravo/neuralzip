@@ -1,0 +1,13 @@
+run model=Gemma 4 31B-4bit
+  compressor=zipnn-nibble-local
+  compressor=neuralzip-nibble-js
+run model=Phi-4 14B-4bit
+  compressor=neuralzip-nibble-js
+  compressor=zipnn-nibble-local
+run model=Qwen3.5 27B-4bit
+  compressor=zipnn-nibble-local
+  compressor=neuralzip-nibble-js
+run model=LatamGPT-70B-4bit
+  compressor=neuralzip-nibble-js
+  compressor=zipnn-nibble-local
+Wrote 8 rows to /tmp/neuralzip-quantized-final-20260718/quantized_nibble_compression.csv

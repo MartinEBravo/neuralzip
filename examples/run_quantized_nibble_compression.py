@@ -377,7 +377,14 @@ def _data_offset(path: str, handle, file_size: int) -> tuple[int, str]:
 
 def _remote_relative_path(model_id: str, path: str) -> str:
     prefix = f"{model_id}/"
-    return path[len(prefix) :] if path.startswith(prefix) else path
+    if path.startswith(prefix):
+        return path[len(prefix) :]
+    revision_prefix = f"{model_id}@"
+    if path.startswith(revision_prefix):
+        _, separator, relative_path = path[len(revision_prefix) :].partition("/")
+        if separator and relative_path:
+            return relative_path
+    return path
 
 
 def _hf_model_files(

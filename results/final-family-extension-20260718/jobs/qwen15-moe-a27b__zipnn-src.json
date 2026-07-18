@@ -1,0 +1,180 @@
+{
+  "status": "ok",
+  "host": "godel",
+  "model_key": "qwen15-moe-a27b",
+  "model": "Qwen1.5-MoE-A2.7B",
+  "family": "Qwen 1.5 MoE",
+  "suites": [
+    "moe"
+  ],
+  "source": "Qwen/Qwen1.5-MoE-A2.7B",
+  "parameters_b": 14.3,
+  "compressor": "ZipNN src",
+  "snapshot": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9",
+  "revision": "1a758c50ecb6350748b9ce0a99d2352fd9fc11c9",
+  "weight_artifacts": [
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00001-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/44f12f5b3d4e8eebeb55fa733e9dbbd7e119c9bf1502251638223e0dc2a926f0",
+      "size_bytes": 3999614664,
+      "digest_algorithm": "sha256",
+      "digest": "44f12f5b3d4e8eebeb55fa733e9dbbd7e119c9bf1502251638223e0dc2a926f0",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00001-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00002-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/20a99873170c32cd91b489a10ab9408ca73d3f20cf5f57370cf31699aaf2d266",
+      "size_bytes": 3999385424,
+      "digest_algorithm": "sha256",
+      "digest": "20a99873170c32cd91b489a10ab9408ca73d3f20cf5f57370cf31699aaf2d266",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00002-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00003-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/e0b7cd920fc98f99e1d83ea856e73f451029ed16dba7ff83b4b839e77ba2d229",
+      "size_bytes": 3988628968,
+      "digest_algorithm": "sha256",
+      "digest": "e0b7cd920fc98f99e1d83ea856e73f451029ed16dba7ff83b4b839e77ba2d229",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00003-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00004-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/e2be2af186e5c042e2246947d13640df5bd4ed59512932573996aca155b8e9a9",
+      "size_bytes": 3999386088,
+      "digest_algorithm": "sha256",
+      "digest": "e2be2af186e5c042e2246947d13640df5bd4ed59512932573996aca155b8e9a9",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00004-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00005-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/3b75e01d4df9de74823e146a2c1e8826c80f838dcc7d1bd3bf376b68b8a527da",
+      "size_bytes": 3988629648,
+      "digest_algorithm": "sha256",
+      "digest": "3b75e01d4df9de74823e146a2c1e8826c80f838dcc7d1bd3bf376b68b8a527da",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00005-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00006-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/c2fc223a88189b3950a4b737fe4c75ae40f792f2e7b30df159afe3cf392589d3",
+      "size_bytes": 3999386104,
+      "digest_algorithm": "sha256",
+      "digest": "c2fc223a88189b3950a4b737fe4c75ae40f792f2e7b30df159afe3cf392589d3",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00006-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00007-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/88b206c85ee08b9704d2ddb5dcf15b91e5d750884c767c29a93fc91781cb7267",
+      "size_bytes": 3988629648,
+      "digest_algorithm": "sha256",
+      "digest": "88b206c85ee08b9704d2ddb5dcf15b91e5d750884c767c29a93fc91781cb7267",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00007-of-00008.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model-00008-of-00008.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/996c5057f123db509d3c40c97d6e65dac35eb9ffc71f3ac324a0a531da43e112",
+      "size_bytes": 668484400,
+      "digest_algorithm": "sha256",
+      "digest": "996c5057f123db509d3c40c97d6e65dac35eb9ffc71f3ac324a0a531da43e112",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00008-of-00008.safetensors"
+    }
+  ],
+  "index_artifact": {
+    "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/snapshots/1a758c50ecb6350748b9ce0a99d2352fd9fc11c9/model.safetensors.index.json",
+    "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen15-moe-a27b/hub/models--Qwen--Qwen1.5-MoE-A2.7B/blobs/8058add31525101e7da55a6e62fcb6dae493114d",
+    "size_bytes": 416452,
+    "digest_algorithm": "git-blob-sha1",
+    "digest": "8058add31525101e7da55a6e62fcb6dae493114d",
+    "digest_source": "huggingface-content-addressed-cache",
+    "repository_path": "model.safetensors.index.json"
+  },
+  "weights_fingerprint": "28bd137103922118ae5377c358debd316b8e195002233f79cd0b1e67312c4b52",
+  "floating_numel": 14315784192,
+  "configuration": {
+    "model": {
+      "key": "qwen15-moe-a27b",
+      "label": "Qwen1.5-MoE-A2.7B",
+      "family": "Qwen 1.5 MoE",
+      "suites": [
+        "moe"
+      ],
+      "backend": "hf",
+      "source": "Qwen/Qwen1.5-MoE-A2.7B",
+      "parameters_b": 14.3,
+      "constructor": null,
+      "subfolder": null,
+      "weight_file": null,
+      "preferred_host": "relela-06"
+    },
+    "compressor": "ZipNN src",
+    "compressor_key": "zipnn-src",
+    "dtype": "bfloat16",
+    "threads": 12,
+    "cpu_set": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "chunk_size": 262144,
+    "compression_threshold": 0.95,
+    "warmup_runs": 1,
+    "measured_runs": 1,
+    "smoke": false
+  },
+  "configuration_fingerprint": "3cf0d0436c451c05d489ce4e84c79df2b6d72b1837421eaca546fa0ba8cfdb00",
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "job_fingerprint": "3c5345e4b68008a54f3eddf834658764a3d28f6bb203eeb66096f77cc3d2daf5",
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_runs": 1,
+  "measured_runs": 1,
+  "verified_warmup": true,
+  "load_seconds": 0.5691542364656925,
+  "started_at": "2026-07-18T19:06:01.989935+00:00",
+  "finished_at": "2026-07-18T19:07:12.318808+00:00",
+  "encode_seconds": 24.0555317979306,
+  "codec_encode_seconds": 20.08392356801778,
+  "input_copy_seconds": 3.9716082299128175,
+  "setup_seconds": 0.0,
+  "exponent_raw_bytes": 14315784192,
+  "exponent_data_bytes": 4666133816,
+  "exponent_metadata_bytes": 984285,
+  "exponent_compressed_bytes": 4667118101,
+  "exponent_ratio_pct": 32.60120464520621,
+  "tensor_count": 4659,
+  "chunk_count": 109365,
+  "roundtrip_ok": true
+}

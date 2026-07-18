@@ -1,0 +1,256 @@
+{
+  "status": "ok",
+  "host": "godel",
+  "model_key": "qwen3-30b-a3b",
+  "model": "Qwen3-30B-A3B",
+  "family": "Qwen 3 MoE",
+  "suites": [
+    "moe"
+  ],
+  "source": "Qwen/Qwen3-30B-A3B",
+  "parameters_b": 30.5,
+  "compressor": "NeuralZip",
+  "snapshot": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+  "revision": "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+  "weight_artifacts": [
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00001-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/454e77b346a61bfb201d54df60e15158838cf930617ee135113556204f2802b5",
+      "size_bytes": 3999417504,
+      "digest_algorithm": "sha256",
+      "digest": "454e77b346a61bfb201d54df60e15158838cf930617ee135113556204f2802b5",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00001-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00002-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/47f015d6e5bb1782a834d75c06113c5e8c77ddca1cb7daf89686a4ec0deda19e",
+      "size_bytes": 3999974192,
+      "digest_algorithm": "sha256",
+      "digest": "47f015d6e5bb1782a834d75c06113c5e8c77ddca1cb7daf89686a4ec0deda19e",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00002-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00003-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/ac0bf5990f2da995c1e8b77a3149dee71900b4fe1b8a614231dea9647193d96b",
+      "size_bytes": 3997360832,
+      "digest_algorithm": "sha256",
+      "digest": "ac0bf5990f2da995c1e8b77a3149dee71900b4fe1b8a614231dea9647193d96b",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00003-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00004-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/89b01fd34a683c70fdb7f22c2e7090538d65063335ba0db46f3654642b17d1e5",
+      "size_bytes": 3999975056,
+      "digest_algorithm": "sha256",
+      "digest": "89b01fd34a683c70fdb7f22c2e7090538d65063335ba0db46f3654642b17d1e5",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00004-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00005-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/9849eb3584d928e35bf5956ccfd91b64207467e1fad8304aae68dc4d92d6d6d9",
+      "size_bytes": 3999975400,
+      "digest_algorithm": "sha256",
+      "digest": "9849eb3584d928e35bf5956ccfd91b64207467e1fad8304aae68dc4d92d6d6d9",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00005-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00006-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/f7a0f1525557d740158fb692986ad43506e1b5901e7406ae65808c6457bc53ad",
+      "size_bytes": 3999975400,
+      "digest_algorithm": "sha256",
+      "digest": "f7a0f1525557d740158fb692986ad43506e1b5901e7406ae65808c6457bc53ad",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00006-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00007-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/920702a50f27a009e5f676da3b02978dbd794f6ad7854f301d709136154c1a84",
+      "size_bytes": 3999975472,
+      "digest_algorithm": "sha256",
+      "digest": "920702a50f27a009e5f676da3b02978dbd794f6ad7854f301d709136154c1a84",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00007-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00008-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/a85bf0cc8a8047c116172d4c08cf4792eb59d4375032708ba3e1a7ffca0f708a",
+      "size_bytes": 3997362064,
+      "digest_algorithm": "sha256",
+      "digest": "a85bf0cc8a8047c116172d4c08cf4792eb59d4375032708ba3e1a7ffca0f708a",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00008-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00009-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/25cd8aaed86b8e17685efb152912f92448ea3fffb1bdc247f257f04d05907604",
+      "size_bytes": 3999975408,
+      "digest_algorithm": "sha256",
+      "digest": "25cd8aaed86b8e17685efb152912f92448ea3fffb1bdc247f257f04d05907604",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00009-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00010-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/7c3307ee214797c4bc61c0994f81d690e768150df5f14d18edf84e53ba4810dc",
+      "size_bytes": 3999975400,
+      "digest_algorithm": "sha256",
+      "digest": "7c3307ee214797c4bc61c0994f81d690e768150df5f14d18edf84e53ba4810dc",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00010-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00011-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/c658cad2842d36fa4c7c7f726f8515dc5670a3d80c94e13257d4e322ffe61988",
+      "size_bytes": 3999975408,
+      "digest_algorithm": "sha256",
+      "digest": "c658cad2842d36fa4c7c7f726f8515dc5670a3d80c94e13257d4e322ffe61988",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00011-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00012-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/8cb898bc5e78492600053d1105c9ff61d7a719f5cc2802df63e41535a652cc26",
+      "size_bytes": 3987400496,
+      "digest_algorithm": "sha256",
+      "digest": "8cb898bc5e78492600053d1105c9ff61d7a719f5cc2802df63e41535a652cc26",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00012-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00013-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/599594421f314cb8e8ab4474db0eb490cc6310585067e82d73821254b93319ce",
+      "size_bytes": 3997353632,
+      "digest_algorithm": "sha256",
+      "digest": "599594421f314cb8e8ab4474db0eb490cc6310585067e82d73821254b93319ce",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00013-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00014-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/66d3294e9976b5f01d117a0a0bed768f128a8898eb6937e224d051de2961d363",
+      "size_bytes": 3999975400,
+      "digest_algorithm": "sha256",
+      "digest": "66d3294e9976b5f01d117a0a0bed768f128a8898eb6937e224d051de2961d363",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00014-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00015-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/2fe000da4fc7399ff6303bb0daec8c415a5d850f5ea53863392758c77fc37664",
+      "size_bytes": 3999975400,
+      "digest_algorithm": "sha256",
+      "digest": "2fe000da4fc7399ff6303bb0daec8c415a5d850f5ea53863392758c77fc37664",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00015-of-00016.safetensors"
+    },
+    {
+      "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model-00016-of-00016.safetensors",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/0c979e314faf06e94a5e1841abd285d4e26e763c79c1abe7710d543192d9da48",
+      "size_bytes": 1087928584,
+      "digest_algorithm": "sha256",
+      "digest": "0c979e314faf06e94a5e1841abd285d4e26e763c79c1abe7710d543192d9da48",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00016-of-00016.safetensors"
+    }
+  ],
+  "index_artifact": {
+    "cache_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/snapshots/ad44e777bcd18fa416d9da3bd8f70d33ebb85d39/model.safetensors.index.json",
+    "resolved_path": "/dev/shm/mbravo-neuralzip-family-stream/models/qwen3-30b-a3b/hub/models--Qwen--Qwen3-30B-A3B/blobs/9c1f15f44d45f6a4108ceb239ecec7b22f5c18a4",
+    "size_bytes": 1699758,
+    "digest_algorithm": "git-blob-sha1",
+    "digest": "9c1f15f44d45f6a4108ceb239ecec7b22f5c18a4",
+    "digest_source": "huggingface-content-addressed-cache",
+    "repository_path": "model.safetensors.index.json"
+  },
+  "weights_fingerprint": "1aa6c1b4c912bf3597acae0644e7fef66b1cfe547fd4d935513da7446bd4aa64",
+  "floating_numel": 30532122624,
+  "configuration": {
+    "model": {
+      "key": "qwen3-30b-a3b",
+      "label": "Qwen3-30B-A3B",
+      "family": "Qwen 3 MoE",
+      "suites": [
+        "moe"
+      ],
+      "backend": "hf",
+      "source": "Qwen/Qwen3-30B-A3B",
+      "parameters_b": 30.5,
+      "constructor": null,
+      "subfolder": null,
+      "weight_file": null,
+      "preferred_host": "relela-06"
+    },
+    "compressor": "NeuralZip",
+    "compressor_key": "neuralzip",
+    "dtype": "bfloat16",
+    "threads": 12,
+    "cpu_set": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "chunk_size": 262144,
+    "compression_threshold": 0.95,
+    "warmup_runs": 1,
+    "measured_runs": 1,
+    "smoke": false
+  },
+  "configuration_fingerprint": "fd7c43ed37b8840fdc03d7200ac936021e10344af88f53bad3fb5755724d71af",
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "job_fingerprint": "92f5c5c33e6f3494ee3f76a8bdeb05e19c4b06b468928fe947305c7afa77efd5",
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_runs": 1,
+  "measured_runs": 1,
+  "verified_warmup": true,
+  "load_seconds": 1.46495305839926,
+  "started_at": "2026-07-18T19:54:54.985228+00:00",
+  "finished_at": "2026-07-18T20:05:03.279869+00:00",
+  "encode_seconds": 23.32736401911825,
+  "codec_encode_seconds": 23.32736401911825,
+  "input_copy_seconds": 0.0,
+  "setup_seconds": 208.8723934078589,
+  "exponent_raw_bytes": 30532122624,
+  "exponent_data_bytes": 9974646344,
+  "exponent_metadata_bytes": 4628412,
+  "exponent_group_metadata_bytes": 4582144,
+  "exponent_codebook_metadata_bytes": 46268,
+  "exponent_compressed_bytes": 9979274756,
+  "exponent_ratio_pct": 32.684510274289664,
+  "tensor_count": 18867,
+  "chunk_count": 233133,
+  "roundtrip_ok": true,
+  "clusters": 251,
+  "codebooks": 43
+}

@@ -1,0 +1,26 @@
+{
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "format_version": 1,
+  "host": "godel",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "index_artifact": null,
+  "job_fingerprints": {
+    "neuralzip": "153b612f6df1acd71aba8f8faa78deef9dc798520ed35ed19390f07a96af9b9a",
+    "zipnn-src": "b86800b4e290631e9a0652426365bf92b49c7994d539c673308a8a7cd8dc64ad"
+  },
+  "model_key": "gemma3-1b",
+  "receipt_digest": "646ff92f240190b571329a9ea837136e87bdfdce2257a823e7e1bfa263827959",
+  "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+  "selected_bytes": 1999811208,
+  "source": "google/gemma-3-1b-pt",
+  "validated_at": "2026-07-18T17:23:34.796923+00:00",
+  "weight_artifacts": [
+    {
+      "digest": "ee5250f6eb1aa7cfb729dfd4dc8d9964fd772324776c6d00bf2bc674c069cb27",
+      "digest_algorithm": "sha256",
+      "repository_path": "model.safetensors",
+      "size_bytes": 1999811208
+    }
+  ],
+  "weights_fingerprint": "9416ec040b3d412838660fbb9bcd7f963e29df5e49332eab5c49243d2dca113f"
+}

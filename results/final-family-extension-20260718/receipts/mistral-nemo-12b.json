@@ -1,0 +1,55 @@
+{
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "format_version": 1,
+  "host": "godel",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "index_artifact": {
+    "digest": "79fe50f48e72f95e85b1059c699a10762feae6f9",
+    "digest_algorithm": "git-blob-sha1",
+    "repository_path": "model.safetensors.index.json",
+    "size_bytes": 29894
+  },
+  "job_fingerprints": {
+    "neuralzip": "efe9f1985eda7e50385f8b502d5c584dd1dfc3a9fbae2b1af9d19e2f139945c9",
+    "zipnn-src": "e2a4e9f412db1355d301799bbe9f6e36b085bd6c28b75858fad36a3db80564b2"
+  },
+  "model_key": "mistral-nemo-12b",
+  "receipt_digest": "6cbbae3837bd2530828a04373b465802add0b8ce7738ea75f1059d818f854a5e",
+  "revision": "a4477a2f977929a969745b69bbd62e03043551a5",
+  "selected_bytes": 24495636998,
+  "source": "mistralai/Mistral-Nemo-Base-2407",
+  "validated_at": "2026-07-18T18:09:12.969080+00:00",
+  "weight_artifacts": [
+    {
+      "digest": "eec5a6769f00db431145e2d23f070c9b52d983ec2cc5c8423e40da457f2e02b9",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00001-of-00005.safetensors",
+      "size_bytes": 4865522496
+    },
+    {
+      "digest": "ffa55e7838878f709eb8ed3ce5590fbc1e384a8a3a7024e94837471d0851bfb9",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00002-of-00005.safetensors",
+      "size_bytes": 4907529424
+    },
+    {
+      "digest": "0ab376be011eeab6d182d884339c0f08284ee599cfa12c71a9fbd5bc53530326",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00003-of-00005.safetensors",
+      "size_bytes": 4907529456
+    },
+    {
+      "digest": "c68d3b30ca0ec5058d171feeb7a4948b9a2b5f9a9b86979ae28bcdfa3dd2deb2",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00004-of-00005.safetensors",
+      "size_bytes": 4907529456
+    },
+    {
+      "digest": "9fbf19ab2fab63d26fcfb1a9fbf018088b40d83126954745d8ac067bfec7d735",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00005-of-00005.safetensors",
+      "size_bytes": 4907496272
+    }
+  ],
+  "weights_fingerprint": "38ef6408b815ca789daf8edc75b4a8bef6154df3533f4195ffbcfaecb38f8ed9"
+}

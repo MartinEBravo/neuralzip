@@ -1,0 +1,97 @@
+{
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "format_version": 1,
+  "host": "godel",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "index_artifact": {
+    "digest": "b8b026481f7393cc8291c8c4b8a3fe40975fa77c",
+    "digest_algorithm": "git-blob-sha1",
+    "repository_path": "model.safetensors.index.json",
+    "size_bytes": 36954
+  },
+  "job_fingerprints": {
+    "neuralzip": "19b2b1c255f796ee9164b1c3b2bef373c0f41887e0b28145ed05ed50d69956d1",
+    "zipnn-src": "e2f7aa86a666e0ff13d5205f6d9d7b0656e4ed343f18b86e735ac92b6ddd569b"
+  },
+  "model_key": "olmo2-13b",
+  "receipt_digest": "57f5b7e5e1afecfa4f7cf31c39a2145394c444df39c7672e3062e8cd0a745256",
+  "revision": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+  "selected_bytes": 54864882074,
+  "source": "allenai/OLMo-2-1124-13B",
+  "validated_at": "2026-07-18T18:49:44.657761+00:00",
+  "weight_artifacts": [
+    {
+      "digest": "d98857770936dacb09e4bcfffc98d6eb17d9fb64ead69ccde1c4e4c712978257",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00001-of-00012.safetensors",
+      "size_bytes": 4907502536
+    },
+    {
+      "digest": "da8fae969618d33af8174ac76c437906ad9857024db2c143e5c61d739f5c0a94",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00002-of-00012.safetensors",
+      "size_bytes": 4970582888
+    },
+    {
+      "digest": "f03c834e34c87a9fa71c4b2c38f7d451b1037dc29f81d93251bb5067eabab8d1",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00003-of-00012.safetensors",
+      "size_bytes": 4970582888
+    },
+    {
+      "digest": "11ae8c3a4a7b90f19ae3742a894c85cf14296042f230dfaa943227ad2d646257",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00004-of-00012.safetensors",
+      "size_bytes": 4970582928
+    },
+    {
+      "digest": "fefe1d9619d19162177708ad55e462571cba2cc42f9721169f2eb93ba75b0fb7",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00005-of-00012.safetensors",
+      "size_bytes": 4792283808
+    },
+    {
+      "digest": "fdc566735dedae56caed260f49988cff5c93cc965c554f0168d9837a7b2e11ef",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00006-of-00012.safetensors",
+      "size_bytes": 4792325016
+    },
+    {
+      "digest": "4aad6698968645ba46ba258cbd1e336c6f9e986c468a0fdf0d7aa1babc0cb94e",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00007-of-00012.safetensors",
+      "size_bytes": 4792325016
+    },
+    {
+      "digest": "140b9f897f4f68877071b84d4c0cb792f27ed319980420eef16c89ebe67a3410",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00008-of-00012.safetensors",
+      "size_bytes": 4970541752
+    },
+    {
+      "digest": "b59cf9c1a7a1b56323eb2b8643605c2d6d635c4a02f642efef36fa251b107e41",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00009-of-00012.safetensors",
+      "size_bytes": 4970582928
+    },
+    {
+      "digest": "6344d8e63d866e783a58694aedc2429463c9c232296b0c432830add37fa953fb",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00010-of-00012.safetensors",
+      "size_bytes": 4970582928
+    },
+    {
+      "digest": "ea1c24d5a94d0047769a32bf113ffa067be04b3c580aad5a390df4365e1e3df6",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00011-of-00012.safetensors",
+      "size_bytes": 3701743344
+    },
+    {
+      "digest": "8f27e406a792cc69eafa56c98016e4eebdaa4c06c6e3d04e514c3830f8ccaf59",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00012-of-00012.safetensors",
+      "size_bytes": 2055209088
+    }
+  ],
+  "weights_fingerprint": "353aabd3d398d41f2c0316b7bd524dc6429c5435d7875cc11f036b992515e461"
+}

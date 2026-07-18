@@ -1,0 +1,31 @@
+{
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "format_version": 1,
+  "host": "godel",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "index_artifact": {
+    "digest": "1ca6a83e1a122cd074f12a1258d480de42e2e19b",
+    "digest_algorithm": "git-blob-sha1",
+    "repository_path": "model.safetensors.index.json",
+    "size_bytes": 50900
+  },
+  "job_fingerprints": {
+    "neuralzip": "6d040336748ea7544f3a1b50cc92435009e30d04fb1edc51fc230b704342ef5a",
+    "zipnn-src": "93c58094029ebcbc5059a80fff46ed5e65c336786a888fc3080df0cbff3b2516"
+  },
+  "model_key": "qwen35-08b-base",
+  "receipt_digest": "9dc768d5c51e3f9cacc716b67bfaf4aa9eea0783378c69698323d2ba291436f9",
+  "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+  "selected_bytes": 1746993500,
+  "source": "Qwen/Qwen3.5-0.8B-Base",
+  "validated_at": "2026-07-18T17:20:38.102305+00:00",
+  "weight_artifacts": [
+    {
+      "digest": "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c",
+      "digest_algorithm": "sha256",
+      "repository_path": "model.safetensors-00001-of-00001.safetensors",
+      "size_bytes": 1746942600
+    }
+  ],
+  "weights_fingerprint": "305d0b3955d81020748af80d3d800b3ea1843abcde4058eb06636945219ed261"
+}

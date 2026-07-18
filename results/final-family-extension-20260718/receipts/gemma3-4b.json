@@ -1,0 +1,37 @@
+{
+  "code_digest": "96e6f8ee716ba729a61f6cce96897546d61cd70e165ce5221fb9416376d0b508",
+  "format_version": 1,
+  "host": "godel",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "index_artifact": {
+    "digest": "4b95241f208f06d324d17c9675568ec58dafd9fb",
+    "digest_algorithm": "git-blob-sha1",
+    "repository_path": "model.safetensors.index.json",
+    "size_bytes": 90558
+  },
+  "job_fingerprints": {
+    "neuralzip": "7e346347fee48c84f252f33b33508a9048eb79ca97d2e1860bee0744f77ddbab",
+    "zipnn-src": "f1332b80b1e9a934978271b52a2564c3936c56457e609579dc46ef1b22af0d0a"
+  },
+  "model_key": "gemma3-4b",
+  "receipt_digest": "5e1832125d3c0a78316c91eb9b69f067f31f5ea9cf1519744158a68b27fe7636",
+  "revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d",
+  "selected_bytes": 8600368438,
+  "source": "google/gemma-3-4b-pt",
+  "validated_at": "2026-07-18T17:33:01.965578+00:00",
+  "weight_artifacts": [
+    {
+      "digest": "8f5b423a203c41b5655b2e1b4c58be262cb0e403048c8116e100bdac91318320",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00001-of-00002.safetensors",
+      "size_bytes": 4961251752
+    },
+    {
+      "digest": "d3d22b1ab51a03678f95f7d5e60f703a50e6554e4c731c884fc0fbf05e6e3f47",
+      "digest_algorithm": "sha256",
+      "repository_path": "model-00002-of-00002.safetensors",
+      "size_bytes": 3639026128
+    }
+  ],
+  "weights_fingerprint": "74796f435981dcb808315d46b20d97fda5a9079c73f308703b1ecf7636495881"
+}

@@ -1,0 +1,715 @@
+{
+  "base": "/home/martin/Projects/Tesis/Codebase/results/final-general-20260717/results.json",
+  "base_rows": 56,
+  "combined_rows": 96,
+  "extension": "/tmp/final-extension-20260718",
+  "extension_rows": 40,
+  "groups": {
+    "model-storing": {
+      "faster_count": 26,
+      "model_count": 34,
+      "neuralzip_setup_seconds": {
+        "max": 686.2747642127797,
+        "min": 1.3154298709705472
+      },
+      "ratio_abs_delta_le_0_008_count": 17,
+      "ratio_abs_delta_pp": {
+        "max": 0.9836131152518277,
+        "min": 0.0008009112387412642
+      },
+      "ratio_delta_pp_signed": {
+        "max": 0.22376619059446767,
+        "min": -0.9836131152518277
+      },
+      "ratio_equal_count": 0,
+      "ratio_higher_count": 24,
+      "ratio_improvement_pp_max": 0.9836131152518277,
+      "ratio_lower_count": 10,
+      "ratio_penalty_pp_max": 0.22376619059446767,
+      "slowdown_x_when_slower": {
+        "max": 1.5841963762895372,
+        "min": 1.0072311882807423
+      },
+      "slower_count": 8,
+      "speedup_x_when_faster": {
+        "max": 21.508399856900123,
+        "min": 1.001234623232375
+      },
+      "time_tie_count": 0
+    },
+    "model-storing-nonvision": {
+      "faster_count": 14,
+      "model_count": 22,
+      "neuralzip_setup_seconds": {
+        "max": 686.2747642127797,
+        "min": 15.237597462721169
+      },
+      "ratio_abs_delta_le_0_008_count": 16,
+      "ratio_abs_delta_pp": {
+        "max": 0.1399710245960648,
+        "min": 0.0008009112387412642
+      },
+      "ratio_delta_pp_signed": {
+        "max": 0.0638074539644009,
+        "min": -0.1399710245960648
+      },
+      "ratio_equal_count": 0,
+      "ratio_higher_count": 19,
+      "ratio_improvement_pp_max": 0.1399710245960648,
+      "ratio_lower_count": 3,
+      "ratio_penalty_pp_max": 0.0638074539644009,
+      "slowdown_x_when_slower": {
+        "max": 1.5841963762895372,
+        "min": 1.0072311882807423
+      },
+      "slower_count": 8,
+      "speedup_x_when_faster": {
+        "max": 4.8867083334737655,
+        "min": 1.001234623232375
+      },
+      "time_tie_count": 0
+    },
+    "moe": {
+      "faster_count": 6,
+      "model_count": 10,
+      "neuralzip_setup_seconds": {
+        "max": 382.8742506848648,
+        "min": 54.46974622923881
+      },
+      "ratio_abs_delta_le_0_008_count": 8,
+      "ratio_abs_delta_pp": {
+        "max": 0.038683310623540024,
+        "min": 0.0004939519006228466
+      },
+      "ratio_delta_pp_signed": {
+        "max": 0.008024946343084594,
+        "min": -0.038683310623540024
+      },
+      "ratio_equal_count": 0,
+      "ratio_higher_count": 7,
+      "ratio_improvement_pp_max": 0.038683310623540024,
+      "ratio_lower_count": 3,
+      "ratio_penalty_pp_max": 0.008024946343084594,
+      "slowdown_x_when_slower": {
+        "max": 1.7342197697671393,
+        "min": 1.1768918819120455
+      },
+      "slower_count": 4,
+      "speedup_x_when_faster": {
+        "max": 4.538322274804203,
+        "min": 2.218573914252461
+      },
+      "time_tie_count": 0
+    }
+  },
+  "incomplete_models": {
+    "model-storing": [],
+    "moe": []
+  },
+  "latex_rows": {
+    "model-storing": [
+      "Qwen 2.5 7B~\\cite{yang2024qwen25} & \\textbf{4.703} & 6.717 & \\textbf{33.347} & 33.411 \\\\",
+      "Qwen 2.5 14B~\\cite{yang2024qwen25} & \\textbf{8.979} & 11.332 & 33.595 & \\textbf{33.517} \\\\",
+      "Qwen 3.5 0.8B~\\cite{qwen2026qwen3508bbase} & 1.683 & \\textbf{0.344} & \\textbf{33.259} & 33.267 \\\\",
+      "Qwen 3.5 2B~\\cite{qwen2026qwen352bbase} & 2.733 & \\textbf{0.976} & \\textbf{33.160} & 33.161 \\\\",
+      "OLMo-2-7B~\\cite{olmo2024olmo2} & 6.343 & \\textbf{6.230} & \\textbf{33.619} & 33.630 \\\\",
+      "OLMo-2-13B~\\cite{olmo2024olmo2} & \\textbf{9.872} & 10.807 & \\textbf{33.630} & 33.640 \\\\",
+      "Llama 3.2 1B~\\cite{meta2024llama321b} & 1.082 & \\textbf{0.469} & \\textbf{33.041} & 33.049 \\\\",
+      "Llama 3.2 3B~\\cite{meta2024llama323b} & 2.618 & \\textbf{2.016} & \\textbf{32.907} & 32.914 \\\\",
+      "Llama 3.1 Nemotron Nano 8B~\\cite{nvidia2025llama31nemotronnano8b} & 4.875 & \\textbf{4.869} & \\textbf{32.665} & 32.672 \\\\",
+      "Mistral Nemo 12B~\\cite{mistralai2024mistralnemo12b} & \\textbf{7.280} & 8.044 & \\textbf{32.770} & 32.777 \\\\",
+      "Gemma 3 1B~\\cite{gemmateam2025gemma3} & 1.631 & \\textbf{0.395} & \\textbf{32.972} & 32.980 \\\\",
+      "Gemma 3 4B~\\cite{gemmateam2025gemma3} & 4.533 & \\textbf{3.147} & \\textbf{32.953} & 32.958 \\\\",
+      "Gemma 3 12B~\\cite{gemmateam2025gemma3} & \\textbf{9.008} & 9.073 & \\textbf{32.846} & 32.852 \\\\"
+    ],
+    "moe": [
+      "OLMoE 1B-7B~\\cite{muennighoff2024olmoe} & 13.799 & \\textbf{4.788} & \\textbf{32.664} & 32.668 \\\\",
+      "Qwen1.5-MoE-A2.7B~\\cite{qwen2024qwen15moe} & 24.056 & \\textbf{10.843} & \\textbf{32.601} & 32.609 \\\\",
+      "Qwen3-30B-A3B~\\cite{qwen2025qwen330ba3b} & 63.497 & \\textbf{23.327} & 32.685 & \\textbf{32.685} \\\\",
+      "Qwen3.5-35B-A3B~\\cite{qwen2026qwen3535ba3b} & \\textbf{23.892} & 33.199 & \\textbf{32.711} & 32.719 \\\\",
+      "DeepSeekMoE-16B~\\cite{dai2024deepseekmoe} & 27.262 & \\textbf{12.232} & \\textbf{32.609} & 32.617 \\\\",
+      "Mixtral 8x7B~\\cite{jiang2024mixtral} & \\textbf{24.985} & 43.330 & \\textbf{32.648} & 32.655 \\\\",
+      "Gemma 4 26B-A4B~\\cite{google2026gemma426ba4b} & \\textbf{16.688} & 19.710 & \\textbf{32.843} & 32.850 \\\\"
+    ]
+  },
+  "missing_new_models": [],
+  "pairs": {
+    "model-storing": [
+      {
+        "model": "ConvNeXt-Base",
+        "model_key": "convnext-base",
+        "neuralzip_encode_seconds": 0.041310195811092854,
+        "neuralzip_ratio_pct": 33.0563393782498,
+        "neuralzip_setup_seconds": 3.078606814146042,
+        "ratio_delta_pp": 0.011328405183590462,
+        "slowdown": 0.09573092958639141,
+        "speedup": 10.445944736153011,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.43152402248233557,
+        "zipnn_ratio_pct": 33.04501097306621
+      },
+      {
+        "model": "ConvNeXt-Large",
+        "model_key": "convnext-large",
+        "neuralzip_encode_seconds": 0.08063453063368797,
+        "neuralzip_ratio_pct": 32.982958823897995,
+        "neuralzip_setup_seconds": 3.178494212217629,
+        "ratio_delta_pp": 0.004563443176479609,
+        "slowdown": 0.11225393150479236,
+        "speedup": 8.908373957105528,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.7183225527405739,
+        "zipnn_ratio_pct": 32.978395380721516
+      },
+      {
+        "model": "ConvNeXt-Small",
+        "model_key": "convnext-small",
+        "neuralzip_encode_seconds": 0.03481987398117781,
+        "neuralzip_ratio_pct": 33.261167519199304,
+        "neuralzip_setup_seconds": 3.0129982689395547,
+        "ratio_delta_pp": 0.019399212578733227,
+        "slowdown": 0.10626358017068775,
+        "speedup": 9.410561910239919,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.32767457980662584,
+        "zipnn_ratio_pct": 33.24176830662057
+      },
+      {
+        "model": "ConvNeXt-Tiny",
+        "model_key": "convnext-tiny",
+        "neuralzip_encode_seconds": 0.01521813590079546,
+        "neuralzip_ratio_pct": 33.059889059925155,
+        "neuralzip_setup_seconds": 2.0569107346236706,
+        "ratio_delta_pp": -0.1392102620268858,
+        "slowdown": 0.09629924484381598,
+        "speedup": 10.384297422288839,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.15802964940667152,
+        "zipnn_ratio_pct": 33.19909932195204
+      },
+      {
+        "model": "EfficientNet-B0",
+        "model_key": "efficientnet-b0",
+        "neuralzip_encode_seconds": 0.008978712372481823,
+        "neuralzip_ratio_pct": 33.18515639245678,
+        "neuralzip_setup_seconds": 1.487408958375454,
+        "ratio_delta_pp": 0.22376619059446767,
+        "slowdown": 0.04649346332843023,
+        "speedup": 21.508399856900123,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.19311773590743542,
+        "zipnn_ratio_pct": 32.961390201862315
+      },
+      {
+        "model": "EfficientNet-B3",
+        "model_key": "efficientnet-b3",
+        "neuralzip_encode_seconds": 0.02203969843685627,
+        "neuralzip_ratio_pct": 33.4811868452391,
+        "neuralzip_setup_seconds": 3.558688597753644,
+        "ratio_delta_pp": 0.16016359039158345,
+        "slowdown": 0.07128474335650581,
+        "speedup": 14.028247180449936,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.30917833745479584,
+        "zipnn_ratio_pct": 33.32102325484752
+      },
+      {
+        "model": "EfficientNet-B7",
+        "model_key": "efficientnet-b7",
+        "neuralzip_encode_seconds": 0.051382049918174744,
+        "neuralzip_ratio_pct": 36.149488708747306,
+        "neuralzip_setup_seconds": 14.658953601494431,
+        "ratio_delta_pp": -0.09378073493204653,
+        "slowdown": 0.06599208607477886,
+        "speedup": 15.153332156629375,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.7786092692986131,
+        "zipnn_ratio_pct": 36.24326944367935
+      },
+      {
+        "model": "Gemma 3 12B PT",
+        "model_key": "gemma3-12b",
+        "neuralzip_encode_seconds": 9.07281578052789,
+        "neuralzip_ratio_pct": 32.85229540411109,
+        "neuralzip_setup_seconds": 100.58297199942172,
+        "ratio_delta_pp": 0.006600119364669865,
+        "slowdown": 1.0072311882807423,
+        "speedup": 0.9928207263983898,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 9.007679553702474,
+        "zipnn_ratio_pct": 32.84569528474642
+      },
+      {
+        "model": "Gemma 3 1B PT",
+        "model_key": "gemma3-1b",
+        "neuralzip_encode_seconds": 0.3949839510023594,
+        "neuralzip_ratio_pct": 32.980338041592965,
+        "neuralzip_setup_seconds": 19.038795702159405,
+        "ratio_delta_pp": 0.00821563697696348,
+        "slowdown": 0.2421156721513362,
+        "speedup": 4.13025720769923,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.6313853105530143,
+        "zipnn_ratio_pct": 32.972122404616
+      },
+      {
+        "model": "Gemma 3 4B PT",
+        "model_key": "gemma3-4b",
+        "neuralzip_encode_seconds": 3.1470856610685587,
+        "neuralzip_ratio_pct": 32.9583410313306,
+        "neuralzip_setup_seconds": 51.928953968919814,
+        "ratio_delta_pp": 0.0055016425054574825,
+        "slowdown": 0.6942922978676137,
+        "speedup": 1.4403155602781554,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 4.53279644716531,
+        "zipnn_ratio_pct": 32.95283938882514
+      },
+      {
+        "model": "Gemma 4 31B",
+        "model_key": "gemma4-31b",
+        "neuralzip_encode_seconds": 29.337219000793993,
+        "neuralzip_ratio_pct": 32.81145302175363,
+        "neuralzip_setup_seconds": 246.65147374011576,
+        "ratio_delta_pp": 0.007044193839419677,
+        "slowdown": 1.5841963762895372,
+        "speedup": 0.6312348740136456,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 18.518675739876926,
+        "zipnn_ratio_pct": 32.80440882791421
+      },
+      {
+        "model": "LatamGPT-70B",
+        "model_key": "latamgpt-70b",
+        "neuralzip_encode_seconds": 80.10672089923173,
+        "neuralzip_ratio_pct": 32.38918098696284,
+        "neuralzip_setup_seconds": 686.2747642127797,
+        "ratio_delta_pp": 0.007148323242645915,
+        "slowdown": 0.47590937262556166,
+        "speedup": 2.1012403989504636,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 168.32347818091512,
+        "zipnn_ratio_pct": 32.382032663720196
+      },
+      {
+        "model": "Llama-3.1-Nemotron-Nano-8B-v1",
+        "model_key": "llama31-nemotron-8b",
+        "neuralzip_encode_seconds": 4.869293676689267,
+        "neuralzip_ratio_pct": 32.67157429845052,
+        "neuralzip_setup_seconds": 60.119491742923856,
+        "ratio_delta_pp": 0.006980445376413513,
+        "slowdown": 0.9987668991825421,
+        "speedup": 1.001234623232375,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 4.8753054197877645,
+        "zipnn_ratio_pct": 32.66459385307411
+      },
+      {
+        "model": "Llama-3.2-1B",
+        "model_key": "llama32-1b",
+        "neuralzip_encode_seconds": 0.469034219160676,
+        "neuralzip_ratio_pct": 33.0486352966918,
+        "neuralzip_setup_seconds": 16.723215819336474,
+        "ratio_delta_pp": 0.007328203976257441,
+        "slowdown": 0.4336521987952711,
+        "speedup": 2.305995456216063,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.0815907781943679,
+        "zipnn_ratio_pct": 33.04130709271554
+      },
+      {
+        "model": "Llama-3.2-3B",
+        "model_key": "llama32-3b",
+        "neuralzip_encode_seconds": 2.0162731390446424,
+        "neuralzip_ratio_pct": 32.913679649150296,
+        "neuralzip_setup_seconds": 30.096972211264074,
+        "ratio_delta_pp": 0.007020590221962664,
+        "slowdown": 0.7700480606793079,
+        "speedup": 1.298620243414206,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 2.618373114615679,
+        "zipnn_ratio_pct": 32.906659058928334
+      },
+      {
+        "model": "Mistral-Nemo-Base-2407",
+        "model_key": "mistral-nemo-12b",
+        "neuralzip_encode_seconds": 8.044001168571413,
+        "neuralzip_ratio_pct": 32.776543637809894,
+        "neuralzip_setup_seconds": 90.80829712096602,
+        "ratio_delta_pp": 0.00695472839230149,
+        "slowdown": 1.1048752902458057,
+        "speedup": 0.9050795223934517,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 7.280460735782981,
+        "zipnn_ratio_pct": 32.76958890941759
+      },
+      {
+        "model": "Mistral-7B",
+        "model_key": "mistral7b",
+        "neuralzip_encode_seconds": 3.4468882754445076,
+        "neuralzip_ratio_pct": 32.75710721641982,
+        "neuralzip_setup_seconds": 56.94705591350794,
+        "ratio_delta_pp": 0.006716382700851398,
+        "slowdown": 0.7846709189488932,
+        "speedup": 1.2744196017096583,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 4.39278198312968,
+        "zipnn_ratio_pct": 32.75039083371897
+      },
+      {
+        "model": "OLMo-2-1124-13B",
+        "model_key": "olmo2-13b",
+        "neuralzip_encode_seconds": 10.806872442364693,
+        "neuralzip_ratio_pct": 33.63990529620802,
+        "neuralzip_setup_seconds": 153.3190943961963,
+        "ratio_delta_pp": 0.009421065242101179,
+        "slowdown": 1.0946840816995744,
+        "speedup": 0.9135055644980508,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 9.872138110920787,
+        "zipnn_ratio_pct": 33.63048423096592
+      },
+      {
+        "model": "OLMo-2-1B",
+        "model_key": "olmo2-1b",
+        "neuralzip_encode_seconds": 0.5313581926748157,
+        "neuralzip_ratio_pct": 32.9606864906397,
+        "neuralzip_setup_seconds": 15.237597462721169,
+        "ratio_delta_pp": 0.0033413994735909114,
+        "slowdown": 0.3800273472558672,
+        "speedup": 2.6313895755683965,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.3982104090973735,
+        "zipnn_ratio_pct": 32.95734509116611
+      },
+      {
+        "model": "OLMo-2-7B",
+        "model_key": "olmo2-7b",
+        "neuralzip_encode_seconds": 6.230134807527065,
+        "neuralzip_ratio_pct": 33.630191902276,
+        "neuralzip_setup_seconds": 108.68501027021557,
+        "ratio_delta_pp": 0.011064342216322132,
+        "slowdown": 0.9821851008565302,
+        "speedup": 1.0181380262518074,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 6.34313715621829,
+        "zipnn_ratio_pct": 33.61912756005968
+      },
+      {
+        "model": "Phi-4 14B",
+        "model_key": "phi4-14b",
+        "neuralzip_encode_seconds": 10.770360038615763,
+        "neuralzip_ratio_pct": 32.62496734542346,
+        "neuralzip_setup_seconds": 106.89644247852266,
+        "ratio_delta_pp": 0.006859487063799463,
+        "slowdown": 1.2123838770558713,
+        "speedup": 0.8248212624110278,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 8.88362196367234,
+        "zipnn_ratio_pct": 32.61810785835966
+      },
+      {
+        "model": "Qwen2.5-14B",
+        "model_key": "qwen25-14b",
+        "neuralzip_encode_seconds": 11.33191583212465,
+        "neuralzip_ratio_pct": 33.51664849665166,
+        "neuralzip_setup_seconds": 120.7995570814237,
+        "ratio_delta_pp": -0.07796351898686993,
+        "slowdown": 1.2620075884120057,
+        "speedup": 0.7923882623069708,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 8.979277094826102,
+        "zipnn_ratio_pct": 33.59461201563853
+      },
+      {
+        "model": "Qwen2.5-1.5B",
+        "model_key": "qwen25-15b",
+        "neuralzip_encode_seconds": 0.5854263631626964,
+        "neuralzip_ratio_pct": 32.97492526181839,
+        "neuralzip_setup_seconds": 16.52994033601135,
+        "ratio_delta_pp": 0.0077208586907033805,
+        "slowdown": 0.32302913524092036,
+        "speedup": 3.095695994276751,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.8123020473867655,
+        "zipnn_ratio_pct": 32.96720440312769
+      },
+      {
+        "model": "Qwen2.5-3B",
+        "model_key": "qwen25-3b",
+        "neuralzip_encode_seconds": 1.381195337511599,
+        "neuralzip_ratio_pct": 33.71978746844111,
+        "neuralzip_setup_seconds": 37.664608978666365,
+        "ratio_delta_pp": -0.1399710245960648,
+        "slowdown": 0.508755807399069,
+        "speedup": 1.9655795284428037,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 2.714849280193448,
+        "zipnn_ratio_pct": 33.85975849303718
+      },
+      {
+        "model": "Qwen2.5-7B",
+        "model_key": "qwen25-7b",
+        "neuralzip_encode_seconds": 6.7166994623839855,
+        "neuralzip_ratio_pct": 33.41069793877772,
+        "neuralzip_setup_seconds": 75.28214680682868,
+        "ratio_delta_pp": 0.0638074539644009,
+        "slowdown": 1.4282407917287692,
+        "speedup": 0.7001620495585912,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 4.702778061851859,
+        "zipnn_ratio_pct": 33.34689048481332
+      },
+      {
+        "model": "Qwen3.5-0.8B-Base",
+        "model_key": "qwen35-08b-base",
+        "neuralzip_encode_seconds": 0.34430179186165333,
+        "neuralzip_ratio_pct": 33.26655654897046,
+        "neuralzip_setup_seconds": 21.31388837005943,
+        "ratio_delta_pp": 0.007936446293641097,
+        "slowdown": 0.20463672717072925,
+        "speedup": 4.8867083334737655,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.6825024355202913,
+        "zipnn_ratio_pct": 33.25862010267682
+      },
+      {
+        "model": "Qwen3.5 27B",
+        "model_key": "qwen35-27b",
+        "neuralzip_encode_seconds": 18.3893179949373,
+        "neuralzip_ratio_pct": 32.70364645293881,
+        "neuralzip_setup_seconds": 208.52005642373115,
+        "ratio_delta_pp": 0.007042550164733541,
+        "slowdown": 1.168006183316312,
+        "speedup": 0.8561598511068724,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 15.74419575650245,
+        "zipnn_ratio_pct": 32.69660390277408
+      },
+      {
+        "model": "Qwen3.5-2B-Base",
+        "model_key": "qwen35-2b-base",
+        "neuralzip_encode_seconds": 0.9759592125192285,
+        "neuralzip_ratio_pct": 33.161301646998155,
+        "neuralzip_setup_seconds": 31.604725886136293,
+        "ratio_delta_pp": 0.0016413304290878727,
+        "slowdown": 0.35713479537781323,
+        "speedup": 2.800063205664682,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 2.7327474812045693,
+        "zipnn_ratio_pct": 33.15966031656907
+      },
+      {
+        "model": "ResNet-101",
+        "model_key": "resnet101",
+        "neuralzip_encode_seconds": 0.032222271896898746,
+        "neuralzip_ratio_pct": 34.10719778681228,
+        "neuralzip_setup_seconds": 6.375891512259841,
+        "ratio_delta_pp": -0.0862219855806714,
+        "slowdown": 0.08262742883506796,
+        "speedup": 12.102518668420544,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.3899706471711397,
+        "zipnn_ratio_pct": 34.19341977239295
+      },
+      {
+        "model": "ResNet-152",
+        "model_key": "resnet152",
+        "neuralzip_encode_seconds": 0.04233790747821331,
+        "neuralzip_ratio_pct": 34.21120182621597,
+        "neuralzip_setup_seconds": 9.44749331381172,
+        "ratio_delta_pp": -0.016130787777690614,
+        "slowdown": 0.07546050622121327,
+        "speedup": 13.251965167958051,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.5610604751855135,
+        "zipnn_ratio_pct": 34.22733261399366
+      },
+      {
+        "model": "ResNet-18",
+        "model_key": "resnet18",
+        "neuralzip_encode_seconds": 0.008535774424672127,
+        "neuralzip_ratio_pct": 32.38811629463843,
+        "neuralzip_setup_seconds": 1.3154298709705472,
+        "ratio_delta_pp": -0.9836131152518277,
+        "slowdown": 0.10531472208490843,
+        "speedup": 9.495348610365841,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.08105015382170677,
+        "zipnn_ratio_pct": 33.37172940989026
+      },
+      {
+        "model": "ResNet-34",
+        "model_key": "resnet34",
+        "neuralzip_encode_seconds": 0.014196116477251053,
+        "neuralzip_ratio_pct": 32.650342686416536,
+        "neuralzip_setup_seconds": 2.409828508272767,
+        "ratio_delta_pp": -0.6406506879582423,
+        "slowdown": 0.09225831270060238,
+        "speedup": 10.839131680688874,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.15387357585132122,
+        "zipnn_ratio_pct": 33.29099337437478
+      },
+      {
+        "model": "ResNet-50",
+        "model_key": "resnet50",
+        "neuralzip_encode_seconds": 0.017829127609729767,
+        "neuralzip_ratio_pct": 34.012886764592416,
+        "neuralzip_setup_seconds": 3.2671431060880423,
+        "ratio_delta_pp": -0.047785737468487355,
+        "slowdown": 0.06372985021463835,
+        "speedup": 15.691234117639684,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 0.2797610154375434,
+        "zipnn_ratio_pct": 34.0606725020609
+      },
+      {
+        "model": "Stable Diffusion v1.5 UNet",
+        "model_key": "sd15-unet",
+        "neuralzip_encode_seconds": 0.35449645575135946,
+        "neuralzip_ratio_pct": 33.29078195700646,
+        "neuralzip_setup_seconds": 25.184413816779852,
+        "ratio_delta_pp": -0.0008009112387412642,
+        "slowdown": 0.2449869882465634,
+        "speedup": 4.081849436809947,
+        "suite": "model-storing",
+        "zipnn_encode_seconds": 1.447001158259809,
+        "zipnn_ratio_pct": 33.2915828682452
+      }
+    ],
+    "moe": [
+      {
+        "model": "DeepSeek-MoE-16B-Base",
+        "model_key": "deepseek-moe-16b",
+        "neuralzip_encode_seconds": 12.231681656092405,
+        "neuralzip_ratio_pct": 32.616683894912306,
+        "neuralzip_setup_seconds": 106.45693753939122,
+        "ratio_delta_pp": 0.007849299829317147,
+        "slowdown": 0.4486764770987532,
+        "speedup": 2.2287774176757233,
+        "suite": "moe",
+        "zipnn_encode_seconds": 27.26169585529715,
+        "zipnn_ratio_pct": 32.60883459508299
+      },
+      {
+        "model": "Gemma-4-26B-A4B",
+        "model_key": "gemma4-26b-a4b",
+        "neuralzip_encode_seconds": 19.709705147892237,
+        "neuralzip_ratio_pct": 32.84964460242687,
+        "neuralzip_setup_seconds": 176.6200168747455,
+        "ratio_delta_pp": 0.006973321896310836,
+        "slowdown": 1.1810684923759087,
+        "speedup": 0.8466909467615545,
+        "suite": "moe",
+        "zipnn_encode_seconds": 16.688028912059963,
+        "zipnn_ratio_pct": 32.84267128053056
+      },
+      {
+        "model": "JetMoE-8B",
+        "model_key": "jetmoe-8b",
+        "neuralzip_encode_seconds": 6.126395417377353,
+        "neuralzip_ratio_pct": 32.56161324794701,
+        "neuralzip_setup_seconds": 63.066616808995605,
+        "ratio_delta_pp": 0.007096082078511756,
+        "slowdown": 1.1768918819120455,
+        "speedup": 0.8496957242795686,
+        "suite": "moe",
+        "zipnn_encode_seconds": 5.20557199139148,
+        "zipnn_ratio_pct": 32.554517165868496
+      },
+      {
+        "model": "Liquid AI LFM2.5-8B-A1B",
+        "model_key": "lfm25-8b-a1b",
+        "neuralzip_encode_seconds": 3.4849278600886464,
+        "neuralzip_ratio_pct": 32.631717432418675,
+        "neuralzip_setup_seconds": 60.07286866661161,
+        "ratio_delta_pp": -0.005836588995371983,
+        "slowdown": 0.22034574440686738,
+        "speedup": 4.538322274804203,
+        "suite": "moe",
+        "zipnn_encode_seconds": 15.815725733526051,
+        "zipnn_ratio_pct": 32.63755402141405
+      },
+      {
+        "model": "Mixtral-8x7B-v0.1",
+        "model_key": "mixtral-8x7b",
+        "neuralzip_encode_seconds": 43.33020239882171,
+        "neuralzip_ratio_pct": 32.655310389380176,
+        "neuralzip_setup_seconds": 382.8742506848648,
+        "ratio_delta_pp": 0.007017396198918391,
+        "slowdown": 1.7342197697671393,
+        "speedup": 0.5766281860195113,
+        "suite": "moe",
+        "zipnn_encode_seconds": 24.98541600909084,
+        "zipnn_ratio_pct": 32.64829299318126
+      },
+      {
+        "model": "OLMoE-1B-7B-0125",
+        "model_key": "olmoe-1b-7b-0125",
+        "neuralzip_encode_seconds": 4.788204745389521,
+        "neuralzip_ratio_pct": 32.66785805913658,
+        "neuralzip_setup_seconds": 54.46974622923881,
+        "ratio_delta_pp": 0.0035878912094631232,
+        "slowdown": 0.3470047753837171,
+        "speedup": 2.8818047212583813,
+        "suite": "moe",
+        "zipnn_encode_seconds": 13.798671041615307,
+        "zipnn_ratio_pct": 32.664270167927114
+      },
+      {
+        "model": "Qwen1.5-MoE-A2.7B",
+        "model_key": "qwen15-moe-a27b",
+        "neuralzip_encode_seconds": 10.842790336348116,
+        "neuralzip_ratio_pct": 32.609229591549294,
+        "neuralzip_setup_seconds": 91.7296379217878,
+        "ratio_delta_pp": 0.008024946343084594,
+        "slowdown": 0.4507399972459091,
+        "speedup": 2.218573914252461,
+        "suite": "moe",
+        "zipnn_encode_seconds": 24.0555317979306,
+        "zipnn_ratio_pct": 32.60120464520621
+      },
+      {
+        "model": "Qwen3-30B-A3B",
+        "model_key": "qwen3-30b-a3b",
+        "neuralzip_encode_seconds": 23.32736401911825,
+        "neuralzip_ratio_pct": 32.684510274289664,
+        "neuralzip_setup_seconds": 208.8723934078589,
+        "ratio_delta_pp": -0.0004939519006228466,
+        "slowdown": 0.3673760009022923,
+        "speedup": 2.7220068745480224,
+        "suite": "moe",
+        "zipnn_encode_seconds": 63.49724522512406,
+        "zipnn_ratio_pct": 32.68500422619029
+      },
+      {
+        "model": "Qwen3.5-35B-A3B",
+        "model_key": "qwen35-35b-a3b",
+        "neuralzip_encode_seconds": 33.19927427358925,
+        "neuralzip_ratio_pct": 32.71852509077727,
+        "neuralzip_setup_seconds": 273.4635001588613,
+        "ratio_delta_pp": 0.007064086905714362,
+        "slowdown": 1.3895373152253419,
+        "speedup": 0.7196640126485769,
+        "suite": "moe",
+        "zipnn_encode_seconds": 23.89232294075191,
+        "zipnn_ratio_pct": 32.711461003871555
+      },
+      {
+        "model": "ZAYA1-8B",
+        "model_key": "zaya1-8b",
+        "neuralzip_encode_seconds": 4.547253154218197,
+        "neuralzip_ratio_pct": 33.15362463736091,
+        "neuralzip_setup_seconds": 96.99920456204563,
+        "ratio_delta_pp": -0.038683310623540024,
+        "slowdown": 0.31147135274560156,
+        "speedup": 3.210568134709851,
+        "suite": "moe",
+        "zipnn_encode_seconds": 14.599266077391803,
+        "zipnn_ratio_pct": 33.19230794798445
+      }
+    ]
+  },
+  "validation_mode": "strict-final"
+}

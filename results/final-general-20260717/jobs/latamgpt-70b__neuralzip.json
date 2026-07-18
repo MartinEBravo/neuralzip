@@ -1,0 +1,382 @@
+{
+  "status": "ok",
+  "host": "godel",
+  "model_key": "latamgpt-70b",
+  "model": "LatamGPT-70B",
+  "family": "Llama 3 / LatamGPT",
+  "suites": [
+    "model-storing"
+  ],
+  "source": "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
+  "parameters_b": 70.0,
+  "compressor": "NeuralZip",
+  "snapshot": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5",
+  "revision": "504d5e6f36ee17b795662f11bfb2dbb5164f6ac5",
+  "weight_artifacts": [
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00001-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/533f2482e70e2b50476025d0f64f092213a95e689d5a62cf86d748d57910b479",
+      "size_bytes": 4584441808,
+      "digest_algorithm": "sha256",
+      "digest": "533f2482e70e2b50476025d0f64f092213a95e689d5a62cf86d748d57910b479",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00001-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00002-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/e108088adbee02c5d799e4fe958dfb8aee9c27c9be51c70ab062cff9cb9a5b35",
+      "size_bytes": 4664167392,
+      "digest_algorithm": "sha256",
+      "digest": "e108088adbee02c5d799e4fe958dfb8aee9c27c9be51c70ab062cff9cb9a5b35",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00002-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00003-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/608d4911db546e40154f6709cf6631ab2904002bfce08a0fc8272c0ffc1a1981",
+      "size_bytes": 4362144040,
+      "digest_algorithm": "sha256",
+      "digest": "608d4911db546e40154f6709cf6631ab2904002bfce08a0fc8272c0ffc1a1981",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00003-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00004-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/770531f43120420ba57779d76095cd0fe96ed2961efdd98bccd64e145822e1bc",
+      "size_bytes": 4664167392,
+      "digest_algorithm": "sha256",
+      "digest": "770531f43120420ba57779d76095cd0fe96ed2961efdd98bccd64e145822e1bc",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00004-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00005-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/7f1c932a5e0b28b022380a11c3b482e4e63ea5f03930529c1539f326dfdae9da",
+      "size_bytes": 4664167408,
+      "digest_algorithm": "sha256",
+      "digest": "7f1c932a5e0b28b022380a11c3b482e4e63ea5f03930529c1539f326dfdae9da",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00005-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00006-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/5d7919991a9e450b573895e52d7a4895831df030c07c6decfb086fd84b6bed9d",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "5d7919991a9e450b573895e52d7a4895831df030c07c6decfb086fd84b6bed9d",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00006-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00007-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/13e8f97dd1112833142f84358167914215c97e5947d31745a223faa0fb1ce1ed",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "13e8f97dd1112833142f84358167914215c97e5947d31745a223faa0fb1ce1ed",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00007-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00008-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/8519f6f50617ff6ff635bf82044bfbab80458fcc6cc674862b54060be43376c1",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "8519f6f50617ff6ff635bf82044bfbab80458fcc6cc674862b54060be43376c1",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00008-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00009-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/547228d679f1e4c28333fe9fa96a55dc9525b0add5fe8e252bf745bd8c9d44f5",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "547228d679f1e4c28333fe9fa96a55dc9525b0add5fe8e252bf745bd8c9d44f5",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00009-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00010-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/81a36e4c1208be904968e4f49ada13b17aba54fecbb3a1e70238b225ef2026b8",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "81a36e4c1208be904968e4f49ada13b17aba54fecbb3a1e70238b225ef2026b8",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00010-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00011-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/5bb68a7fb26bc808b91ee99e98f2d4328bb1dddeb86d002e0dbc98065b9e9a83",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "5bb68a7fb26bc808b91ee99e98f2d4328bb1dddeb86d002e0dbc98065b9e9a83",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00011-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00012-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/48ade1e4eb9963cead1b3169ae8293f5d30ac694e8cb77f8b5aff3996c863436",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "48ade1e4eb9963cead1b3169ae8293f5d30ac694e8cb77f8b5aff3996c863436",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00012-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00013-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/28b09dc7ad875ba6fcfdff543459dc6114547c584d35623e0d1479eba15dd085",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "28b09dc7ad875ba6fcfdff543459dc6114547c584d35623e0d1479eba15dd085",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00013-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00014-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/0087d1e2fb310852b70dab0d8f5ceff70c6c9d1d7afdbdf8cebd504e6fc64eb1",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "0087d1e2fb310852b70dab0d8f5ceff70c6c9d1d7afdbdf8cebd504e6fc64eb1",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00014-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00015-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/571a2ad8417d385786bb7249ca228cfacb982fd46846869f278fcdf35ada3467",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "571a2ad8417d385786bb7249ca228cfacb982fd46846869f278fcdf35ada3467",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00015-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00016-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/aad64217872ab8a58e1b12f4115fab7cafc9e2aaabe5a475b7f76ac78862db45",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "aad64217872ab8a58e1b12f4115fab7cafc9e2aaabe5a475b7f76ac78862db45",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00016-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00017-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/d862aa819840b5e843274569f06ad2fb758cf510802dd4a0ac653194f6a5af3a",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "d862aa819840b5e843274569f06ad2fb758cf510802dd4a0ac653194f6a5af3a",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00017-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00018-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/039732340d64272873060084bbcdbb177ccd8df758c14c24ec3e079b86c6e0a9",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "039732340d64272873060084bbcdbb177ccd8df758c14c24ec3e079b86c6e0a9",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00018-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00019-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/5eec4ae9a9e33bd24614a604d633179959599b8454e14c8038b70384bde77480",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "5eec4ae9a9e33bd24614a604d633179959599b8454e14c8038b70384bde77480",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00019-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00020-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/3beeb96d751c47d4229b456e6d6709397afda3417ae68a9757dd074f8086c17f",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "3beeb96d751c47d4229b456e6d6709397afda3417ae68a9757dd074f8086c17f",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00020-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00021-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/22225ef4bcd2030fcc0ef5c7af0f567410f325233ab16165d7367c22f834ae83",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "22225ef4bcd2030fcc0ef5c7af0f567410f325233ab16165d7367c22f834ae83",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00021-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00022-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/c923b877ec087c2e6afee9cd0783e55748a139a70ee0249717cec6726341dcf7",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "c923b877ec087c2e6afee9cd0783e55748a139a70ee0249717cec6726341dcf7",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00022-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00023-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/1ece40a0c1fdb5cdfec73021123d97ac6be234c27d95e770d1d28e1b0fbc7956",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "1ece40a0c1fdb5cdfec73021123d97ac6be234c27d95e770d1d28e1b0fbc7956",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00023-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00024-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/08deef7048aaa92596b5d1db1012351570846f386ce408775803a48e17b46c06",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "08deef7048aaa92596b5d1db1012351570846f386ce408775803a48e17b46c06",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00024-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00025-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/da7a511849df5278f220456b70fcbd720d74bd5fef9c6474e67b785209c51adc",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "da7a511849df5278f220456b70fcbd720d74bd5fef9c6474e67b785209c51adc",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00025-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00026-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/d5abdd887693411d5006109dde61a04329562bad47ed3f818aff754bc400ced0",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "d5abdd887693411d5006109dde61a04329562bad47ed3f818aff754bc400ced0",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00026-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00027-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/eb72f42f8eb63f5a372565f18f56398ff291932c00c8343cd4f11a8fed71349e",
+      "size_bytes": 4362144056,
+      "digest_algorithm": "sha256",
+      "digest": "eb72f42f8eb63f5a372565f18f56398ff291932c00c8343cd4f11a8fed71349e",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00027-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00028-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/0b49cd96e7467b117f59aa60a32ecd5700e8e45ac34c728b08ec400293ffccac",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "0b49cd96e7467b117f59aa60a32ecd5700e8e45ac34c728b08ec400293ffccac",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00028-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00029-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/569262cbb67d4ec0b64ade6f78c3af82aea78d3667d330c4e724a35b21bd0c3c",
+      "size_bytes": 4664167416,
+      "digest_algorithm": "sha256",
+      "digest": "569262cbb67d4ec0b64ade6f78c3af82aea78d3667d330c4e724a35b21bd0c3c",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00029-of-00030.safetensors"
+    },
+    {
+      "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model-00030-of-00030.safetensors",
+      "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/8a56736b4e8ce65d66490a3fffa3a4ef09f84e379ab4b495d80df638617208ea",
+      "size_bytes": 8644578952,
+      "digest_algorithm": "sha256",
+      "digest": "8a56736b4e8ce65d66490a3fffa3a4ef09f84e379ab4b495d80df638617208ea",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model-00030-of-00030.safetensors"
+    }
+  ],
+  "index_artifact": {
+    "cache_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/snapshots/504d5e6f36ee17b795662f11bfb2dbb5164f6ac5/model.safetensors.index.json",
+    "resolved_path": "/home/mbravo/.cache/huggingface/hub/models--latam-gpt--Llama-3.1-70B-LatamGPT-SFT-1.0/blobs/528e24fe0047cd35e47195a34ac590562e8de284",
+    "size_bytes": 59614,
+    "digest_algorithm": "git-blob-sha1",
+    "digest": "528e24fe0047cd35e47195a34ac590562e8de284",
+    "digest_source": "huggingface-content-addressed-cache",
+    "repository_path": "model.safetensors.index.json"
+  },
+  "weights_fingerprint": "0b27e44a6f5106f073fb40d05650fbf17525b0ce833b1f5b95f76afd41caed0c",
+  "floating_numel": 70553706496,
+  "configuration": {
+    "model": {
+      "key": "latamgpt-70b",
+      "label": "LatamGPT-70B",
+      "family": "Llama 3 / LatamGPT",
+      "suites": [
+        "model-storing"
+      ],
+      "backend": "hf",
+      "source": "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
+      "parameters_b": 70.0,
+      "constructor": null,
+      "subfolder": null,
+      "weight_file": null,
+      "preferred_host": "godel"
+    },
+    "compressor": "NeuralZip",
+    "compressor_key": "neuralzip",
+    "dtype": "bfloat16",
+    "threads": 12,
+    "cpu_set": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "chunk_size": 262144,
+    "compression_threshold": 0.95,
+    "warmup_runs": 1,
+    "measured_runs": 1,
+    "smoke": false
+  },
+  "configuration_fingerprint": "ba9b0074fb0ad09e46ccbd96b6dc6913dd887614ba22ce7cc529f120e36901bb",
+  "code_digest": "bada4ee32f6231d2a15a287379298d8c78933d2be43a3f98e628bff4e3f1cb0e",
+  "host_fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55",
+  "job_fingerprint": "9c529660c76f423f3b7d0dda713fcb0cdeaff0e6d6a7d5e9113b3148eca0b4db",
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_runs": 1,
+  "measured_runs": 1,
+  "verified_warmup": true,
+  "load_seconds": 1.060387914068997,
+  "started_at": "2026-07-18T04:20:22.531987+00:00",
+  "finished_at": "2026-07-18T05:31:06.215559+00:00",
+  "encode_seconds": 80.10672089923173,
+  "codec_encode_seconds": 80.10672089923173,
+  "input_copy_seconds": 0.0,
+  "setup_seconds": 686.2747642127797,
+  "exponent_raw_bytes": 70553706496,
+  "exponent_data_bytes": 22842578091,
+  "exponent_metadata_bytes": 9189599,
+  "exponent_group_metadata_bytes": 9179650,
+  "exponent_codebook_metadata_bytes": 9949,
+  "exponent_compressed_bytes": 22851767690,
+  "exponent_ratio_pct": 32.38918098696284,
+  "tensor_count": 723,
+  "chunk_count": 538433,
+  "roundtrip_ok": true,
+  "clusters": 76,
+  "codebooks": 62
+}

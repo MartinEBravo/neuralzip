@@ -1,0 +1,39 @@
+{
+  "architecture": "resnet34",
+  "dataset": "CIFAR-10",
+  "dataset_source": "CIFAR-10 Python archive",
+  "dtype": "float32",
+  "clients": 10,
+  "rounds": 200,
+  "local_batches": 1,
+  "batch_size": 64,
+  "learning_rate": 0.02,
+  "seed": 2026,
+  "train_subset": null,
+  "device": "cuda",
+  "threads": 12,
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "compressors": [
+    "ZipNN src",
+    "NeuralZip"
+  ],
+  "warmup_runs": 1,
+  "trajectory": "NeuralZip-decoded FP32 states after bitwise equality with ZipNN-src decoded states",
+  "time_metric": "downlink encode plus maximum client uplink encode per round; decode and training excluded",
+  "ratio_metric": "exact exponent-group payload plus its group metadata divided by raw exponent symbols; the final summary also reports the ratio after charging the one-time codebooks once per client",
+  "archive_metric": "diagnostic full per-tensor payload bytes only; the thesis comparison uses exponent ratios, not this implementation-specific field",
+  "host": "relela-06",
+  "python": "3.11.15",
+  "torch": "2.5.1+cu121",
+  "setup": {
+    "ZipNN src": {
+      "seconds": 0.0,
+      "bytes": 0
+    },
+    "NeuralZip": {
+      "seconds": 3.381071458104998,
+      "bytes": 776
+    }
+  }
+}

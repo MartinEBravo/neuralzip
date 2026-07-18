@@ -908,6 +908,112 @@ def torchvision_checkpoint(spec: ModelSpec) -> Path:
     return Path(torch.hub.get_dir()) / "checkpoints" / Path(str(weights.url)).name
 
 
+def _cached_hf_snapshot(
+    repo_id: str,
+    *,
+    cache_dir: Path,
+    revision: str | None,
+) -> Path:
+    """Resolve one Hub snapshot without consulting or mutating the network cache.
+
+    ``snapshot_download(local_files_only=True)`` still applies ``allow_patterns``
+    to the complete cached Hub manifest.  For repositories that publish both an
+    indexed checkpoint and an alternate monolithic checkpoint, that makes an
+    otherwise complete indexed snapshot look incomplete when the alternate was
+    deliberately not cached.  Resolve the revision directly from the standard
+    Hub cache layout instead; checkpoint completeness is validated afterwards
+    against the selected index.
+    """
+
+    from huggingface_hub.constants import DEFAULT_REVISION
+    from huggingface_hub.file_download import repo_folder_name
+
+    requested_revision = str(revision or DEFAULT_REVISION)
+    revision_path = Path(requested_revision)
+    if (
+        not requested_revision
+        or revision_path.is_absolute()
+        or ".." in revision_path.parts
+        or "\\" in requested_revision
+    ):
+        raise ValueError(f"Invalid Hugging Face revision {requested_revision!r}.")
+
+    repo_cache = cache_dir / repo_folder_name(repo_id=repo_id, repo_type="model")
+    snapshots_dir = repo_cache / "snapshots"
+    refs_dir = repo_cache / "refs"
+    if not snapshots_dir.is_dir():
+        raise FileNotFoundError(
+            f"No cached Hugging Face snapshots found for {repo_id!r} under "
+            f"{repo_cache}."
+        )
+
+    ref_path = refs_dir.joinpath(*revision_path.parts)
+    direct_snapshot = (
+        snapshots_dir / requested_revision
+        if len(revision_path.parts) == 1
+        else None
+    )
+    ref_snapshot: Path | None = None
+    if ref_path.is_file():
+        ref_lines = [line.strip() for line in ref_path.read_text().splitlines()]
+        ref_lines = [line for line in ref_lines if line]
+        if len(ref_lines) != 1:
+            raise ValueError(
+                f"Cached Hugging Face ref {ref_path} must contain exactly one "
+                "snapshot revision."
+            )
+        resolved_revision = ref_lines[0]
+        if (
+            Path(resolved_revision).name != resolved_revision
+            or resolved_revision in {".", ".."}
+            or "\\" in resolved_revision
+        ):
+            raise ValueError(
+                f"Cached Hugging Face ref {ref_path} contains an invalid snapshot "
+                f"revision {resolved_revision!r}."
+            )
+        ref_snapshot = snapshots_dir / resolved_revision
+
+    if (
+        ref_snapshot is not None
+        and direct_snapshot is not None
+        and direct_snapshot.is_dir()
+        and direct_snapshot != ref_snapshot
+    ):
+        raise ValueError(
+            f"Cached Hugging Face revision {requested_revision!r} for {repo_id!r} "
+            f"is ambiguous: the ref selects {ref_snapshot.name!r}, while a direct "
+            f"snapshot named {direct_snapshot.name!r} also exists."
+        )
+
+    if ref_snapshot is not None:
+        snapshot = ref_snapshot
+    elif direct_snapshot is not None and direct_snapshot.is_dir():
+        # A resolved commit SHA passed by a previous job is pinned directly to
+        # its snapshot directory and must not silently follow a moving ref.
+        snapshot = direct_snapshot
+    else:
+        available = sorted(path.name for path in snapshots_dir.iterdir() if path.is_dir())
+        if len(available) > 1:
+            raise ValueError(
+                f"Cached Hugging Face revision {requested_revision!r} for {repo_id!r} "
+                "cannot be resolved unambiguously because its ref is missing; "
+                f"available snapshots: {', '.join(available)}."
+            )
+        detail = f" Available snapshot: {available[0]}." if available else ""
+        raise FileNotFoundError(
+            f"Cached Hugging Face revision {requested_revision!r} for {repo_id!r} "
+            f"has no ref or matching snapshot under {repo_cache}.{detail}"
+        )
+
+    if not snapshot.is_dir():
+        raise FileNotFoundError(
+            f"Cached Hugging Face revision {requested_revision!r} for {repo_id!r} "
+            f"points to missing snapshot {snapshot}."
+        )
+    return snapshot
+
+
 def snapshot_weight_files(
     spec: ModelSpec,
     *,
@@ -915,8 +1021,6 @@ def snapshot_weight_files(
     allow_download: bool,
     revision: str | None = None,
 ) -> CheckpointSelection:
-    from huggingface_hub import snapshot_download
-
     prefix = f"{spec.subfolder}/" if spec.subfolder else ""
     if spec.weight_file:
         patterns = (
@@ -934,15 +1038,24 @@ def snapshot_weight_files(
             "config.json",
             f"{prefix}config.json",
         )
-    snapshot = Path(
-        snapshot_download(
-            repo_id=spec.source,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_patterns=patterns,
-            local_files_only=not allow_download,
+    if allow_download:
+        from huggingface_hub import snapshot_download
+
+        snapshot = Path(
+            snapshot_download(
+                repo_id=spec.source,
+                revision=revision,
+                cache_dir=cache_dir,
+                allow_patterns=patterns,
+                local_files_only=False,
+            )
         )
-    )
+    else:
+        snapshot = _cached_hf_snapshot(
+            spec.source,
+            cache_dir=cache_dir,
+            revision=revision,
+        )
     root = snapshot / spec.subfolder if spec.subfolder else snapshot
     if spec.weight_file:
         selected = snapshot / spec.weight_file

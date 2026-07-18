@@ -1,0 +1,54 @@
+[
+  {
+    "adjusted_mutual_information": -0.10744308070338272,
+    "dtype": "bfloat16",
+    "js_clusters": 96,
+    "js_threshold": 0.05,
+    "mean_pair_js": 0.15056906350037327,
+    "model": "GPT-2",
+    "model_slug": "gpt2",
+    "paired_depths": 12,
+    "representative_pair": "FFN expansion--reduction",
+    "same_cluster_pct": 8.333333333333332,
+    "tensors": 148
+  },
+  {
+    "adjusted_mutual_information": 1.0,
+    "dtype": "bfloat16",
+    "js_clusters": 111,
+    "js_threshold": 0.05,
+    "mean_pair_js": 0.03313763167185413,
+    "model": "BERT Base",
+    "model_slug": "bert-base",
+    "paired_depths": 12,
+    "representative_pair": "FFN expansion--reduction",
+    "same_cluster_pct": 100.0,
+    "tensors": 199
+  },
+  {
+    "adjusted_mutual_information": 1.0,
+    "dtype": "bfloat16",
+    "js_clusters": 44,
+    "js_threshold": 0.05,
+    "mean_pair_js": 0.03037551188048182,
+    "model": "ResNet-18",
+    "model_slug": "resnet18",
+    "paired_depths": 4,
+    "representative_pair": "Adjacent block convolutions",
+    "same_cluster_pct": 100.0,
+    "tensors": 62
+  },
+  {
+    "adjusted_mutual_information": 0.39625624794057374,
+    "dtype": "bfloat16",
+    "js_clusters": 77,
+    "js_threshold": 0.05,
+    "mean_pair_js": 0.054300990006189785,
+    "model": "ResNet-34",
+    "model_slug": "resnet34",
+    "paired_depths": 12,
+    "representative_pair": "Adjacent block convolutions",
+    "same_cluster_pct": 58.333333333333336,
+    "tensors": 110
+  }
+]

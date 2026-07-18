@@ -1,0 +1,97 @@
+js_cluster,tensors,roles,dominant_role,role_purity,members
+js_019,24,5,h.#.mlp.c_fc.weight,0.4583333333333333,h.1.mlp.c_fc.weight | h.10.attn.c_attn.weight | h.10.mlp.c_fc.weight | h.11.attn.c_attn.weight | h.11.mlp.c_fc.weight | h.2.mlp.c_fc.weight | h.3.mlp.c_fc.weight | h.4.mlp.c_fc.bias | h.4.mlp.c_fc.weight | h.5.attn.c_attn.weight | h.5.mlp.c_fc.weight | h.6.attn.c_attn.weight | h.6.mlp.c_fc.weight | h.7.attn.c_attn.weight | h.7.mlp.c_fc.bias | h.7.mlp.c_fc.weight | h.8.attn.c_attn.weight | h.8.attn.c_proj.weight | h.8.mlp.c_fc.bias | h.8.mlp.c_fc.weight | h.8.mlp.c_proj.weight | h.9.attn.c_attn.weight | h.9.attn.c_proj.weight | h.9.mlp.c_fc.weight
+js_011,10,2,h.#.mlp.c_proj.weight,0.5,h.0.mlp.c_proj.weight | h.1.attn.c_proj.weight | h.1.mlp.c_proj.weight | h.2.attn.c_proj.weight | h.2.mlp.c_proj.weight | h.3.attn.c_proj.weight | h.3.mlp.c_proj.weight | h.4.attn.c_proj.weight | h.4.mlp.c_proj.weight | h.5.attn.c_proj.weight
+js_023,6,4,h.#.attn.c_proj.weight,0.3333333333333333,h.10.attn.c_proj.weight | h.11.attn.c_proj.weight | h.2.attn.c_proj.bias | h.3.attn.c_attn.weight | h.4.attn.c_attn.weight | wte.weight
+js_069,5,3,h.#.attn.c_proj.weight,0.4,h.6.attn.c_proj.bias | h.6.attn.c_proj.weight | h.6.mlp.c_proj.weight | h.7.attn.c_proj.weight | h.7.mlp.c_proj.weight
+js_063,4,1,h.#.ln_1.weight,1.0,h.5.ln_1.weight | h.6.ln_1.weight | h.7.ln_1.weight | h.8.ln_1.weight
+js_009,3,2,h.#.attn.c_attn.weight,0.6666666666666666,h.0.mlp.c_fc.weight | h.1.attn.c_attn.weight | h.2.attn.c_attn.weight
+js_025,2,1,h.#.ln_1.weight,1.0,h.10.ln_1.weight | h.9.ln_1.weight
+js_030,2,1,h.#.mlp.c_proj.weight,1.0,h.10.mlp.c_proj.weight | h.11.mlp.c_proj.weight
+js_065,2,1,h.#.mlp.c_fc.bias,1.0,h.5.mlp.c_fc.bias | h.6.mlp.c_fc.bias
+js_078,2,1,h.#.ln_2.weight,1.0,h.7.ln_2.weight | h.8.ln_2.weight
+js_043,2,2,h.#.ln_2.weight,0.5,h.2.ln_2.weight | h.3.ln_1.weight
+js_056,2,2,h.#.ln_1.weight,0.5,h.4.ln_1.weight | h.5.ln_2.weight
+js_000,1,1,h.#.attn.c_attn.bias,1.0,h.0.attn.c_attn.bias
+js_001,1,1,h.#.attn.c_attn.weight,1.0,h.0.attn.c_attn.weight
+js_002,1,1,h.#.attn.c_proj.bias,1.0,h.0.attn.c_proj.bias
+js_003,1,1,h.#.attn.c_proj.weight,1.0,h.0.attn.c_proj.weight
+js_004,1,1,h.#.ln_1.bias,1.0,h.0.ln_1.bias
+js_005,1,1,h.#.ln_1.weight,1.0,h.0.ln_1.weight
+js_006,1,1,h.#.ln_2.bias,1.0,h.0.ln_2.bias
+js_007,1,1,h.#.ln_2.weight,1.0,h.0.ln_2.weight
+js_008,1,1,h.#.mlp.c_fc.bias,1.0,h.0.mlp.c_fc.bias
+js_010,1,1,h.#.mlp.c_proj.bias,1.0,h.0.mlp.c_proj.bias
+js_012,1,1,h.#.attn.c_attn.bias,1.0,h.1.attn.c_attn.bias
+js_013,1,1,h.#.attn.c_proj.bias,1.0,h.1.attn.c_proj.bias
+js_014,1,1,h.#.ln_1.bias,1.0,h.1.ln_1.bias
+js_015,1,1,h.#.ln_1.weight,1.0,h.1.ln_1.weight
+js_016,1,1,h.#.ln_2.bias,1.0,h.1.ln_2.bias
+js_017,1,1,h.#.ln_2.weight,1.0,h.1.ln_2.weight
+js_018,1,1,h.#.mlp.c_fc.bias,1.0,h.1.mlp.c_fc.bias
+js_020,1,1,h.#.mlp.c_proj.bias,1.0,h.1.mlp.c_proj.bias
+js_021,1,1,h.#.attn.c_attn.bias,1.0,h.10.attn.c_attn.bias
+js_022,1,1,h.#.attn.c_proj.bias,1.0,h.10.attn.c_proj.bias
+js_024,1,1,h.#.ln_1.bias,1.0,h.10.ln_1.bias
+js_026,1,1,h.#.ln_2.bias,1.0,h.10.ln_2.bias
+js_027,1,1,h.#.ln_2.weight,1.0,h.10.ln_2.weight
+js_028,1,1,h.#.mlp.c_fc.bias,1.0,h.10.mlp.c_fc.bias
+js_029,1,1,h.#.mlp.c_proj.bias,1.0,h.10.mlp.c_proj.bias
+js_031,1,1,h.#.attn.c_attn.bias,1.0,h.11.attn.c_attn.bias
+js_032,1,1,h.#.attn.c_proj.bias,1.0,h.11.attn.c_proj.bias
+js_033,1,1,h.#.ln_1.bias,1.0,h.11.ln_1.bias
+js_034,1,1,h.#.ln_1.weight,1.0,h.11.ln_1.weight
+js_035,1,1,h.#.ln_2.bias,1.0,h.11.ln_2.bias
+js_036,1,1,h.#.ln_2.weight,1.0,h.11.ln_2.weight
+js_037,1,1,h.#.mlp.c_fc.bias,1.0,h.11.mlp.c_fc.bias
+js_038,1,1,h.#.mlp.c_proj.bias,1.0,h.11.mlp.c_proj.bias
+js_039,1,1,h.#.attn.c_attn.bias,1.0,h.2.attn.c_attn.bias
+js_040,1,1,h.#.ln_1.bias,1.0,h.2.ln_1.bias
+js_041,1,1,h.#.ln_1.weight,1.0,h.2.ln_1.weight
+js_042,1,1,h.#.ln_2.bias,1.0,h.2.ln_2.bias
+js_044,1,1,h.#.mlp.c_fc.bias,1.0,h.2.mlp.c_fc.bias
+js_045,1,1,h.#.mlp.c_proj.bias,1.0,h.2.mlp.c_proj.bias
+js_046,1,1,h.#.attn.c_attn.bias,1.0,h.3.attn.c_attn.bias
+js_047,1,1,h.#.attn.c_proj.bias,1.0,h.3.attn.c_proj.bias
+js_048,1,1,h.#.ln_1.bias,1.0,h.3.ln_1.bias
+js_049,1,1,h.#.ln_2.bias,1.0,h.3.ln_2.bias
+js_050,1,1,h.#.ln_2.weight,1.0,h.3.ln_2.weight
+js_051,1,1,h.#.mlp.c_fc.bias,1.0,h.3.mlp.c_fc.bias
+js_052,1,1,h.#.mlp.c_proj.bias,1.0,h.3.mlp.c_proj.bias
+js_053,1,1,h.#.attn.c_attn.bias,1.0,h.4.attn.c_attn.bias
+js_054,1,1,h.#.attn.c_proj.bias,1.0,h.4.attn.c_proj.bias
+js_055,1,1,h.#.ln_1.bias,1.0,h.4.ln_1.bias
+js_057,1,1,h.#.ln_2.bias,1.0,h.4.ln_2.bias
+js_058,1,1,h.#.ln_2.weight,1.0,h.4.ln_2.weight
+js_059,1,1,h.#.mlp.c_proj.bias,1.0,h.4.mlp.c_proj.bias
+js_060,1,1,h.#.attn.c_attn.bias,1.0,h.5.attn.c_attn.bias
+js_061,1,1,h.#.attn.c_proj.bias,1.0,h.5.attn.c_proj.bias
+js_062,1,1,h.#.ln_1.bias,1.0,h.5.ln_1.bias
+js_064,1,1,h.#.ln_2.bias,1.0,h.5.ln_2.bias
+js_066,1,1,h.#.mlp.c_proj.bias,1.0,h.5.mlp.c_proj.bias
+js_067,1,1,h.#.mlp.c_proj.weight,1.0,h.5.mlp.c_proj.weight
+js_068,1,1,h.#.attn.c_attn.bias,1.0,h.6.attn.c_attn.bias
+js_070,1,1,h.#.ln_1.bias,1.0,h.6.ln_1.bias
+js_071,1,1,h.#.ln_2.bias,1.0,h.6.ln_2.bias
+js_072,1,1,h.#.ln_2.weight,1.0,h.6.ln_2.weight
+js_073,1,1,h.#.mlp.c_proj.bias,1.0,h.6.mlp.c_proj.bias
+js_074,1,1,h.#.attn.c_attn.bias,1.0,h.7.attn.c_attn.bias
+js_075,1,1,h.#.attn.c_proj.bias,1.0,h.7.attn.c_proj.bias
+js_076,1,1,h.#.ln_1.bias,1.0,h.7.ln_1.bias
+js_077,1,1,h.#.ln_2.bias,1.0,h.7.ln_2.bias
+js_079,1,1,h.#.mlp.c_proj.bias,1.0,h.7.mlp.c_proj.bias
+js_080,1,1,h.#.attn.c_attn.bias,1.0,h.8.attn.c_attn.bias
+js_081,1,1,h.#.attn.c_proj.bias,1.0,h.8.attn.c_proj.bias
+js_082,1,1,h.#.ln_1.bias,1.0,h.8.ln_1.bias
+js_083,1,1,h.#.ln_2.bias,1.0,h.8.ln_2.bias
+js_084,1,1,h.#.mlp.c_proj.bias,1.0,h.8.mlp.c_proj.bias
+js_085,1,1,h.#.attn.c_attn.bias,1.0,h.9.attn.c_attn.bias
+js_086,1,1,h.#.attn.c_proj.bias,1.0,h.9.attn.c_proj.bias
+js_087,1,1,h.#.ln_1.bias,1.0,h.9.ln_1.bias
+js_088,1,1,h.#.ln_2.bias,1.0,h.9.ln_2.bias
+js_089,1,1,h.#.ln_2.weight,1.0,h.9.ln_2.weight
+js_090,1,1,h.#.mlp.c_fc.bias,1.0,h.9.mlp.c_fc.bias
+js_091,1,1,h.#.mlp.c_proj.bias,1.0,h.9.mlp.c_proj.bias
+js_092,1,1,h.#.mlp.c_proj.weight,1.0,h.9.mlp.c_proj.weight
+js_093,1,1,ln_f.bias,1.0,ln_f.bias
+js_094,1,1,ln_f.weight,1.0,ln_f.weight
+js_095,1,1,wpe.weight,1.0,wpe.weight

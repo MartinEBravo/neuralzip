@@ -1,0 +1,13 @@
+depth,left,right,left_cluster,right_cluster,same_cluster,js_distance
+0,h.0.mlp.c_fc.weight,h.0.mlp.c_proj.weight,js_009,js_011,False,0.23243884684183985
+1,h.1.mlp.c_fc.weight,h.1.mlp.c_proj.weight,js_019,js_011,False,0.21452558185742393
+10,h.10.mlp.c_fc.weight,h.10.mlp.c_proj.weight,js_019,js_030,False,0.16035444434073107
+11,h.11.mlp.c_fc.weight,h.11.mlp.c_proj.weight,js_019,js_030,False,0.19356108914719172
+2,h.2.mlp.c_fc.weight,h.2.mlp.c_proj.weight,js_019,js_011,False,0.19516455730835433
+3,h.3.mlp.c_fc.weight,h.3.mlp.c_proj.weight,js_019,js_011,False,0.19952709875830427
+4,h.4.mlp.c_fc.weight,h.4.mlp.c_proj.weight,js_019,js_011,False,0.19319993582257125
+5,h.5.mlp.c_fc.weight,h.5.mlp.c_proj.weight,js_019,js_067,False,0.14561718341361068
+6,h.6.mlp.c_fc.weight,h.6.mlp.c_proj.weight,js_019,js_069,False,0.09697534469869472
+7,h.7.mlp.c_fc.weight,h.7.mlp.c_proj.weight,js_019,js_069,False,0.04723184028207395
+8,h.8.mlp.c_fc.weight,h.8.mlp.c_proj.weight,js_019,js_019,True,0.03101997076249593
+9,h.9.mlp.c_fc.weight,h.9.mlp.c_proj.weight,js_019,js_092,False,0.09721286877118773

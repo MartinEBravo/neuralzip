@@ -1,0 +1,5 @@
+model_slug,model,dtype,js_threshold,tensors,js_clusters,representative_pair,paired_depths,same_cluster_pct,adjusted_mutual_information,mean_pair_js
+gpt2,GPT-2,bfloat16,0.05,148,96,FFN expansion--reduction,12,8.333333333333332,-0.10744308070338272,0.15056906350037327
+bert-base,BERT Base,bfloat16,0.05,199,111,FFN expansion--reduction,12,100.0,1.0,0.03313763167185413
+resnet18,ResNet-18,bfloat16,0.05,62,44,Adjacent block convolutions,4,100.0,1.0,0.03037551188048182
+resnet34,ResNet-34,bfloat16,0.05,110,77,Adjacent block convolutions,12,58.333333333333336,0.39625624794057374,0.054300990006189785

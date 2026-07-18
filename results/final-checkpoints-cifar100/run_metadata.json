@@ -1,0 +1,56 @@
+{
+  "experiment": "final-training-checkpoint-suite",
+  "models": [
+    {
+      "slug": "resnet18",
+      "label": "ResNet-18",
+      "optimizer": "sgd",
+      "learning_rate": 0.1,
+      "weight_decay": 0.0005
+    },
+    {
+      "slug": "resnet34",
+      "label": "ResNet-34",
+      "optimizer": "sgd",
+      "learning_rate": 0.1,
+      "weight_decay": 0.0005
+    },
+    {
+      "slug": "convnext_tiny",
+      "label": "ConvNeXt-Tiny",
+      "optimizer": "adamw",
+      "learning_rate": 0.004,
+      "weight_decay": 0.05
+    },
+    {
+      "slug": "efficientnet_b0",
+      "label": "EfficientNet-B0",
+      "optimizer": "sgd",
+      "learning_rate": 0.1,
+      "weight_decay": 0.0005
+    }
+  ],
+  "dataset": "uoft-cs/cifar100-parquet",
+  "dataset_is_real": true,
+  "epochs": 50,
+  "seed": 2026,
+  "checkpoint_dtype": "float32 exact model state",
+  "checkpoint_schedule": "epoch 0 and the end of every epoch",
+  "compression_schedule": "post-hoc isolated CPU benchmark of every saved epoch",
+  "compressors": [
+    "ZipNN src 0.5.4",
+    "NeuralZip frozen epoch-0 plan"
+  ],
+  "ratio_scope": "exponent symbols + raw fallback + metadata",
+  "timing": {
+    "threads": 12,
+    "warmup_runs": 1,
+    "measured_repetitions": 1,
+    "neuralzip_setup": "once at epoch 0, outside encode time",
+    "neuralzip_target_mapping": "outside encode time and reported separately",
+    "zipnn_src_input_clone": "inside encode time; required because ZipNN 0.5.4 mutates its input"
+  },
+  "verification": "bitwise round-trip for every FP32 floating tensor and explicit input immutability after each compressor",
+  "existing_checkpoint_root": null,
+  "smoke_only": false
+}

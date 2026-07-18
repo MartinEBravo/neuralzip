@@ -85,12 +85,12 @@ MODEL_SUITE = [
         "access": "gated",
     },
     {
-        "name": "Llama-3.1-8B",
-        "model_id": "meta-llama/Llama-3.1-8B",
+        "name": "Llama-3.1-Nemotron-Nano-8B-v1",
+        "model_id": "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
         "parameters_b": 8.0,
         "default_dtype": "bf16",
         "category": "model-storing",
-        "access": "gated",
+        "access": "open",
     },
     {
         "name": "Llama 3.3 70B Instruct",

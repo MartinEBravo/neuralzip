@@ -62,6 +62,7 @@ MODEL_STORAGE_FAMILY_ORDER = {
     "Gemma 3": 9,
     "Gemma 4": 9,
     "Llama 3": 10,
+    "Llama 3 / derivatives": 10,
     "Llama 3 / LatamGPT": 11,
 }
 
@@ -244,12 +245,12 @@ MODEL_SPECS = (
         3.0,
     ),
     ModelSpec(
-        "llama31-8b",
-        "Llama-3.1-8B",
-        "Llama 3",
+        "llama31-nemotron-8b",
+        "Llama-3.1-Nemotron-Nano-8B-v1",
+        "Llama 3 / derivatives",
         ("model-storing",),
         "hf",
-        "meta-llama/Llama-3.1-8B",
+        "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
         8.0,
     ),
     ModelSpec(

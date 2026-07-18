@@ -126,6 +126,10 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
         "representation": "4-bit quantized",
         "category": "quantized",
         "access": "open-or-token",
+        "artifact_selector": {
+            "kind": "safetensors-index",
+            "index": "model.safetensors.index.json",
+        },
     },
     {
         "name": "Phi-4 14B-4bit",
@@ -135,6 +139,10 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
         "representation": "4-bit quantized",
         "category": "quantized",
         "access": "open",
+        "artifact_selector": {
+            "kind": "safetensors-index",
+            "index": "model.safetensors.index.json",
+        },
     },
     {
         "name": "Qwen3.5 27B-4bit",
@@ -144,6 +152,10 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
         "representation": "4-bit quantized",
         "category": "quantized",
         "access": "open",
+        "artifact_selector": {
+            "kind": "exact-files",
+            "files": ("model.safetensors",),
+        },
     },
     {
         "name": "LatamGPT-70B-4bit",
@@ -153,6 +165,10 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
         "representation": "4-bit quantized",
         "category": "quantized",
         "access": "open",
+        "artifact_selector": {
+            "kind": "exact-files",
+            "files": ("latamgpt-Q4_K_M.gguf",),
+        },
     },
     {
         "name": "Llama-3-8B-Instruct-Distilled",

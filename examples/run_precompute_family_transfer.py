@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +42,15 @@ class PairSpec:
     source_dir: str | None
     target_id: str
     target_dir: str | None
+    source_revision: str | None = None
+    target_revision: str | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotSelection:
+    files: tuple[Path, ...]
+    index_path: Path | None = None
+    expected_keys: frozenset[str] | None = None
 
 
 PAIR_SPECS = {
@@ -62,6 +73,8 @@ PAIR_SPECS = {
             source_dir="qwen35-2b",
             target_id="Qwen/Qwen3.5-0.8B-Base",
             target_dir="qwen35-08b",
+            source_revision="b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+            target_revision="dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
         ),
         PairSpec(
             key="gemma",
@@ -71,6 +84,8 @@ PAIR_SPECS = {
             source_dir="gemma3-4b-pt",
             target_id="google/gemma-3-1b-pt",
             target_dir="gemma3-1b-pt",
+            source_revision="cc012e0a6d0787b4adcc0fa2c4da74402494554d",
+            target_revision="fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
         ),
         PairSpec(
             key="siglip",
@@ -80,6 +95,8 @@ PAIR_SPECS = {
             source_dir="siglip2-giant-opt-384",
             target_id="google/siglip2-so400m-patch16-384",
             target_dir="siglip2-so400m-384",
+            source_revision="a713301b217d38485fb2204c808367d10bc3cc40",
+            target_revision="dd658faac399427308559e2c3ac1e99cbe43845d",
         ),
         PairSpec(
             key="whisper",
@@ -89,6 +106,8 @@ PAIR_SPECS = {
             source_dir="whisper-large-v3",
             target_id="openai/whisper-large-v3-turbo",
             target_dir="whisper-large-v3-turbo",
+            source_revision="06f233fe06e710322aca913c1bc4249a0d71fce1",
+            target_revision="41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
         ),
     )
 }
@@ -109,19 +128,235 @@ def parse_args():
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=32)
+    parser.add_argument(
+        "--source-revision",
+        help="Optional source commit override; defaults to the pinned pair commit.",
+    )
+    parser.add_argument(
+        "--target-revision",
+        help="Optional target commit override; defaults to the pinned pair commit.",
+    )
     return parser.parse_args()
 
 
-def ensure_snapshot(repo_id: str, path: Path):
-    if (path / "config.json").is_file():
-        return
+def _sha256_file(path: Path, *, block_bytes: int = 8 << 20) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(block_bytes):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _canonical_digest(value: object) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _safe_snapshot_path(root: Path, value: object) -> Path:
+    relative = Path(str(value))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe checkpoint shard path: {value!r}")
+    return root / relative
+
+
+def select_snapshot_weights(path: Path) -> SnapshotSelection:
+    config = path / "config.json"
+    if not config.is_file():
+        raise FileNotFoundError(f"Snapshot has no config.json: {path}")
+
+    indexes = sorted(path.glob("*.safetensors.index.json"))
+    if indexes:
+        canonical = [
+            index for index in indexes if index.name == "model.safetensors.index.json"
+        ]
+        if len(canonical) == 1:
+            index_path = canonical[0]
+        elif len(indexes) == 1:
+            index_path = indexes[0]
+        else:
+            raise ValueError(
+                "Snapshot contains ambiguous safetensors indexes: "
+                + ", ".join(index.name for index in indexes)
+            )
+        index = json.loads(index_path.read_text())
+        weight_map = index.get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            raise ValueError(f"Checkpoint index has no weight_map: {index_path}")
+        shard_names = sorted({str(value) for value in weight_map.values()})
+        if any(not name.endswith(".safetensors") for name in shard_names):
+            raise ValueError(
+                f"Safetensors index references a non-safetensors shard: {index_path}"
+            )
+        files = tuple(_safe_snapshot_path(path, name) for name in shard_names)
+        missing = [file for file in files if not file.is_file() or file.stat().st_size <= 0]
+        if missing:
+            raise FileNotFoundError(
+                "Checkpoint index references missing or empty shards: "
+                + ", ".join(str(file) for file in missing)
+            )
+        return SnapshotSelection(
+            files=files,
+            index_path=index_path,
+            expected_keys=frozenset(str(key) for key in weight_map),
+        )
+
+    canonical = path / "model.safetensors"
+    if canonical.is_file() and canonical.stat().st_size > 0:
+        return SnapshotSelection(files=(canonical,))
+
+    orphan_shards = sorted(path.glob("*.safetensors"))
+    if orphan_shards:
+        raise ValueError(
+            "Snapshot has safetensors files but no authoritative index or "
+            f"model.safetensors: {path}"
+        )
+    raise FileNotFoundError(f"Snapshot has no authoritative weight file: {path}")
+
+
+def _download_metadata(path: Path, relative_path: str) -> dict | None:
+    metadata_path = (
+        path
+        / ".cache"
+        / "huggingface"
+        / "download"
+        / f"{relative_path}.metadata"
+    )
+    if not metadata_path.is_file():
+        return None
+    lines = metadata_path.read_text().splitlines()
+    if len(lines) < 3:
+        return None
+    try:
+        timestamp = float(lines[2])
+    except ValueError:
+        return None
+    artifact = path / relative_path
+    if not artifact.is_file() or artifact.stat().st_mtime - 1 > timestamp:
+        return None
+    return {"commit": lines[0], "etag": lines[1]}
+
+
+def snapshot_provenance(
+    repo_id: str,
+    path: Path,
+    selection: SnapshotSelection,
+    *,
+    expected_revision: str,
+) -> dict:
+    artifacts = []
+    commits = set()
+    every_weight_has_metadata = True
+    for file in selection.files:
+        relative_path = str(file.relative_to(path))
+        metadata = _download_metadata(path, relative_path)
+        if metadata is not None:
+            commits.add(str(metadata["commit"]))
+            digest = str(metadata["etag"])
+            digest_source = "huggingface-local-dir-metadata"
+        else:
+            every_weight_has_metadata = False
+            digest = _sha256_file(file)
+            digest_source = "computed-sha256"
+        artifacts.append(
+            {
+                "repository_path": relative_path,
+                "size_bytes": int(file.stat().st_size),
+                "digest": digest,
+                "digest_source": digest_source,
+            }
+        )
+    if len(commits) > 1:
+        raise ValueError(f"Snapshot mixes multiple revisions under {path}: {commits}")
+    resolved_revision = (
+        next(iter(commits))
+        if every_weight_has_metadata and len(commits) == 1
+        else None
+    )
+    if resolved_revision is not None and resolved_revision != expected_revision:
+        raise ValueError(
+            f"Snapshot revision mismatch for {repo_id}: "
+            f"{resolved_revision} != {expected_revision}"
+        )
+    payload = {
+        "repo_id": repo_id,
+        "requested_revision": expected_revision,
+        "resolved_revision": resolved_revision or expected_revision,
+        "revision_verified_by_metadata": resolved_revision is not None,
+        "weight_files": artifacts,
+        "weight_index": (
+            str(selection.index_path.relative_to(path))
+            if selection.index_path is not None
+            else None
+        ),
+        "indexed_tensor_keys": (
+            len(selection.expected_keys)
+            if selection.expected_keys is not None
+            else None
+        ),
+    }
+    payload["weight_fingerprint"] = _canonical_digest(artifacts)
+    return payload
+
+
+def ensure_snapshot(repo_id: str, path: Path, revision: str) -> dict:
+    if not re.fullmatch(r"[0-9a-f]{40}", str(revision)):
+        raise ValueError(f"Family snapshots require a pinned commit: {revision!r}")
+    try:
+        selection = select_snapshot_weights(path)
+        metadata = [
+            _download_metadata(path, str(file.relative_to(path)))
+            for file in selection.files
+        ]
+        commits = {
+            str(row["commit"])
+            for row in metadata
+            if row is not None
+        }
+        if len(commits) > 1:
+            raise ValueError(
+                f"Snapshot mixes multiple revisions under {path}: {commits}"
+            )
+        metadata_revision = (
+            next(iter(commits))
+            if metadata and all(row is not None for row in metadata)
+            else None
+        )
+        if metadata_revision == revision:
+            return snapshot_provenance(
+                repo_id,
+                path,
+                selection,
+                expected_revision=revision,
+            )
+    except (FileNotFoundError, ValueError):
+        # Reconcile an incomplete, stale, or unverified local directory against
+        # the immutable requested commit before accepting it as experiment input.
+        pass
     path.mkdir(parents=True, exist_ok=True)
     snapshot_download(
         repo_id=repo_id,
+        revision=revision,
         local_dir=path,
         allow_patterns=("*.json", "*.model", "*.safetensors", "*.txt"),
         ignore_patterns=("*.bin", "*.gguf", "*.h5", "*.msgpack", "*.onnx"),
     )
+    selection = select_snapshot_weights(path)
+    provenance = snapshot_provenance(
+        repo_id,
+        path,
+        selection,
+        expected_revision=revision,
+    )
+    if not provenance["revision_verified_by_metadata"]:
+        raise RuntimeError(
+            f"Downloaded snapshot has no verifiable revision metadata: {path}"
+        )
+    return provenance
 
 
 def load_hf_model(kind: str, path: Path):
@@ -168,31 +403,96 @@ def load_hf_model(kind: str, path: Path):
     return model
 
 
-def load_pair(spec: PairSpec, model_root: Path):
+def _torchvision_weight_provenance(model_id: str, weights) -> dict:
+    checkpoint = Path(torch.hub.get_dir()) / "checkpoints" / Path(weights.url).name
+    if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
+        raise FileNotFoundError(f"Torchvision checkpoint is missing: {checkpoint}")
+    artifacts = [
+        {
+            "repository_path": checkpoint.name,
+            "size_bytes": int(checkpoint.stat().st_size),
+            "digest": _sha256_file(checkpoint),
+            "digest_source": "computed-sha256",
+        }
+    ]
+    return {
+        "repo_id": model_id,
+        "requested_revision": str(weights),
+        "resolved_revision": str(weights),
+        "revision_verified_by_metadata": True,
+        "weight_files": artifacts,
+        "weight_index": None,
+        "indexed_tensor_keys": None,
+        "weight_fingerprint": _canonical_digest(artifacts),
+    }
+
+
+def load_pair(
+    spec: PairSpec,
+    model_root: Path,
+    *,
+    source_revision: str | None = None,
+    target_revision: str | None = None,
+):
     if spec.kind == "resnet":
         source = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
         target = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         return (
             source.eval().to(torch.bfloat16),
             target.eval().to(torch.bfloat16),
+            _torchvision_weight_provenance(
+                spec.source_id, ResNet34_Weights.IMAGENET1K_V1
+            ),
+            _torchvision_weight_provenance(
+                spec.target_id, ResNet18_Weights.IMAGENET1K_V1
+            ),
         )
 
     source_path = model_root / str(spec.source_dir)
     target_path = model_root / str(spec.target_dir)
-    ensure_snapshot(spec.source_id, source_path)
-    ensure_snapshot(spec.target_id, target_path)
+    source_revision = source_revision or spec.source_revision
+    target_revision = target_revision or spec.target_revision
+    if source_revision is None or target_revision is None:
+        raise ValueError(f"Pair {spec.key} has no pinned source/target revision.")
+    source_provenance = ensure_snapshot(
+        spec.source_id, source_path, source_revision
+    )
+    target_provenance = ensure_snapshot(
+        spec.target_id, target_path, target_revision
+    )
     return (
         load_hf_model(spec.kind, source_path),
         load_hf_model(spec.kind, target_path),
+        source_provenance,
+        target_provenance,
     )
 
 
 def floating_parameters(model):
-    return [
-        (name, parameter)
-        for name, parameter in model.named_parameters()
-        if parameter.is_floating_point() and parameter.numel() > 0
-    ]
+    """Return the complete floating model state exactly once per state key.
+
+    ``named_parameters()`` omits persistent floating buffers such as
+    BatchNorm running means and variances.  Family transfer is a checkpoint
+    experiment, so its input must match the complete floating ``state_dict``
+    used by the general storage runner.  Reading a single ``state_dict`` also
+    avoids the duplicate entries that would result from concatenating
+    parameters and buffers manually.
+    """
+
+    named_tensors = []
+    seen_names = set()
+    for raw_name, tensor in model.state_dict(keep_vars=True).items():
+        name = str(raw_name)
+        if name in seen_names:
+            raise RuntimeError(f"Duplicate state key: {name}")
+        seen_names.add(name)
+        if (
+            torch.is_tensor(tensor)
+            and tensor.is_floating_point()
+            and tensor.numel() > 0
+        ):
+            named_tensors.append((name, tensor))
+    return named_tensors
 
 
 def exponent_metrics(payloads, codebooks=()):
@@ -297,11 +597,26 @@ def setup_neuralzip(named_tensors, *, threads):
     }
 
 
-def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str):
+def run_pair(
+    spec: PairSpec,
+    model_root: Path,
+    threads: int,
+    transfer_mode: str,
+    *,
+    source_revision: str | None = None,
+    target_revision: str | None = None,
+):
+    if threads <= 0:
+        raise ValueError("threads must be positive.")
     torch.set_num_threads(threads)
     torch.set_num_interop_threads(1)
     print(f"[{spec.key}] loading source and target", flush=True)
-    source, target = load_pair(spec, model_root)
+    source, target, source_provenance, target_provenance = load_pair(
+        spec,
+        model_root,
+        source_revision=source_revision,
+        target_revision=target_revision,
+    )
     source_named = floating_parameters(source)
     target_named = floating_parameters(target)
     print(
@@ -373,16 +688,29 @@ def run_pair(spec: PairSpec, model_root: Path, threads: int, transfer_mode: str)
         verify=True,
     )
     zipnn = compress_with_codec(zipnn_codec, target_named)
+    verification = {
+        "zipnn": zipnn_verification["roundtrip_ok"],
+        "neuralzip_target_specific_direct": native_verification["roundtrip_ok"],
+        "neuralzip_transferred_direct": direct_verification["roundtrip_ok"],
+    }
+    failed_roundtrips = [name for name, ok in verification.items() if ok is not True]
+    if failed_roundtrips:
+        raise RuntimeError(
+            "Bitwise round-trip failed for: " + ", ".join(failed_roundtrips)
+        )
 
     output = {
         "pair": spec.key,
         "family": spec.family,
         "source_model": spec.source_id,
         "target_model": spec.target_id,
+        "source_weights": source_provenance,
+        "target_weights": target_provenance,
         "dtype": "bfloat16",
         "threads": threads,
         "transfer_mode": transfer_mode,
         "measured_repetitions": 1,
+        "runner_sha256": _sha256_file(Path(__file__).resolve()),
         "warmup": (
             "one uncached direct pass per measured encoding path; "
             "no exact target materialization"
@@ -491,8 +819,12 @@ def main():
         args.model_root,
         args.threads,
         args.transfer_mode,
+        source_revision=args.source_revision,
+        target_revision=args.target_revision,
     )
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2) + "\n")
+    temporary.replace(args.output)
     print(json.dumps(result, indent=2), flush=True)
 
 

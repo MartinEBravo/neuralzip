@@ -8,6 +8,7 @@ import math
 import platform
 import re
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -676,6 +677,60 @@ def compact_compression_result(result):
     return {key: value for key, value in result.items() if key not in excluded}
 
 
+def zipnn_exponent_metrics(result, method: str, threads: int):
+    """Return the complete BF16 exponent representation for local/src ZipNN."""
+
+    raw_bytes = 0
+    compressed_bytes = 0
+    if method == "zipnn-local":
+        for tensor_result in result["tensor_results"]:
+            payload = tensor_result["payload"]
+            exponent_group = payload.groups[int(payload.element_size) - 1]
+            raw_bytes += int(exponent_group.symbol_count)
+            compressed_bytes += int(exponent_group.compressed_bytes)
+        return raw_bytes, compressed_bytes
+
+    if method != "zipnn-src":
+        raise ValueError(method)
+
+    from zipnn import ZipNN
+
+    parser = ZipNN(
+        method="HUFFMAN",
+        input_format="torch",
+        threads=int(threads),
+        compression_threshold=0.95,
+        compression_chunk=256 << 10,
+    )
+    for tensor_result in result["tensor_results"]:
+        payload = tensor_result["payload"]
+        header_bytes = int(parser._retrieve_header(payload))
+        original_bytes = int(parser.original_len)
+        chunk_bytes = int(parser.compression_chunk)
+        if original_bytes % 2:
+            raise ValueError("ZipNN source BF16 payload has an odd byte length.")
+        chunk_count = math.ceil(original_bytes / chunk_bytes)
+        entry_count = 2 * chunk_count
+        offsets_start = header_bytes + entry_count
+        payload_start = offsets_start + struct.calcsize("P") * entry_count
+        if payload_start > len(payload):
+            raise ValueError("ZipNN source payload has truncated group metadata.")
+        offsets = struct.unpack_from(
+            f"<{entry_count}Q",
+            payload,
+            offsets_start,
+        )
+        low_payload_bytes = int(offsets[chunk_count - 1]) if chunk_count else 0
+        exponent_payload_bytes = int(offsets[-1]) if chunk_count else 0
+        if low_payload_bytes + exponent_payload_bytes != len(payload) - payload_start:
+            raise ValueError("ZipNN source group sizes do not match its payload.")
+        raw_bytes += original_bytes // 2
+        compressed_bytes += exponent_payload_bytes + chunk_count * (
+            1 + struct.calcsize("P")
+        )
+    return raw_bytes, compressed_bytes
+
+
 def run_zipnn_implementation(view: ModelView, threads: int):
     rows = []
     detailed = {}
@@ -693,12 +748,18 @@ def run_zipnn_implementation(view: ModelView, threads: int):
         result = Compressor(
             method,
             verify=True,
+            keep_payloads=True,
             zipnn_method="HUFFMAN",
             compression_threshold=0.95,
             threads=threads,
         ).compress(view)
         if result["roundtrip_ok"] is not True:
             raise RuntimeError(f"Round-trip failed for {view.spec.label} {method}.")
+        exponent_raw_bytes, exponent_compressed_bytes = zipnn_exponent_metrics(
+            result,
+            method,
+            threads,
+        )
         rows.append(
             {
                 "model": view.spec.label,
@@ -708,20 +769,29 @@ def run_zipnn_implementation(view: ModelView, threads: int):
                     result.get("codec_encode_seconds", result["encode_seconds"])
                 ),
                 "input_copy_seconds": float(result.get("input_copy_seconds", 0.0)),
-                "raw_bytes": int(result["raw_bytes"]),
-                "compressed_bytes": int(result["compressed_bytes"]),
+                "raw_bytes": exponent_raw_bytes,
+                "compressed_bytes": exponent_compressed_bytes,
                 "compressed_pct": 100.0
-                * int(result["compressed_bytes"])
-                / int(result["raw_bytes"]),
+                * exponent_compressed_bytes
+                / exponent_raw_bytes,
+                "full_raw_bytes": int(result["raw_bytes"]),
+                "full_compressed_bytes": int(result["compressed_bytes"]),
                 "roundtrip_ok": bool(result["roundtrip_ok"]),
             }
         )
-        detailed[method] = compact_compression_result(result)
+        detailed[method] = {
+            **compact_compression_result(result),
+            "exponent_raw_bytes": exponent_raw_bytes,
+            "exponent_compressed_bytes": exponent_compressed_bytes,
+            "exponent_ratio_pct": (
+                100.0 * exponent_compressed_bytes / exponent_raw_bytes
+            ),
+        }
         print(
             f"[{view.spec.slug}] {method}: total={result['encode_seconds']:.6f}s, "
             f"codec={result.get('codec_encode_seconds', result['encode_seconds']):.6f}s, "
             f"copy={result.get('input_copy_seconds', 0.0):.6f}s, "
-            f"{100.0 * result['compression_ratio']:.3f}%",
+            f"exponent={100.0 * exponent_compressed_bytes / exponent_raw_bytes:.3f}%",
             flush=True,
         )
     frame = pd.DataFrame(rows)
@@ -735,6 +805,7 @@ def run_zipnn_implementation(view: ModelView, threads: int):
                 "repetitions": 1,
                 "warmup_runs": 1,
                 "dtype": "bfloat16",
+                "ratio_scope": "exponent symbols + raw fallback + group metadata",
                 "zipnn_method": "HUFFMAN",
                 "compression_threshold": 0.95,
                 "threads": int(threads),

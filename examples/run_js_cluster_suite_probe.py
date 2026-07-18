@@ -3,162 +3,146 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
 import re
 from collections import Counter
-from dataclasses import dataclass
-from itertools import combinations
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 import torch
-from transformers import (
-    Gemma3TextConfig,
-    Gemma3TextModel,
-    Qwen3_5Config,
-    Qwen3_5TextModel,
-    SiglipConfig,
-    SiglipVisionModel,
-    WhisperModel,
-)
 
 from neuralzip.neuralzip_codec import (
     NeuralZipCodec,
     _exponent_distribution,
     _jensen_shannon,
 )
+from run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
 
 
-LAYER_PATTERN = re.compile(r"(^|\.)layers\.(\d+)\.")
+def normalized_role(model_slug: str, name: str) -> str:
+    if model_slug == "gpt2":
+        return re.sub(r"(^|\.)h\.\d+\.", r"\1h.#.", name)
+    if model_slug == "bert-base":
+        return re.sub(r"encoder\.layer\.\d+\.", "encoder.layer.#.", name)
+    if model_slug in {"resnet18", "resnet34"}:
+        return re.sub(r"layer(\d+)\.\d+\.", r"layer\1.#.", name)
+    raise ValueError(f"Unsupported model slug: {model_slug}")
 
 
-@dataclass(frozen=True)
-class ModelSpec:
-    slug: str
-    label: str
-    relative_path: str
-    kind: str
-
-
-MODEL_SPECS = (
-    ModelSpec("qwen35-08b", "Qwen 3.5 0.8B", "qwen35-08b", "qwen_text"),
-    ModelSpec("gemma3-1b", "Gemma 3 1B", "gemma3-1b-pt", "gemma_text"),
-    ModelSpec(
-        "siglip2-so400m",
-        "SigLIP 2 So400m",
-        "siglip2-so400m-384",
-        "siglip_vision",
-    ),
-    ModelSpec(
-        "whisper-v3-turbo",
-        "Whisper v3 Turbo",
-        "whisper-large-v3-turbo",
-        "whisper",
-    ),
-)
-SPECS_BY_SLUG = {spec.slug: spec for spec in MODEL_SPECS}
-
-
-def normalized_role(name: str) -> str:
-    return LAYER_PATTERN.sub(lambda match: f"{match.group(1)}layers.#.", str(name))
-
-
-def layer_index(name: str):
-    match = LAYER_PATTERN.search(str(name))
-    return int(match.group(2)) if match else None
-
-
-def layer_stack(name: str):
-    match = LAYER_PATTERN.search(str(name))
-    if not match:
-        return None
-    prefix = str(name)[: match.start()].rstrip(".")
-    return prefix or "root"
-
-
-def load_model(spec: ModelSpec, model_root: Path):
-    local_path = model_root / spec.relative_path
-    common = {"dtype": torch.bfloat16, "local_files_only": True}
-    if spec.kind == "qwen_text":
-        config = Qwen3_5Config.from_pretrained(
-            local_path, local_files_only=True
-        ).text_config
-        return Qwen3_5TextModel.from_pretrained(
-            local_path, config=config, **common
-        ).eval()
-    if spec.kind == "gemma_text":
-        config = Gemma3TextConfig.from_pretrained(local_path, local_files_only=True)
-        return Gemma3TextModel.from_pretrained(
-            local_path, config=config, **common
-        ).eval()
-    if spec.kind == "siglip_vision":
-        config = SiglipConfig.from_pretrained(
-            local_path, local_files_only=True
-        ).vision_config
-        return SiglipVisionModel.from_pretrained(
-            local_path, config=config, **common
-        ).eval()
-    if spec.kind == "whisper":
-        return WhisperModel.from_pretrained(local_path, **common).eval()
-    raise ValueError(f"Unsupported model kind: {spec.kind}")
-
-
-def summarize_roles(assignments: pd.DataFrame, distributions):
-    role_rows = []
-    pair_rows = []
-    for role, group in assignments.groupby("normalized_role", sort=True):
-        if len(group) < 2:
-            continue
-        cluster_counts = group["js_cluster"].value_counts()
-        distances = []
-        same_cluster_pairs = 0
-        for (_, left), (_, right) in combinations(group.iterrows(), 2):
-            distance = _jensen_shannon(
-                distributions[left["name"]], distributions[right["name"]]
-            )
-            same_cluster = left["js_cluster"] == right["js_cluster"]
-            same_cluster_pairs += int(same_cluster)
-            distances.append(distance)
-            pair_rows.append(
-                {
-                    "normalized_role": role,
-                    "left": left["name"],
-                    "right": right["name"],
-                    "left_layer": left["layer_index"],
-                    "right_layer": right["layer_index"],
-                    "js_distance": distance,
-                    "same_js_cluster": same_cluster,
-                }
-            )
-        role_rows.append(
-            {
-                "normalized_role": role,
-                "tensors": int(len(group)),
-                "js_clusters": int(len(cluster_counts)),
-                "modal_cluster_fraction": float(cluster_counts.iloc[0] / len(group)),
-                "pair_same_cluster_fraction": float(
-                    same_cluster_pairs / len(distances)
-                ),
-                "mean_within_role_js": float(sum(distances) / len(distances)),
-                "min_within_role_js": float(min(distances)),
-                "max_within_role_js": float(max(distances)),
-                "cluster_layers": " | ".join(
-                    f"{cluster}:"
-                    + ",".join(
-                        str(int(index))
-                        for index in group.loc[
-                            group["js_cluster"] == cluster, "layer_index"
-                        ].dropna()
-                    )
-                    for cluster in cluster_counts.index
-                ),
-            }
+def _transformer_pairs(model_slug: str, names: set[str]):
+    if model_slug == "gpt2":
+        pattern = re.compile(r"^h\.(\d+)\.mlp\.c_fc\.weight$")
+        right_template = "h.{depth}.mlp.c_proj.weight"
+        label = "FFN expansion--reduction"
+    elif model_slug == "bert-base":
+        pattern = re.compile(
+            r"^encoder\.layer\.(\d+)\.intermediate\.dense\.weight$"
         )
-    roles = pd.DataFrame(role_rows).sort_values(
-        ["modal_cluster_fraction", "tensors", "normalized_role"],
-        ascending=[False, False, True],
+        right_template = "encoder.layer.{depth}.output.dense.weight"
+        label = "FFN expansion--reduction"
+    else:
+        return None
+
+    pairs = []
+    for name in sorted(names):
+        match = pattern.match(name)
+        if not match:
+            continue
+        depth = int(match.group(1))
+        right = right_template.format(depth=depth)
+        if right in names:
+            pairs.append((depth, name, right))
+    return label, pairs
+
+
+def _resnet_pairs(names: set[str]):
+    pattern = re.compile(r"^layer(\d+)\.(\d+)\.conv2\.weight$")
+    pairs = []
+    for name in sorted(names):
+        match = pattern.match(name)
+        if not match:
+            continue
+        stage = int(match.group(1))
+        block = int(match.group(2))
+        right = f"layer{stage}.{block + 1}.conv1.weight"
+        if right in names:
+            pairs.append((stage * 100 + block, name, right))
+    return "Adjacent block convolutions", pairs
+
+
+def coupled_pairs(model_slug: str, names: set[str]):
+    transformer = _transformer_pairs(model_slug, names)
+    if transformer is not None:
+        return transformer
+    if model_slug in {"resnet18", "resnet34"}:
+        return _resnet_pairs(names)
+    raise ValueError(f"Unsupported model slug: {model_slug}")
+
+
+def _entropy(labels) -> float:
+    counts = Counter(labels)
+    total = sum(counts.values())
+    return -sum(
+        (count / total) * math.log(count / total)
+        for count in counts.values()
+        if count
     )
-    pairs = pd.DataFrame(pair_rows)
-    return roles, pairs
+
+
+def _log_comb(n: int, k: int) -> float:
+    if k < 0 or k > n:
+        return float("-inf")
+    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+
+
+def adjusted_mutual_information(left, right) -> float:
+    left = list(left)
+    right = list(right)
+    if len(left) != len(right) or not left:
+        raise ValueError("AMI requires two non-empty label sequences of equal length.")
+
+    total = len(left)
+    left_counts = Counter(left)
+    right_counts = Counter(right)
+    joint = Counter(zip(left, right))
+    mutual_information = 0.0
+    for (left_label, right_label), count in joint.items():
+        mutual_information += (count / total) * math.log(
+            count
+            * total
+            / (left_counts[left_label] * right_counts[right_label])
+        )
+
+    expected_mutual_information = 0.0
+    for left_count in left_counts.values():
+        for right_count in right_counts.values():
+            lower = max(1, left_count + right_count - total)
+            upper = min(left_count, right_count)
+            for count in range(lower, upper + 1):
+                probability = math.exp(
+                    _log_comb(left_count, count)
+                    + _log_comb(total - left_count, right_count - count)
+                    - _log_comb(total, right_count)
+                )
+                expected_mutual_information += (
+                    count
+                    / total
+                    * math.log(count * total / (left_count * right_count))
+                    * probability
+                )
+
+    normalizer = 0.5 * (_entropy(left) + _entropy(right))
+    denominator = normalizer - expected_mutual_information
+    numerator = mutual_information - expected_mutual_information
+    if abs(denominator) < 1e-12:
+        equivalent = all(
+            (left[i] == left[j]) == (right[i] == right[j])
+            for i in range(total)
+            for j in range(total)
+        )
+        return 1.0 if equivalent else 0.0
+    return float(numerator / denominator)
 
 
 def summarize_clusters(assignments: pd.DataFrame):
@@ -168,14 +152,11 @@ def summarize_clusters(assignments: pd.DataFrame):
         dominant_role, dominant_count = role_counts.most_common(1)[0]
         rows.append(
             {
-                "js_cluster": cluster_id,
+                "js_cluster": str(cluster_id),
                 "tensors": int(len(group)),
                 "roles": int(len(role_counts)),
                 "dominant_role": dominant_role,
                 "role_purity": float(dominant_count / len(group)),
-                "role_counts": " | ".join(
-                    f"{role}:{count}" for role, count in role_counts.most_common()
-                ),
                 "members": " | ".join(group["name"]),
             }
         )
@@ -184,9 +165,11 @@ def summarize_clusters(assignments: pd.DataFrame):
     )
 
 
-def run_model(spec: ModelSpec, model_root: Path, output_root: Path, threshold: float):
+def run_model(spec, model_root: Path, output_root: Path, threshold: float):
     print(f"\n=== {spec.label} ===", flush=True)
-    model = load_model(spec, model_root)
+    resolved_spec = replace(spec, local_path=model_root / spec.local_path.name)
+    view = load_model(resolved_spec)
+    model = view.model
     model.requires_grad_(False)
     named_tensors = sorted(
         (
@@ -211,71 +194,72 @@ def run_model(spec: ModelSpec, model_root: Path, output_root: Path, threshold: f
         assignment_rows.append(
             {
                 "name": name,
-                "layer_stack": layer_stack(name),
-                "layer_index": layer_index(name),
-                "normalized_role": normalized_role(name),
+                "normalized_role": normalized_role(spec.slug, name),
                 "numel": int(tensor.numel()),
-                "js_cluster": codec.cluster_id(name),
+                "js_cluster": str(codec.cluster_id(name)),
             }
         )
     assignments = pd.DataFrame(assignment_rows)
-    roles, pairs = summarize_roles(assignments, distributions)
-    clusters = summarize_clusters(assignments)
+    assignment_by_name = assignments.set_index("name")
+    pair_label, selected_pairs = coupled_pairs(
+        spec.slug, set(assignments["name"])
+    )
+    if not selected_pairs:
+        raise RuntimeError(f"No representative pairs found for {spec.label}.")
 
-    recovered = roles[roles["js_clusters"] == 1]
-    mixed_clusters = clusters[(clusters["tensors"] >= 2) & (clusters["roles"] > 1)]
-    pure_clusters = clusters[(clusters["tensors"] >= 2) & (clusters["roles"] == 1)]
-    same_pairs = int(pairs["same_js_cluster"].sum())
+    pair_rows = []
+    left_clusters = []
+    right_clusters = []
+    for depth, left_name, right_name in selected_pairs:
+        left_cluster = str(assignment_by_name.loc[left_name, "js_cluster"])
+        right_cluster = str(assignment_by_name.loc[right_name, "js_cluster"])
+        left_clusters.append(left_cluster)
+        right_clusters.append(right_cluster)
+        pair_rows.append(
+            {
+                "depth": depth,
+                "left": left_name,
+                "right": right_name,
+                "left_cluster": left_cluster,
+                "right_cluster": right_cluster,
+                "same_cluster": left_cluster == right_cluster,
+                "js_distance": _jensen_shannon(
+                    distributions[left_name], distributions[right_name]
+                ),
+            }
+        )
+
+    pairs = pd.DataFrame(pair_rows)
+    clusters = summarize_clusters(assignments)
     summary = {
         "model_slug": spec.slug,
         "model": spec.label,
         "dtype": "bfloat16",
         "js_threshold": float(threshold),
         "tensors": int(len(assignments)),
-        "transformer_blocks": int(
-            assignments.dropna(subset=["layer_index"])[
-                ["layer_stack", "layer_index"]
-            ].drop_duplicates().shape[0]
-        ),
         "js_clusters": int(assignments["js_cluster"].nunique()),
-        "repeated_roles": int(len(roles)),
-        "roles_fully_recovered": int(len(recovered)),
-        "roles_fragmented": int(len(roles) - len(recovered)),
-        "non_singleton_pure_role_clusters": int(len(pure_clusters)),
-        "non_singleton_mixed_role_clusters": int(len(mixed_clusters)),
-        "within_role_pairs": int(len(pairs)),
-        "within_role_pairs_same_cluster": same_pairs,
-        "within_role_pair_same_cluster_fraction": float(same_pairs / len(pairs)),
-        "mean_within_role_js": float(pairs["js_distance"].mean()),
-        "median_role_modal_cluster_fraction": float(
-            roles["modal_cluster_fraction"].median()
+        "representative_pair": pair_label,
+        "paired_depths": int(len(pairs)),
+        "same_cluster_pct": float(100.0 * pairs["same_cluster"].mean()),
+        "adjusted_mutual_information": adjusted_mutual_information(
+            left_clusters, right_clusters
         ),
+        "mean_pair_js": float(pairs["js_distance"].mean()),
     }
 
     output_dir = output_root / spec.slug
     output_dir.mkdir(parents=True, exist_ok=True)
     assignments.to_csv(output_dir / "assignments.csv", index=False)
-    roles.to_csv(output_dir / "role_summary.csv", index=False)
+    pairs.to_csv(output_dir / "coupled_pairs.csv", index=False)
     clusters.to_csv(output_dir / "cluster_summary.csv", index=False)
-    pairs.sort_values("js_distance").to_csv(
-        output_dir / "within_role_pairs.csv", index=False
-    )
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     )
-
     print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
-    print("\nMost coherent repeated roles", flush=True)
-    print(roles.head(12).to_string(index=False), flush=True)
-    print("\nLargest non-singleton clusters", flush=True)
-    print(
-        clusters[clusters["tensors"] >= 2].head(12).to_string(index=False),
-        flush=True,
-    )
 
-    del codec, model, named_tensors, distributions
+    del codec, model, view, named_tensors, distributions
     gc.collect()
-    return summary, roles.assign(model_slug=spec.slug, model=spec.label)
+    return summary
 
 
 def main():
@@ -296,18 +280,12 @@ def main():
 
     torch.set_num_threads(32)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    summaries = []
-    role_frames = []
-    for spec in specs:
-        summary, roles = run_model(
-            spec, args.model_root, args.output_dir, args.threshold
-        )
-        summaries.append(summary)
-        role_frames.append(roles)
-
-    pd.DataFrame(summaries).to_csv(args.output_dir / "model_summary.csv", index=False)
-    pd.concat(role_frames, ignore_index=True).to_csv(
-        args.output_dir / "model_role_summary.csv", index=False
+    summaries = [
+        run_model(spec, args.model_root, args.output_dir, args.threshold)
+        for spec in specs
+    ]
+    pd.DataFrame(summaries).to_csv(
+        args.output_dir / "model_summary.csv", index=False
     )
     (args.output_dir / "summary.json").write_text(
         json.dumps(summaries, indent=2, sort_keys=True) + "\n"

@@ -18,25 +18,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from transformers import (
-    Gemma3TextConfig,
-    Gemma3TextModel,
-    Qwen3_5Config,
-    Qwen3_5TextModel,
-    SiglipConfig,
-    SiglipVisionModel,
-    WhisperModel,
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet34_Weights,
+    resnet18,
+    resnet34,
 )
+from transformers import AutoModel
 
 from neuralzip import Compressor
 from neuralzip.ablations import (
     delta_exponent_huffman_cost,
     jensen_shannon,
-    neuralzip_component_ablation,
-    neuralzip_exponent_cost,
     order1_huffman_cluster_cost,
     selected_turborc_range_cost,
-    zipnn_exponent_huffman_cost,
     zipnn_exponent_stream,
 )
 
@@ -44,7 +39,7 @@ from neuralzip.ablations import (
 ROOT = Path(__file__).resolve().parents[1]
 THESIS_ROOT = ROOT.parent
 MODEL_ROOT = THESIS_ROOT / ".hf-cache"
-OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "thesis_model_suite"
+OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "phenomenon_model_suite"
 FIGURE_DIR = OUTPUT_DIR / "figures"
 NGRAM_SIZES = (1, 2, 4, 8)
 NGRAM_SAMPLE_EXPONENTS = 8 << 20
@@ -64,32 +59,32 @@ class ModelSpec:
 
 MODEL_SPECS = (
     ModelSpec(
-        slug="qwen35-08b",
-        label="Qwen 3.5 0.8B",
-        source="Qwen/Qwen3.5-0.8B-Base (language model only)",
-        local_path=MODEL_ROOT / "qwen35-08b",
-        kind="qwen_text",
+        slug="gpt2",
+        label="GPT-2",
+        source="gpt2",
+        local_path=MODEL_ROOT / "gpt2",
+        kind="hf_auto",
     ),
     ModelSpec(
-        slug="gemma3-1b",
-        label="Gemma 3 1B",
-        source="google/gemma-3-1b-pt",
-        local_path=MODEL_ROOT / "gemma3-1b-pt",
-        kind="gemma_text",
+        slug="bert-base",
+        label="BERT Base",
+        source="google-bert/bert-base-uncased",
+        local_path=MODEL_ROOT / "bert-base-uncased",
+        kind="hf_auto",
     ),
     ModelSpec(
-        slug="siglip2-so400m",
-        label="SigLIP 2 So400m",
-        source="google/siglip2-so400m-patch16-384 (vision model only)",
-        local_path=MODEL_ROOT / "siglip2-so400m-384",
-        kind="siglip_vision",
+        slug="resnet18",
+        label="ResNet-18",
+        source="torchvision ResNet18_Weights.IMAGENET1K_V1",
+        local_path=MODEL_ROOT / "resnet18",
+        kind="resnet18",
     ),
     ModelSpec(
-        slug="whisper-v3-turbo",
-        label="Whisper v3 Turbo",
-        source="openai/whisper-large-v3-turbo",
-        local_path=MODEL_ROOT / "whisper-large-v3-turbo",
-        kind="whisper",
+        slug="resnet34",
+        label="ResNet-34",
+        source="torchvision ResNet34_Weights.IMAGENET1K_V1",
+        local_path=MODEL_ROOT / "resnet34",
+        kind="resnet34",
     ),
 )
 SPECS_BY_SLUG = {spec.slug: spec for spec in MODEL_SPECS}
@@ -103,33 +98,21 @@ class ModelView:
 
 
 def load_model(spec: ModelSpec) -> ModelView:
-    common = {
-        "dtype": torch.bfloat16,
-        "local_files_only": True,
-    }
-    if spec.kind == "qwen_text":
-        config = Qwen3_5Config.from_pretrained(
-            spec.local_path, local_files_only=True
-        ).text_config
-        module = Qwen3_5TextModel.from_pretrained(
-            spec.local_path, config=config, **common
+    if spec.kind == "hf_auto":
+        source = spec.local_path if (spec.local_path / "config.json").is_file() else spec.source
+        module = AutoModel.from_pretrained(
+            source,
+            dtype=torch.bfloat16,
+            local_files_only=True,
         )
-    elif spec.kind == "gemma_text":
-        config = Gemma3TextConfig.from_pretrained(
-            spec.local_path, local_files_only=True
+    elif spec.kind == "resnet18":
+        module = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1).to(
+            dtype=torch.bfloat16
         )
-        module = Gemma3TextModel.from_pretrained(
-            spec.local_path, config=config, **common
+    elif spec.kind == "resnet34":
+        module = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1).to(
+            dtype=torch.bfloat16
         )
-    elif spec.kind == "siglip_vision":
-        config = SiglipConfig.from_pretrained(
-            spec.local_path, local_files_only=True
-        ).vision_config
-        module = SiglipVisionModel.from_pretrained(
-            spec.local_path, config=config, **common
-        )
-    elif spec.kind == "whisper":
-        module = WhisperModel.from_pretrained(spec.local_path, **common)
     else:
         raise ValueError(f"Unsupported model kind: {spec.kind}")
 
@@ -408,26 +391,124 @@ def run_diagnostics(view: ModelView):
     return result
 
 
-def run_component(view: ModelView):
-    start = time.perf_counter()
-    runs, summary = neuralzip_component_ablation(
-        view,
-        repeats=1,
-        cluster_js_threshold=JS_THRESHOLD,
-        n_values=(2, 3, 4),
-        layout="original",
-        compression_threshold=0.95,
-        packed_source_budget_ratio=0.30,
+def component_exponent_metrics(result):
+    raw_bytes = 0
+    compressed_bytes = 0
+    for row in result["tensor_results"]:
+        payload = row["payload"]
+        group = payload.groups[payload.element_size - 1]
+        raw_bytes += int(group.symbol_count)
+        compressed_bytes += int(group.compressed_bytes)
+    codebook_bytes = sum(
+        int(codebook.metadata_bytes)
+        for codebook in result.get("codebooks") or ()
+        if codebook.dtype == "bfloat16" and int(codebook.stream_id) == 1
     )
-    runs.insert(0, "model", view.spec.label)
-    summary.insert(0, "model", view.spec.label)
+    compressed_bytes += codebook_bytes
+    return {
+        "raw_bytes": raw_bytes,
+        "compressed_bytes": compressed_bytes,
+        "codebook_bytes": codebook_bytes,
+        "compression_pct": 100.0 * compressed_bytes / raw_bytes,
+    }
+
+
+def production_exponent_measure(
+    view: ModelView,
+    method: str,
+    threads: int,
+    **options,
+):
+    warmup = Compressor(
+        method,
+        verify=False,
+        keep_payloads=False,
+        threads=threads,
+        compression_threshold=0.95,
+        **options,
+    ).compress(view)
+    del warmup
+    gc.collect()
+
+    result = Compressor(
+        method,
+        verify=True,
+        keep_payloads=True,
+        threads=threads,
+        compression_threshold=0.95,
+        **options,
+    ).compress(view)
+    if result["roundtrip_ok"] is not True:
+        raise RuntimeError(
+            f"Round-trip failed for {view.spec.label} {method}."
+        )
+    measured = {
+        **component_exponent_metrics(result),
+        "encode_seconds": float(result["encode_seconds"]),
+        "precompute_seconds": float(
+            result.get("precompute_total_seconds") or 0.0
+        ),
+        "clusters": int(result["header"].get("clusters") or 0),
+        "selected_modes": result.get("selected_modes") or {},
+        "roundtrip_ok": bool(result["roundtrip_ok"]),
+    }
+    del result
+    gc.collect()
+    return measured
+
+
+def run_component(view: ModelView, threads: int):
+    start = time.perf_counter()
+    unique_clusters = {
+        name: f"tensor_{index:06d}"
+        for index, (name, _) in enumerate(floating_parameters(view))
+    }
+    variants = (
+        ("ZipNN", "zipnn-local", {}),
+        (
+            "Sharing Only",
+            "neuralzip",
+            {"ngram_values": (), "packed_source_budget_ratio": 0.0},
+        ),
+        (
+            "Packing Only",
+            "neuralzip",
+            {
+                "cluster_map": unique_clusters,
+                "enable_shared_codebooks": False,
+            },
+        ),
+        ("NeuralZip", "neuralzip", {}),
+    )
+    rows = []
+    for variant, method, options in variants:
+        metrics = production_exponent_measure(
+            view, method, threads, **options
+        )
+        rows.append(
+            {
+                "model": view.spec.label,
+                "variant": variant,
+                "repeats": 1,
+                **metrics,
+            }
+        )
+
+    runs = pd.DataFrame(rows)
+    summary = runs.copy()
     model_dir = OUTPUT_DIR / view.spec.slug
     model_dir.mkdir(parents=True, exist_ok=True)
     runs.to_csv(model_dir / "component_runs.csv", index=False)
     summary.to_csv(model_dir / "component_summary.csv", index=False)
     write_json(
         model_dir / "component_metadata.json",
-        {"repetitions": 1, "seconds": time.perf_counter() - start},
+        {
+            "repetitions": 1,
+            "warmup_runs": 1,
+            "threads": int(threads),
+            "backend": "production direct encoder",
+            "seconds": time.perf_counter() - start,
+        },
     )
     return summary
 
@@ -442,7 +523,7 @@ def timed_cost(function):
 def select_mmrepair_pair(view: ModelView):
     groups = {}
     for name, parameter in floating_parameters(view):
-        if parameter.ndim != 2:
+        if parameter.ndim < 2:
             continue
         shape = tuple(int(dim) for dim in parameter.shape)
         groups.setdefault(shape, []).append((name, parameter))
@@ -512,33 +593,25 @@ def run_mmrepair(view: ModelView, mmrepair_dir: Path):
     }
 
 
-def run_deferred(view: ModelView, mmrepair_dir: Path):
+def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
     rows = []
-    zipnn = zipnn_exponent_huffman_cost(
-        view, layout="original", compression_threshold=0.95
-    ).iloc[0].to_dict()
+    zipnn = production_exponent_measure(view, "zipnn-local", threads)
     rows.append(
         {
             "method": "ZipNN",
             "encode_seconds": float(zipnn["encode_seconds"]),
-            "compressed_pct": float(zipnn["compressed_pct"]),
+            "compressed_pct": float(zipnn["compression_pct"]),
             "raw_bytes": int(zipnn["raw_bytes"]),
             "compressed_bytes": int(zipnn["compressed_bytes"]),
         }
     )
 
-    neuralzip = neuralzip_exponent_cost(
-        view,
-        cluster_js_threshold=JS_THRESHOLD,
-        layout="original",
-        compression_threshold=0.95,
-        packed_source_budget_ratio=0.30,
-    ).iloc[0].to_dict()
+    neuralzip = production_exponent_measure(view, "neuralzip", threads)
     rows.append(
         {
             "method": "NeuralZip",
             "encode_seconds": float(neuralzip["encode_seconds"]),
-            "compressed_pct": float(neuralzip["compressed_pct"]),
+            "compressed_pct": float(neuralzip["compression_pct"]),
             "raw_bytes": int(neuralzip["raw_bytes"]),
             "compressed_bytes": int(neuralzip["compressed_bytes"]),
         }
@@ -603,18 +676,26 @@ def compact_compression_result(result):
     return {key: value for key, value in result.items() if key not in excluded}
 
 
-def run_zipnn_implementation(view: ModelView):
+def run_zipnn_implementation(view: ModelView, threads: int):
     rows = []
     detailed = {}
-    # The implementation ablation is now measured exclusively with the
-    # unified native backend.  The previous Python/official paths are no
-    # longer part of the thesis runs.
-    for method in ("neuralzip",):
+    for method in ("zipnn-local", "zipnn-src"):
+        warmup = Compressor(
+            method,
+            verify=False,
+            zipnn_method="HUFFMAN",
+            compression_threshold=0.95,
+            threads=threads,
+        ).compress(view)
+        del warmup
+        gc.collect()
+
         result = Compressor(
             method,
             verify=True,
             zipnn_method="HUFFMAN",
             compression_threshold=0.95,
+            threads=threads,
         ).compress(view)
         if result["roundtrip_ok"] is not True:
             raise RuntimeError(f"Round-trip failed for {view.spec.label} {method}.")
@@ -623,6 +704,10 @@ def run_zipnn_implementation(view: ModelView):
                 "model": view.spec.label,
                 "method": method,
                 "encode_seconds": float(result["encode_seconds"]),
+                "codec_encode_seconds": float(
+                    result.get("codec_encode_seconds", result["encode_seconds"])
+                ),
+                "input_copy_seconds": float(result.get("input_copy_seconds", 0.0)),
                 "raw_bytes": int(result["raw_bytes"]),
                 "compressed_bytes": int(result["compressed_bytes"]),
                 "compressed_pct": 100.0
@@ -633,7 +718,9 @@ def run_zipnn_implementation(view: ModelView):
         )
         detailed[method] = compact_compression_result(result)
         print(
-            f"[{view.spec.slug}] {method}: {result['encode_seconds']:.6f}s, "
+            f"[{view.spec.slug}] {method}: total={result['encode_seconds']:.6f}s, "
+            f"codec={result.get('codec_encode_seconds', result['encode_seconds']):.6f}s, "
+            f"copy={result.get('input_copy_seconds', 0.0):.6f}s, "
             f"{100.0 * result['compression_ratio']:.3f}%",
             flush=True,
         )
@@ -646,10 +733,11 @@ def run_zipnn_implementation(view: ModelView):
         {
             "setup": {
                 "repetitions": 1,
-                "warmup_runs": 0,
+                "warmup_runs": 1,
                 "dtype": "bfloat16",
                 "zipnn_method": "HUFFMAN",
                 "compression_threshold": 0.95,
+                "threads": int(threads),
                 "verification": "bitwise exact round trip",
             },
             "results": detailed,
@@ -792,13 +880,14 @@ def aggregate_tables():
     zipnn.to_csv(OUTPUT_DIR / "zipnn_implementation_all_models.csv", index=False)
 
 
-def write_run_metadata():
+def write_run_metadata(threads: int):
     write_json(
         OUTPUT_DIR / "run_metadata.json",
         {
             "models": [spec.__dict__ for spec in MODEL_SPECS],
             "dtype": "bfloat16",
             "repetitions": 1,
+            "threads": int(threads),
             "ngram_sample_exponents": NGRAM_SAMPLE_EXPONENTS,
             "max_heatmap_tensors": MAX_HEATMAP_TENSORS,
             "js_threshold": JS_THRESHOLD,
@@ -812,6 +901,8 @@ def write_run_metadata():
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=tuple(SPECS_BY_SLUG))
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument("--threads", type=int, default=12)
     parser.add_argument(
         "--phase",
         choices=("diagnostics", "component", "deferred", "zipnn", "all", "render"),
@@ -822,9 +913,14 @@ def parse_args():
 
 
 def main():
+    global OUTPUT_DIR, FIGURE_DIR
     args = parse_args()
+    OUTPUT_DIR = args.output_dir
+    FIGURE_DIR = OUTPUT_DIR / "figures"
+    torch.set_num_threads(args.threads)
+    torch.set_num_interop_threads(1)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    write_run_metadata()
+    write_run_metadata(args.threads)
     if args.phase == "render":
         render_figures()
         aggregate_tables()
@@ -841,9 +937,12 @@ def main():
     )
     phases = (
         ("diagnostics", run_diagnostics),
-        ("component", run_component),
-        ("deferred", lambda value: run_deferred(value, args.mmrepair_dir)),
-        ("zipnn", run_zipnn_implementation),
+        ("component", lambda value: run_component(value, args.threads)),
+        (
+            "deferred",
+            lambda value: run_deferred(value, args.mmrepair_dir, args.threads),
+        ),
+        ("zipnn", lambda value: run_zipnn_implementation(value, args.threads)),
     )
     for phase, function in phases:
         if args.phase not in (phase, "all"):

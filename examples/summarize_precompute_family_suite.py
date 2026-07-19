@@ -137,8 +137,15 @@ def validate_revision_and_weights(
     label: str,
 ) -> str:
     require(isinstance(revision, str) and revision, f"{label} has no revision.")
-    if key in PINNED_REVISIONS:
-        require(revision == PINNED_REVISIONS[key], f"{label} revision mismatch.")
+    spec = MODEL_SPECS[key]
+    if spec.backend == "torchvision":
+        from torchvision import models
+
+        constructor = getattr(models, str(spec.constructor))
+        expected_revision = str(models.get_model_weights(constructor).DEFAULT)
+    else:
+        expected_revision = PINNED_REVISIONS[key]
+    require(revision == expected_revision, f"{label} revision mismatch.")
     require(isinstance(weights, dict), f"{label} has no weight provenance.")
     require(weights.get("revision") == revision, f"{label} weight revision mismatch.")
     fingerprint = weights.get("weights_fingerprint")
@@ -192,6 +199,12 @@ def validate_family(key: str, payload: dict) -> list[dict[str, object]]:
         payload.get("source_weights"),
         f"{key} source",
     )
+    expected_source_scope = (
+        "Gemma 3 text backbone"
+        if source_key.startswith("gemma3-")
+        else "complete floating checkpoint"
+    )
+    require(payload.get("tensor_scope") == expected_source_scope, f"{key} source scope mismatch.")
 
     setup = payload.get("source_setup") or {}
     clustering_seconds = finite(setup.get("clustering_seconds"), f"{key} clustering time")
@@ -226,6 +239,12 @@ def validate_family(key: str, payload: dict) -> list[dict[str, object]]:
             target.get("target_weights"),
             target_key,
         )
+        expected_target_scope = (
+            "Gemma 3 text backbone"
+            if target_key.startswith("gemma3-")
+            else "complete floating checkpoint"
+        )
+        require(target.get("tensor_scope") == expected_target_scope, f"{target_key} scope mismatch.")
         require(mapping["target_histograms_computed"] is False, f"{target_key} histogrammed target.")
         require(mapping["target_js_matching"] is False, f"{target_key} ran JS.")
         require(mapping["target_mode_probing"] is False, f"{target_key} probed modes.")
@@ -264,6 +283,23 @@ def validate_family(key: str, payload: dict) -> list[dict[str, object]]:
         target_tensors = int(mapping["target_tensors"])
         require(mapped_tensors > 0 and target_tensors > 0, f"{target_key} has no mapped tensors.")
         require(int(mapping["target_exponents"]) > 0, f"{target_key} has no exponents.")
+        target_exponents = int(mapping["target_exponents"])
+        require(
+            int(target.get("target_parameters", 0)) == target_exponents,
+            f"{target_key} parameter/exponent count mismatch.",
+        )
+        require(
+            int(transferred["raw_exponents"]) == target_exponents,
+            f"{target_key} transfer covers a different exponent count.",
+        )
+        require(
+            int(native["raw_exponents"]) == target_exponents,
+            f"{target_key} native control covers a different exponent count.",
+        )
+        require(
+            int(zipnn["exponent_raw_bytes"]) == target_exponents,
+            f"{target_key} ZipNN covers a different exponent count.",
+        )
         mapping_seconds = finite(mapping["seconds"], f"{target_key} mapping time")
         encoding_seconds = finite(transferred["encode_seconds"], f"{target_key} encode time", positive=True)
         native_seconds = finite(native["encode_seconds"], f"{target_key} native encode time", positive=True)

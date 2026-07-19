@@ -1,0 +1,28 @@
+{
+  "clustering_seconds": 1.3477675011381507,
+  "codebook_seconds": 2.4034346425905824,
+  "total_seconds": 3.751202143728733,
+  "clusters": 3,
+  "codebooks": 8,
+  "codebook_digest": "93278637d862f41bfc9fd5e0b00baa97540d05f4458c93d89b0ff3d828bac8e1",
+  "selected_modes": {
+    "shared_huff0": 6,
+    "packed_huff0_n4": 2,
+    "raw": 3,
+    "local_huff0": 1
+  },
+  "epoch": 0,
+  "scope": "one frozen plan per training trajectory",
+  "model": "bert-base",
+  "dtype": "float32",
+  "epoch0_checkpoint": "/data-local/martinb/neuralzip-language-20260719b/gathered/bert-base/checkpoints/bert-base_wikitext2_epoch_000.pt",
+  "epoch0_tensor_digest": "92647740dd4ea5dc7aa460c111ae46a28d15183c2e0a0a4eba145527dfe41409",
+  "epoch0_alias_digest": "6bd5f7428dc0fbb480ea4ce24ffa238144fcb879f2f3b0bb89fed12725d3b921",
+  "storage_aliases": {
+    "cls.predictions.decoder.weight": "bert.embeddings.word_embeddings.weight",
+    "cls.predictions.decoder.bias": "cls.predictions.bias"
+  },
+  "threads": 12,
+  "enable_prepacked_cache": false,
+  "unique_storage_compression": true
+}

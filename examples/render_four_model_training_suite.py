@@ -305,7 +305,11 @@ def _write_canonical_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> No
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CANONICAL_FIELDS)
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=CANONICAL_FIELDS,
+            lineterminator="\n",
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row[field] for field in CANONICAL_FIELDS})

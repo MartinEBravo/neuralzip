@@ -1,0 +1,289 @@
+experiment,model,model_label,step,compressor,exponent_ratio_pct,encoding_seconds,source_path
+checkpoint,gpt2,GPT-2,0,ZipNN src,32.4413398323469,0.505246342625469,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,0,NeuralZip,32.46573958069752,0.3155871727503836,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,1,ZipNN src,32.61321328943227,0.47897993493825197,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,1,NeuralZip,32.63254311674926,0.2518753446638584,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,2,ZipNN src,32.729381099655825,0.48261691769585013,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,2,NeuralZip,32.748437702507545,0.21726231230422854,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,3,ZipNN src,32.81592655623513,0.48547752061858773,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,3,NeuralZip,32.83481520640083,0.22803337033838034,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,4,ZipNN src,32.85883565490554,0.4820124632678926,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,4,NeuralZip,32.877509743505875,0.2171946601010859,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,5,ZipNN src,32.849604685986016,0.49180575320497155,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,5,NeuralZip,32.8681574307797,0.21426582988351583,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,6,ZipNN src,32.80369976141397,0.4732646197080612,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,6,NeuralZip,32.82220348652418,0.21731981402263045,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,7,ZipNN src,32.78347552577387,0.4740122025832534,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,7,NeuralZip,32.80198085808683,0.2162499618716538,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,8,ZipNN src,32.782329590222446,0.4902662653476,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,8,NeuralZip,32.800799564075184,0.24481135001406074,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,9,ZipNN src,32.78316855005112,0.48278447426855564,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,9,NeuralZip,32.801674685965445,0.24536508694291115,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,10,ZipNN src,32.78695913770616,0.5069483588449657,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,10,NeuralZip,32.805494203269745,0.22465063584968448,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,11,ZipNN src,32.786740558133936,0.4865976213477552,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,11,NeuralZip,32.80525151565647,0.21478946693241596,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,12,ZipNN src,32.76928794361367,0.5452552866190672,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,12,NeuralZip,32.78774345264178,0.22130649629980326,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,13,ZipNN src,32.76896168145807,0.5145168430171907,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,13,NeuralZip,32.78747504978471,0.22870495077222586,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,14,ZipNN src,32.77186911120917,0.48275452898815274,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,14,NeuralZip,32.79039453355634,0.23086234694346786,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,15,ZipNN src,32.77363140901021,0.4886345383711159,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,15,NeuralZip,32.79213111611358,0.2203154950402677,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,16,ZipNN src,32.77583488396253,0.5123645905405283,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,16,NeuralZip,32.79434101987685,0.2212313530035317,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,17,ZipNN src,32.775547194672626,0.47280442574992776,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,17,NeuralZip,32.794080653033475,0.22391189355403185,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,18,ZipNN src,32.77734886894072,0.5199387134052813,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,18,NeuralZip,32.79585420125367,0.2186542646959424,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,19,ZipNN src,32.77677027595542,0.46075104642659426,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,19,NeuralZip,32.79528364428206,0.22144675999879837,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,20,ZipNN src,32.77712707496302,0.47813767474144697,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,gpt2,GPT-2,20,NeuralZip,32.795679819756714,0.21667964523658156,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,0,ZipNN src,32.428145592459536,0.39712134981527925,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,0,NeuralZip,32.45762850070956,0.21008914383128285,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,1,ZipNN src,32.47662054136529,0.4196063643321395,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,1,NeuralZip,32.50872502511042,0.16130747040733695,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,2,ZipNN src,32.519119101690265,0.37113133491948247,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,2,NeuralZip,32.55471354069219,0.1453354642726481,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,3,ZipNN src,32.560725541061316,0.41810980439186096,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,3,NeuralZip,32.59701212712883,0.20036941906437278,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,4,ZipNN src,32.58756861136068,0.4285524943843484,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,4,NeuralZip,32.62393098661875,0.15033018589019775,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,5,ZipNN src,32.60408152367465,0.42976199137046933,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,5,NeuralZip,32.640481336966616,0.12854713201522827,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,6,ZipNN src,32.60791298685036,0.41135386610403657,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,6,NeuralZip,32.64434202007121,0.17849492328241467,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,7,ZipNN src,32.610234144951555,0.45157538587227464,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,7,NeuralZip,32.646749011713524,0.15883694496005774,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,8,ZipNN src,32.61219096706441,0.43326140055432916,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,8,NeuralZip,32.64873688000082,0.13632149901241064,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,9,ZipNN src,32.61176545184995,0.41682810336351395,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,9,NeuralZip,32.648372544012474,0.18389060674235225,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,10,ZipNN src,32.59583967748211,0.4493224238976836,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,10,NeuralZip,32.63249973076575,0.1651526470668614,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,11,ZipNN src,32.579087527000354,0.4145660758949816,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,11,NeuralZip,32.61575305902066,0.12789871310815215,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,12,ZipNN src,32.55938142433237,0.4135804227553308,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,12,NeuralZip,32.5960296070199,0.1798247341066599,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,13,ZipNN src,32.538751241413244,0.36698940861970186,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,13,NeuralZip,32.57540672908299,0.1310590193606913,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,14,ZipNN src,32.517099274105746,0.3666038722731173,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,14,NeuralZip,32.55376389300327,0.15842494182288647,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,15,ZipNN src,32.501311381277354,0.4201634684577584,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,15,NeuralZip,32.53799791512155,0.13198692817240953,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,16,ZipNN src,32.488340472218525,0.43283500149846077,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,16,NeuralZip,32.524997786133824,0.15681274281814694,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,17,ZipNN src,32.47796648433979,0.39894383354112506,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,17,NeuralZip,32.51462288513231,0.1344156409613788,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,18,ZipNN src,32.47115732778564,0.41249008709564805,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,18,NeuralZip,32.5078164679465,0.18854078883305192,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,19,ZipNN src,32.468398783873866,0.420548546127975,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,19,NeuralZip,32.5050506190525,0.13666599988937378,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,20,ZipNN src,32.4672327260866,0.419853987172246,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,bert-base,BERT Base,20,NeuralZip,32.503899171229676,0.17946725292131305,/home/martin/Projects/Tesis/Codebase/results/final-language-checkpoints-wikitext2/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,0,ZipNN src,32.40487840671532,0.17504965141415596,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,0,NeuralZip,32.48645648889929,0.019966710824519396,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,1,ZipNN src,32.4774981272928,0.1682740179821849,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,1,NeuralZip,32.569592934185785,0.018990883138030767,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,2,ZipNN src,32.41658839231426,0.17177339270710945,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,2,NeuralZip,32.509867555165165,0.01946269627660513,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,3,ZipNN src,32.415021124279725,0.15801971592009068,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,3,NeuralZip,32.47010703372084,0.021370111033320427,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,4,ZipNN src,32.572763089982914,0.17175112292170525,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,4,NeuralZip,32.62510628036359,0.019391953945159912,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,5,ZipNN src,32.77525233905849,0.15830257209017873,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,5,NeuralZip,32.826963279266145,0.019132517278194427,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,6,ZipNN src,32.8871428098195,0.1786688882857561,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,6,NeuralZip,32.93401837194334,0.01859776210039854,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,7,ZipNN src,32.98667323494452,0.17459471197798848,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,7,NeuralZip,33.033548797068356,0.018824847880750895,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,8,ZipNN src,33.06545516847597,0.17041241098195314,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,8,NeuralZip,33.11237525525988,0.018852819222956896,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,9,ZipNN src,33.13495816284841,0.1547744064591825,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,9,NeuralZip,33.18194948908843,0.019392774906009436,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,10,ZipNN src,33.18172686578807,0.14558499958366156,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,10,NeuralZip,33.228771621620176,0.019208498764783144,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,11,ZipNN src,33.22957306550148,0.1963337524794042,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,11,NeuralZip,33.276564391741495,0.018978313077241182,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,12,ZipNN src,33.249760546378134,0.1508007370866835,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,12,NeuralZip,33.29661829863794,0.01915553817525506,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,13,ZipNN src,33.26461397297816,0.15830055810511112,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,13,NeuralZip,33.31155186962609,0.019554409198462963,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,14,ZipNN src,33.273803862817026,0.16307150246575475,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,14,NeuralZip,33.3208842383772,0.019253569655120373,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,15,ZipNN src,33.2704467034476,0.1522006024606526,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,15,NeuralZip,33.317509269143734,0.01869895402342081,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,16,ZipNN src,33.25291289231123,0.15267111221328378,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,16,NeuralZip,33.299984362939384,0.019277550745755434,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,17,ZipNN src,33.25360747700836,0.19409081153571606,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,17,NeuralZip,33.30078580682068,0.019247211050242186,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,18,ZipNN src,33.23089990037162,0.17385542392730713,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,18,NeuralZip,33.27794465620373,0.01892067212611437,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,19,ZipNN src,33.216180047751806,0.16912344470620155,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,19,NeuralZip,33.26310903946773,0.019008014351129532,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,20,ZipNN src,33.2104274616705,0.15015754336491227,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,20,NeuralZip,33.257561266822755,0.019126986153423786,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,21,ZipNN src,33.20057860686257,0.12299321172758937,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,21,NeuralZip,33.247587742966616,0.01901705376803875,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,22,ZipNN src,33.185573796418296,0.17160886758938432,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,22,NeuralZip,33.23253840786227,0.0192891419865191,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,23,ZipNN src,33.17974106594886,0.15811238111928105,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,23,NeuralZip,33.226750202052905,0.019062034785747528,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,24,ZipNN src,33.174059719323665,0.14759381348267198,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,24,NeuralZip,33.22110447515578,0.019260330591350794,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,25,ZipNN src,33.16038174374954,0.14810285111889243,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,25,NeuralZip,33.20728402066941,0.019373643677681684,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,26,ZipNN src,33.14133409417072,0.1895123552531004,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,26,NeuralZip,33.188494614119016,0.018858560360968113,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,27,ZipNN src,33.13307922219337,0.15085678873583674,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,27,NeuralZip,33.18000821390929,0.018736476078629494,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,28,ZipNN src,33.12063012723723,0.20550560066476464,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,28,NeuralZip,33.167550214021134,0.019761765375733376,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,29,ZipNN src,33.11803879202104,0.19136158749461174,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,29,NeuralZip,33.1650568330571,0.01967012183740735,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,30,ZipNN src,33.103799805730006,0.18968491116538644,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,30,NeuralZip,33.15084456156211,0.0190719161182642,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,31,ZipNN src,33.09314950704077,0.1572275348007679,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,31,NeuralZip,33.14013192834878,0.02007674379274249,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,32,ZipNN src,33.076515094037866,0.14798519341275096,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,32,NeuralZip,33.123435180821765,0.018757955636829138,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,33,ZipNN src,33.072837357115915,0.1494047436863184,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,33,NeuralZip,33.11985539815198,0.018721195869147778,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,34,ZipNN src,33.057422919798974,0.18214556854218245,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,34,NeuralZip,33.10426286219475,0.018443497363477945,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,35,ZipNN src,33.05037021364357,0.1496021649800241,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,35,NeuralZip,33.097290300427474,0.019099075812846422,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,36,ZipNN src,33.03990691852664,0.16924772458150983,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,36,NeuralZip,33.0869249595627,0.018878790084272623,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,37,ZipNN src,33.04029873553527,0.17374634742736816,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,37,NeuralZip,33.08729896670731,0.018819978926330805,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,38,ZipNN src,33.04207081700614,0.15619812719523907,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,38,NeuralZip,33.08895528406199,0.01881613815203309,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,39,ZipNN src,33.04273868690722,0.1652282290160656,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,39,NeuralZip,33.08968548848717,0.018851608969271183,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,40,ZipNN src,33.056496806869475,0.1756426519714296,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,40,NeuralZip,33.103479228177484,0.01909390604123473,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,41,ZipNN src,33.06530378463172,0.17735523357987404,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,41,NeuralZip,33.112277301007715,0.018995312973856926,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,42,ZipNN src,33.07975648929111,0.16659849183633924,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,42,NeuralZip,33.126640956346954,0.019202069379389286,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,43,ZipNN src,33.0843247194145,0.17762528592720628,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,43,NeuralZip,33.13110232728617,0.01912826718762517,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,44,ZipNN src,33.08452062791881,0.15620181383565068,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,44,NeuralZip,33.13128042592646,0.018825588282197714,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,45,ZipNN src,33.08525973727601,0.14302838034927845,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,45,NeuralZip,33.13213529939984,0.019299522042274475,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,46,ZipNN src,33.084850110403345,0.14785244455561042,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,46,NeuralZip,33.13162771827502,0.019317011814564466,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,47,ZipNN src,33.08752159000767,0.16738649690523744,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,47,NeuralZip,33.13431700774337,0.019675753079354763,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,48,ZipNN src,33.091030133221345,0.1554459766484797,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,48,NeuralZip,33.13780774109302,0.019460656214505434,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,49,ZipNN src,33.08773530837601,0.19674457143992186,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,49,NeuralZip,33.134619775431865,0.021477424073964357,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,50,ZipNN src,33.08895528406199,0.1667023105546832,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet18,ResNet-18,50,NeuralZip,33.135804131389776,0.019240729976445436,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,0,ZipNN src,32.387021115077424,0.23674269765615463,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,0,NeuralZip,32.46358123721382,0.035291858948767185,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,1,ZipNN src,32.434952005395466,0.28160814521834254,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,1,NeuralZip,32.52347728185425,0.03675603121519089,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,2,ZipNN src,32.378593036523796,0.26086409389972687,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,2,NeuralZip,32.470763140728394,0.03622825630009174,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,3,ZipNN src,32.421843743142524,0.2953644939698279,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,3,NeuralZip,32.492407233512026,0.036131293047219515,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,4,ZipNN src,32.58594531933844,0.25690352404490113,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,4,NeuralZip,32.64125487765091,0.03663638699799776,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,5,ZipNN src,32.69210912595531,0.2941612503491342,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,5,NeuralZip,32.74757328493052,0.03719540731981397,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,6,ZipNN src,32.793705185718494,0.27900390699505806,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,6,NeuralZip,32.846508339347146,0.03662401298061013,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,7,ZipNN src,32.89911472849594,0.30119231855496764,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,7,NeuralZip,32.94496553716984,0.03703302796930075,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,8,ZipNN src,33.0062717272492,0.3576082531362772,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,8,NeuralZip,33.05213659052881,0.03672194620594382,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,9,ZipNN src,33.13875044061189,0.280893599614501,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,9,NeuralZip,33.18348156569807,0.035810098983347416,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,10,ZipNN src,33.241021121448846,0.29347155801951885,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,10,NeuralZip,33.28576161627216,0.03765957895666361,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,11,ZipNN src,33.32116516803968,0.28968128422275186,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,11,NeuralZip,33.36588223852015,0.035682981833815575,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,12,ZipNN src,33.394239747961564,0.3271848545409739,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,12,NeuralZip,33.43889123028209,0.03565020905807614,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,13,ZipNN src,33.45585045449784,0.29538998706266284,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,13,NeuralZip,33.500656537481106,0.03664026688784361,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,14,ZipNN src,33.51748458537695,0.2777324593625963,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,14,NeuralZip,33.56227661375451,0.036460279021412134,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,15,ZipNN src,33.568591816584025,0.3054268700070679,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,15,NeuralZip,33.61329014759023,0.03575779078528285,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,16,ZipNN src,33.59815333724738,0.35572699969634414,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,16,NeuralZip,33.64293599588781,0.03702340694144368,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,17,ZipNN src,33.62872678952141,0.2706315526738763,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,17,NeuralZip,33.67349070868757,0.035095053259283304,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,18,ZipNN src,33.64889514870616,0.3069613599218428,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,18,NeuralZip,33.6935887948438,0.03739288914948702,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,19,ZipNN src,33.662827947827054,0.3067300939001143,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,19,NeuralZip,33.707662140021725,0.035477074794471264,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,20,ZipNN src,33.67175730731745,0.3048052294179797,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,20,NeuralZip,33.7166383481978,0.03757354477420449,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,21,ZipNN src,33.664879920259786,0.2853384208865464,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,21,NeuralZip,33.70962978482024,0.03744655894115567,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,22,ZipNN src,33.672966003407964,0.31950003933161497,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,22,NeuralZip,33.7176737041513,0.03711043391376734,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,23,ZipNN src,33.67547709296035,0.28238702565431595,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,23,NeuralZip,33.7202410121265,0.03556348429992795,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,24,ZipNN src,33.66942424277064,0.31209233589470387,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,24,NeuralZip,33.7142162711482,0.03579783206805587,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,25,ZipNN src,33.66310435507256,0.2940037464722991,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,25,NeuralZip,33.70784484989587,0.03623808780685067,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,26,ZipNN src,33.65515881798142,0.32170339208096266,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,26,NeuralZip,33.69986651872476,0.03702896786853671,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,27,ZipNN src,33.64093555700932,0.28106217039749026,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,27,NeuralZip,33.68573695512402,0.036157332826405764,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,28,ZipNN src,33.633884829814654,0.2663205857388675,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,28,NeuralZip,33.678714337140754,0.03638745006173849,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,29,ZipNN src,33.62609389338626,0.3093138290569186,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,29,NeuralZip,33.670825018472435,0.03644157061353326,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,30,ZipNN src,33.616794429279004,0.30562241235747933,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,30,NeuralZip,33.66161925173654,0.03710851585492492,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,31,ZipNN src,33.60865212770802,0.31497316621243954,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,31,NeuralZip,33.65347226529698,0.03636391693726182,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,32,ZipNN src,33.60251026501552,0.2522290861234069,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,32,NeuralZip,33.64719454141602,0.03553671482950449,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,33,ZipNN src,33.58558383487975,0.2611802378669381,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,33,NeuralZip,33.630272796148816,0.03648004913702607,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,34,ZipNN src,33.579001594541865,0.33305439073592424,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,34,NeuralZip,33.62375614397088,0.03668136615306139,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,35,ZipNN src,33.56889164817237,0.2565262974239886,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,35,NeuralZip,33.61367430681279,0.036373402923345566,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,36,ZipNN src,33.563354133525124,0.2787848589941859,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,36,NeuralZip,33.60808994347987,0.035509658977389336,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,37,ZipNN src,33.5486530159591,0.282090597320348,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,37,NeuralZip,33.593416935125255,0.03551065782085061,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,38,ZipNN src,33.5425252078723,0.2610114314593375,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,38,NeuralZip,33.587326605987,0.03581226896494627,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,39,ZipNN src,33.533146100999396,0.2998572112992406,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,39,NeuralZip,33.5779896629312,0.03671210212633014,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,40,ZipNN src,33.52716820870677,0.282037521712482,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,40,NeuralZip,33.57203051011285,0.037434058263897896,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,41,ZipNN src,33.515877675458164,0.27030015690252185,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,41,NeuralZip,33.560632224887186,0.037024062126874924,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,42,ZipNN src,33.51681933404031,0.24014215124771,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,42,NeuralZip,33.56172848413207,0.03748818812891841,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,43,ZipNN src,33.50682182451644,0.2637417041696608,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,43,NeuralZip,33.551656016711114,0.036050104070454836,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,44,ZipNN src,33.50538825473467,0.27752790739759803,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,44,NeuralZip,33.550180283112226,0.03671238711103797,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,45,ZipNN src,33.50130773421204,0.2541780052706599,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,45,NeuralZip,33.54846562121638,0.036158386152237654,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,46,ZipNN src,33.50001471048731,0.2665983713231981,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,46,NeuralZip,33.5471351185431,0.03526294091716409,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,47,ZipNN src,33.501298364474906,0.2498032064177096,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,47,NeuralZip,33.548390663319296,0.03735252795740962,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,48,ZipNN src,33.49768633080907,0.24291638983413577,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,48,NeuralZip,33.54479736912773,0.03538599284365773,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,49,ZipNN src,33.499208913093625,0.29887629207223654,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,49,NeuralZip,33.54623562377807,0.03612537123262882,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,50,ZipNN src,33.49923233743647,0.2838106849230826,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv
+checkpoint,resnet34,ResNet-34,50,NeuralZip,33.54632932114943,0.035846898797899485,/home/martin/Projects/Tesis/Codebase/results/final-checkpoints-cifar100/checkpoint_results.csv

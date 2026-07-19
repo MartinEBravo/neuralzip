@@ -1,0 +1,14 @@
+complete=true
+host=godel
+started_at=2026-07-19T12:35:23.657965+00:00
+completed_at=2026-07-19T14:01:15.736418+00:00
+families=11
+source_plans=11
+targets=20
+unique_checkpoints=31
+threads=12
+cpu_set=0-11
+warmup_repetitions=1
+measured_repetitions=1
+runner_sha256=a94b9426723d7ee851687b5913b997f54e59f56c3df7f696f3d2df1f58afe2ea
+code_digest=68a6f5ab4cc3f614e12db24c85406e1a51fcc26752f75ef2fb6111a32b640e30

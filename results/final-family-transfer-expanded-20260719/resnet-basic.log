@@ -1,0 +1,433 @@
+[resnet-basic] loading source ResNet-34
+[resnet-basic] building one frozen source plan
+[resnet-basic] loading target ResNet-18
+[resnet-basic] mapping ResNet-18
+[resnet-basic] transferred warm-up ResNet-18
+[resnet-basic] target-specific control ResNet-18
+[resnet-basic] ZipNN source control ResNet-18
+{
+  "schema_version": 1,
+  "complete": true,
+  "started_at": "2026-07-19T12:35:23.657965+00:00",
+  "completed_at": "2026-07-19T12:35:32.921269+00:00",
+  "family": {
+    "key": "resnet-basic",
+    "label": "ResNet BasicBlock",
+    "source_key": "resnet34",
+    "target_keys": [
+      "resnet18"
+    ]
+  },
+  "host": "godel",
+  "host_provenance": {
+    "hostname": "godel",
+    "machine": "x86_64",
+    "kernel": "6.12.85+deb12-amd64",
+    "cpu_model": "AMD EPYC 7343 16-Core Processor",
+    "logical_cpus": 64,
+    "machine_id_sha256": "82bef0b21e55bd9a80fb9443a00beb0c1203670f91b11ccf4155788adc378696",
+    "fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55"
+  },
+  "code_provenance": {
+    "digest": "68a6f5ab4cc3f614e12db24c85406e1a51fcc26752f75ef2fb6111a32b640e30",
+    "artifacts": [
+      {
+        "component": "runner",
+        "path": "run_general_codec_rerun.py",
+        "size_bytes": 71852,
+        "sha256": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24"
+      },
+      {
+        "component": "neuralzip",
+        "path": "__init__.py",
+        "size_bytes": 320,
+        "sha256": "9d8a5ec56478df10e0de7441563d8fcd307895c7201a9a55c22356431b975119"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_arithmetic_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 41448,
+        "sha256": "cb84ea00377a758cd16906801a7ea885132e3dca6c1761915b13838af04ce891"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huff0_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 294120,
+        "sha256": "f02a0091479f4c3ae8829f1843241545c5ec90bbf01ca4b772aab222ec9ae0c6"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huffman_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 51552,
+        "sha256": "8d7ffe0c207f42993098192e0b516c6cf1532dbf5aa47759f63ea3fcb5870920"
+      },
+      {
+        "component": "neuralzip",
+        "path": "ablations.py",
+        "size_bytes": 78661,
+        "sha256": "853189816077f1dd0cc78d1da90546dd568bed4a74587c3adbddec61b7923526"
+      },
+      {
+        "component": "neuralzip",
+        "path": "archive.py",
+        "size_bytes": 10446,
+        "sha256": "f9ced64c93e7a57bef6510dd499857be58f243a760d56bcf49e84ce05899050e"
+      },
+      {
+        "component": "neuralzip",
+        "path": "compressor.py",
+        "size_bytes": 31969,
+        "sha256": "d3c4aaff8323452e877a62de2bbbdbba26f8fa89e15704e16bf5ab42e30be33b"
+      },
+      {
+        "component": "neuralzip",
+        "path": "experiment_scenarios.py",
+        "size_bytes": 113329,
+        "sha256": "7c62713b5e99b0ef1567f0ad22aa65da4d1159d250998d746989f409a142256f"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huff0.py",
+        "size_bytes": 18004,
+        "sha256": "7ecfe99ad771c5503e707f525c0530842875df733d77bf5d8a523d02af26d844"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huffman.py",
+        "size_bytes": 5907,
+        "sha256": "01b78288a489feac68b36b56613cf38de27c7c5a6e73527feee01a8ddeee7443"
+      },
+      {
+        "component": "neuralzip",
+        "path": "mode_selection.py",
+        "size_bytes": 8019,
+        "sha256": "57175d6ade7c5b0a0c29cf375a39b5fad7b61cadf4ff54cfc6fd57bf70f41a47"
+      },
+      {
+        "component": "neuralzip",
+        "path": "model.py",
+        "size_bytes": 1503,
+        "sha256": "d38a5f80305cd86be1f7e97da2a75427416e4f4fe5aaa86f88810182eb346909"
+      },
+      {
+        "component": "neuralzip",
+        "path": "neuralzip_codec.py",
+        "size_bytes": 126047,
+        "sha256": "c35111802f2f5bf044dc5453c1c378387572e623e7ee483c08d6dacc81f72cad"
+      },
+      {
+        "component": "neuralzip",
+        "path": "packed_exponents.py",
+        "size_bytes": 4340,
+        "sha256": "78ed3b2d0987a0c0ab8550d3dd9b2dfde9333d1f3d2e60e755d514e6a251b212"
+      },
+      {
+        "component": "neuralzip",
+        "path": "payloads.py",
+        "size_bytes": 6759,
+        "sha256": "fc039935d89e117fc7d8aa6177e0b0a7c6a6168f48eb0e113f5fa84fdbe233f5"
+      },
+      {
+        "component": "neuralzip",
+        "path": "turborc.py",
+        "size_bytes": 5006,
+        "sha256": "09dbc92b9d1c76b8de85e88a8430dc8c177fa220f8a84380e938681c03f96c0d"
+      },
+      {
+        "component": "neuralzip",
+        "path": "utils.py",
+        "size_bytes": 3642,
+        "sha256": "6176e6575f85e6e41cd008b995767ddfc86393eda22c6ecff6a99cb1325fe995"
+      },
+      {
+        "component": "neuralzip",
+        "path": "zipnn_codec.py",
+        "size_bytes": 15203,
+        "sha256": "c321d565ec9c5b88309767eb3cc06aef56ef4ac854915f7ed1efee01a22f8f74"
+      },
+      {
+        "component": "zipnn",
+        "path": "__init__.py",
+        "size_bytes": 54,
+        "sha256": "40a02b691e6b8e822c5563036c096a82dff856a911f22769996df692fa36bafd"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_header.py",
+        "size_bytes": 1623,
+        "sha256": "5cfef22309aebeb24a7dae02568d54f31c8653fd583dbbe28260f3689f541471"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_patch.py",
+        "size_bytes": 1046,
+        "sha256": "12a40b11705cacd2504df6e546d02c2e1533235f829e72e65c3ce1f1e54f152d"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_safetensors.py",
+        "size_bytes": 1483,
+        "sha256": "4efa43ed2036e1d72b508620a70d4fb55ba47fae14cbe43e5fa128d9e45b0267"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_torch.py",
+        "size_bytes": 8300,
+        "sha256": "5447d9b7728d1caf1214ef90782481b233f4f7d0586e62c54e96e2c38f2ed579"
+      },
+      {
+        "component": "zipnn",
+        "path": "zipnn.py",
+        "size_bytes": 67368,
+        "sha256": "c3367ec3719fcde2f575cbbd73f80d44dac9b4c2739c71d6ef0e198ba1f008f2"
+      },
+      {
+        "component": "zipnn_core",
+        "path": "zipnn_core.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 122016,
+        "sha256": "7a87638b9e5be08289e57e0ae032cdf39a8c4b9c8b11a83b089a6a962efe7844"
+      }
+    ],
+    "versions": {
+      "torch": "2.12.1+cpu",
+      "torchvision": "0.27.1+cpu",
+      "neuralzip": "0.1.0",
+      "zipnn": null
+    }
+  },
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_repetitions": 1,
+  "measured_repetitions": 1,
+  "transfer_mode": "direct",
+  "runner_sha256": "a94b9426723d7ee851687b5913b997f54e59f56c3df7f696f3d2df1f58afe2ea",
+  "dependency_sha256": {
+    "examples/run_general_codec_rerun.py": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24",
+    "examples/run_precompute_family_transfer.py": "a32ed9e99135400ed7449210b8f16468e203c0a83f0afb345d02293e148f5f7b"
+  },
+  "source_model": {
+    "key": "resnet34",
+    "label": "ResNet-34",
+    "family": "ResNet",
+    "suites": [
+      "phenomenon",
+      "vision",
+      "model-storing"
+    ],
+    "backend": "torchvision",
+    "source": "torchvision.models.resnet34",
+    "parameters_b": 0.022,
+    "constructor": "resnet34",
+    "subfolder": null,
+    "weight_file": null,
+    "preferred_host": "relela-06"
+  },
+  "source_revision": "ResNet34_Weights.IMAGENET1K_V1",
+  "source_weights": {
+    "snapshot": "https://download.pytorch.org/models/resnet34-b627a593.pth",
+    "revision": "ResNet34_Weights.IMAGENET1K_V1",
+    "weight_artifacts": [
+      {
+        "cache_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/resnet34-b627a593.pth",
+        "resolved_path": "/home/mbravo/.cache/torch/hub/checkpoints/resnet34-b627a593.pth",
+        "size_bytes": 87319819,
+        "digest_algorithm": "sha256",
+        "digest": "b627a593bcbe140c234610266fe4f8ae95ea42fc881d091c9b6052e6b1d0590f",
+        "digest_source": "computed",
+        "repository_path": "resnet34-b627a593.pth"
+      }
+    ],
+    "index_artifact": null,
+    "weights_fingerprint": "c4a8a602d5447ea3c60c71bfab8d8932beca87765697a9bb04fcd8972988d22e",
+    "floating_numel": 21814696
+  },
+  "source_parameters": 21814696,
+  "tensor_scope": "complete floating checkpoint",
+  "source_setup": {
+    "clustering_seconds": 0.4271375136449933,
+    "codebook_seconds": 2.201663950458169,
+    "total_seconds": 2.6288014641031623,
+    "clusters": 147,
+    "codebooks": 3,
+    "selected_modes": {
+      "local_huff0": 164,
+      "raw": 127,
+      "packed_huff0_n2": 1,
+      "packed_huff0_n3": 1,
+      "packed_huff0_n4": 1
+    }
+  },
+  "source_plan_sha256": "6746d4819a27868de924db71ac57e43c15d5a0d3e02ead2db69a2305bf7385f1",
+  "target_histograms_computed": false,
+  "target_js_matching": false,
+  "target_mode_probing": false,
+  "exact_target_cache": false,
+  "targets": [
+    {
+      "target_key": "resnet18",
+      "target_model": {
+        "key": "resnet18",
+        "label": "ResNet-18",
+        "family": "ResNet",
+        "suites": [
+          "phenomenon",
+          "vision",
+          "model-storing"
+        ],
+        "backend": "torchvision",
+        "source": "torchvision.models.resnet18",
+        "parameters_b": 0.012,
+        "constructor": "resnet18",
+        "subfolder": null,
+        "weight_file": null,
+        "preferred_host": "relela-06"
+      },
+      "target_revision": "ResNet18_Weights.IMAGENET1K_V1",
+      "target_weights": {
+        "snapshot": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+        "revision": "ResNet18_Weights.IMAGENET1K_V1",
+        "weight_artifacts": [
+          {
+            "cache_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/resnet18-f37072fd.pth",
+            "resolved_path": "/home/mbravo/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth",
+            "size_bytes": 46830571,
+            "digest_algorithm": "sha256",
+            "digest": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+            "digest_source": "computed",
+            "repository_path": "resnet18-f37072fd.pth"
+          }
+        ],
+        "index_artifact": null,
+        "weights_fingerprint": "931cd5e2fae59b06e428f08b9890108e7892ff63441f3d0b6b4c39bb5554539c",
+        "floating_numel": 11699112
+      },
+      "target_parameters": 11699112,
+      "tensor_scope": "complete floating checkpoint",
+      "transfer_setup": {
+        "seconds": 0.0003915615379810333,
+        "mapping": "exact source tensor name, dtype, and stream",
+        "target_tensors": 102,
+        "matched_tensors": 102,
+        "matched_tensor_pct": 100.0,
+        "target_exponents": 11699112,
+        "matched_exponents": 11699112,
+        "matched_exponent_pct": 100.0,
+        "missing_streams": 0,
+        "selected_modes": {
+          "local_huff0": 122,
+          "raw": 80,
+          "packed_huff0": 2
+        },
+        "selected_symbols": {
+          "local_huff0": 8383720,
+          "raw": 11475560,
+          "packed_huff0": 3538944
+        },
+        "target_histograms_computed": false,
+        "target_js_matching": false,
+        "target_mode_probing": false
+      },
+      "neuralzip_transferred_direct": {
+        "encode_seconds": 0.019967926666140556,
+        "roundtrip_ok": true,
+        "raw_exponents": 11699112,
+        "compressed_exponent_bytes": 3802522,
+        "compressed_exponent_group_bytes": 3800174,
+        "exponent_codebook_metadata_bytes": 2348,
+        "exponent_pct": 32.50265490235498,
+        "shared_exponent_pct": 30.249372772907893,
+        "packed_exponent_pct": 30.249372772907893,
+        "local_exponent_pct": 69.75062722709211,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 8160204,
+          "packed_huff0": 3538908
+        },
+        "mode_chunks": {
+          "local_huff0": 155,
+          "packed_huff0": 27
+        },
+        "referenced_codebooks": 2,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "neuralzip_target_specific_direct": {
+        "encode_seconds": 0.013860944658517838,
+        "roundtrip_ok": true,
+        "raw_exponents": 11699112,
+        "compressed_exponent_bytes": 3789122,
+        "compressed_exponent_group_bytes": 3786774,
+        "exponent_codebook_metadata_bytes": 2348,
+        "exponent_pct": 32.38811629463843,
+        "shared_exponent_pct": 27.86861088260374,
+        "packed_exponent_pct": 27.86861088260374,
+        "local_exponent_pct": 72.13138911739627,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 8438732,
+          "packed_huff0": 3260380
+        },
+        "mode_chunks": {
+          "local_huff0": 153,
+          "packed_huff0": 29
+        },
+        "referenced_codebooks": 2,
+        "roundtrip_verified_on": "uncached warm-up",
+        "setup": {
+          "clustering_seconds": 0.10301166865974665,
+          "codebook_seconds": 1.2216528756543994,
+          "total_seconds": 1.324664544314146,
+          "clusters": 84,
+          "codebooks": 2,
+          "selected_modes": {
+            "raw": 71,
+            "local_huff0": 95,
+            "packed_huff0_n2": 1,
+            "packed_huff0_n3": 1
+          }
+        }
+      },
+      "zipnn_source": {
+        "encode_seconds": 0.09830071683973074,
+        "codec_encode_seconds": 0.08644775953143835,
+        "input_copy_seconds": 0.011852957308292389,
+        "setup_seconds": 0.0,
+        "exponent_raw_bytes": 11699112,
+        "exponent_data_bytes": 3902567,
+        "exponent_metadata_bytes": 1629,
+        "exponent_compressed_bytes": 3904196,
+        "exponent_ratio_pct": 33.37172940989026,
+        "tensor_count": 102,
+        "chunk_count": 181,
+        "roundtrip_ok": true,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "verification": {
+        "neuralzip_transferred_direct": true,
+        "neuralzip_target_specific_direct": true,
+        "zipnn_source": true
+      },
+      "comparison": {
+        "direct_transfer_speedup_vs_zipnn_source": 4.922930581792372,
+        "direct_transfer_speedup_vs_target_specific": 0.694160434894912,
+        "direct_transfer_ratio_delta_vs_zipnn_source_pp": -0.8690745075352737,
+        "direct_transfer_ratio_delta_vs_target_specific_pp": 0.114538607716554
+      }
+    }
+  ]
+}

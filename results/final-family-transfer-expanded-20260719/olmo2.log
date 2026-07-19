@@ -1,0 +1,777 @@
+[olmo2] loading source OLMo-2-1124-13B
+Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]Fetching 14 files:   7%|▋         | 1/14 [00:00<00:03,  3.55it/s]Fetching 14 files:  14%|█▍        | 2/14 [05:30<38:55, 194.61s/it]Fetching 14 files:  21%|██▏       | 3/14 [05:42<20:21, 111.01s/it]Fetching 14 files:  50%|█████     | 7/14 [06:14<04:15, 36.51s/it] Fetching 14 files:  71%|███████▏  | 10/14 [07:43<02:13, 33.50s/it]Fetching 14 files:  79%|███████▊  | 11/14 [07:43<01:23, 27.83s/it]Fetching 14 files:  86%|████████▌ | 12/14 [07:43<00:44, 22.39s/it]Fetching 14 files: 100%|██████████| 14/14 [07:43<00:00, 33.14s/it]
+[olmo2] building one frozen source plan
+[olmo2] loading target OLMo-2-7B
+Fetching 8 files:   0%|          | 0/8 [00:00<?, ?it/s]Fetching 8 files:  12%|█▎        | 1/8 [00:00<00:01,  4.34it/s]Fetching 8 files:  25%|██▌       | 2/8 [04:15<15:01, 150.33s/it]Fetching 8 files: 100%|██████████| 8/8 [04:15<00:00, 31.95s/it] 
+[olmo2] mapping OLMo-2-7B
+[olmo2] transferred warm-up OLMo-2-7B
+[olmo2] target-specific control OLMo-2-7B
+[olmo2] ZipNN source control OLMo-2-7B
+[olmo2] loading target OLMo-2-1B
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files:  25%|██▌       | 1/4 [00:00<00:01,  2.56it/s]Fetching 4 files:  50%|█████     | 2/4 [00:55<01:05, 32.64s/it]Fetching 4 files: 100%|██████████| 4/4 [00:55<00:00, 13.90s/it]
+[olmo2] mapping OLMo-2-1B
+[olmo2] transferred warm-up OLMo-2-1B
+[olmo2] target-specific control OLMo-2-1B
+[olmo2] ZipNN source control OLMo-2-1B
+{
+  "schema_version": 1,
+  "complete": true,
+  "started_at": "2026-07-19T13:07:23.471074+00:00",
+  "completed_at": "2026-07-19T13:28:29.311184+00:00",
+  "family": {
+    "key": "olmo2",
+    "label": "OLMo-2",
+    "source_key": "olmo2-13b",
+    "target_keys": [
+      "olmo2-7b",
+      "olmo2-1b"
+    ]
+  },
+  "host": "godel",
+  "host_provenance": {
+    "hostname": "godel",
+    "machine": "x86_64",
+    "kernel": "6.12.85+deb12-amd64",
+    "cpu_model": "AMD EPYC 7343 16-Core Processor",
+    "logical_cpus": 64,
+    "machine_id_sha256": "82bef0b21e55bd9a80fb9443a00beb0c1203670f91b11ccf4155788adc378696",
+    "fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55"
+  },
+  "code_provenance": {
+    "digest": "68a6f5ab4cc3f614e12db24c85406e1a51fcc26752f75ef2fb6111a32b640e30",
+    "artifacts": [
+      {
+        "component": "runner",
+        "path": "run_general_codec_rerun.py",
+        "size_bytes": 71852,
+        "sha256": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24"
+      },
+      {
+        "component": "neuralzip",
+        "path": "__init__.py",
+        "size_bytes": 320,
+        "sha256": "9d8a5ec56478df10e0de7441563d8fcd307895c7201a9a55c22356431b975119"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_arithmetic_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 41448,
+        "sha256": "cb84ea00377a758cd16906801a7ea885132e3dca6c1761915b13838af04ce891"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huff0_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 294120,
+        "sha256": "f02a0091479f4c3ae8829f1843241545c5ec90bbf01ca4b772aab222ec9ae0c6"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huffman_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 51552,
+        "sha256": "8d7ffe0c207f42993098192e0b516c6cf1532dbf5aa47759f63ea3fcb5870920"
+      },
+      {
+        "component": "neuralzip",
+        "path": "ablations.py",
+        "size_bytes": 78661,
+        "sha256": "853189816077f1dd0cc78d1da90546dd568bed4a74587c3adbddec61b7923526"
+      },
+      {
+        "component": "neuralzip",
+        "path": "archive.py",
+        "size_bytes": 10446,
+        "sha256": "f9ced64c93e7a57bef6510dd499857be58f243a760d56bcf49e84ce05899050e"
+      },
+      {
+        "component": "neuralzip",
+        "path": "compressor.py",
+        "size_bytes": 31969,
+        "sha256": "d3c4aaff8323452e877a62de2bbbdbba26f8fa89e15704e16bf5ab42e30be33b"
+      },
+      {
+        "component": "neuralzip",
+        "path": "experiment_scenarios.py",
+        "size_bytes": 113329,
+        "sha256": "7c62713b5e99b0ef1567f0ad22aa65da4d1159d250998d746989f409a142256f"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huff0.py",
+        "size_bytes": 18004,
+        "sha256": "7ecfe99ad771c5503e707f525c0530842875df733d77bf5d8a523d02af26d844"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huffman.py",
+        "size_bytes": 5907,
+        "sha256": "01b78288a489feac68b36b56613cf38de27c7c5a6e73527feee01a8ddeee7443"
+      },
+      {
+        "component": "neuralzip",
+        "path": "mode_selection.py",
+        "size_bytes": 8019,
+        "sha256": "57175d6ade7c5b0a0c29cf375a39b5fad7b61cadf4ff54cfc6fd57bf70f41a47"
+      },
+      {
+        "component": "neuralzip",
+        "path": "model.py",
+        "size_bytes": 1503,
+        "sha256": "d38a5f80305cd86be1f7e97da2a75427416e4f4fe5aaa86f88810182eb346909"
+      },
+      {
+        "component": "neuralzip",
+        "path": "neuralzip_codec.py",
+        "size_bytes": 126047,
+        "sha256": "c35111802f2f5bf044dc5453c1c378387572e623e7ee483c08d6dacc81f72cad"
+      },
+      {
+        "component": "neuralzip",
+        "path": "packed_exponents.py",
+        "size_bytes": 4340,
+        "sha256": "78ed3b2d0987a0c0ab8550d3dd9b2dfde9333d1f3d2e60e755d514e6a251b212"
+      },
+      {
+        "component": "neuralzip",
+        "path": "payloads.py",
+        "size_bytes": 6759,
+        "sha256": "fc039935d89e117fc7d8aa6177e0b0a7c6a6168f48eb0e113f5fa84fdbe233f5"
+      },
+      {
+        "component": "neuralzip",
+        "path": "turborc.py",
+        "size_bytes": 5006,
+        "sha256": "09dbc92b9d1c76b8de85e88a8430dc8c177fa220f8a84380e938681c03f96c0d"
+      },
+      {
+        "component": "neuralzip",
+        "path": "utils.py",
+        "size_bytes": 3642,
+        "sha256": "6176e6575f85e6e41cd008b995767ddfc86393eda22c6ecff6a99cb1325fe995"
+      },
+      {
+        "component": "neuralzip",
+        "path": "zipnn_codec.py",
+        "size_bytes": 15203,
+        "sha256": "c321d565ec9c5b88309767eb3cc06aef56ef4ac854915f7ed1efee01a22f8f74"
+      },
+      {
+        "component": "zipnn",
+        "path": "__init__.py",
+        "size_bytes": 54,
+        "sha256": "40a02b691e6b8e822c5563036c096a82dff856a911f22769996df692fa36bafd"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_header.py",
+        "size_bytes": 1623,
+        "sha256": "5cfef22309aebeb24a7dae02568d54f31c8653fd583dbbe28260f3689f541471"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_patch.py",
+        "size_bytes": 1046,
+        "sha256": "12a40b11705cacd2504df6e546d02c2e1533235f829e72e65c3ce1f1e54f152d"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_safetensors.py",
+        "size_bytes": 1483,
+        "sha256": "4efa43ed2036e1d72b508620a70d4fb55ba47fae14cbe43e5fa128d9e45b0267"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_torch.py",
+        "size_bytes": 8300,
+        "sha256": "5447d9b7728d1caf1214ef90782481b233f4f7d0586e62c54e96e2c38f2ed579"
+      },
+      {
+        "component": "zipnn",
+        "path": "zipnn.py",
+        "size_bytes": 67368,
+        "sha256": "c3367ec3719fcde2f575cbbd73f80d44dac9b4c2739c71d6ef0e198ba1f008f2"
+      },
+      {
+        "component": "zipnn_core",
+        "path": "zipnn_core.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 122016,
+        "sha256": "7a87638b9e5be08289e57e0ae032cdf39a8c4b9c8b11a83b089a6a962efe7844"
+      }
+    ],
+    "versions": {
+      "torch": "2.12.1+cpu",
+      "torchvision": "0.27.1+cpu",
+      "neuralzip": "0.1.0",
+      "zipnn": null
+    }
+  },
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_repetitions": 1,
+  "measured_repetitions": 1,
+  "transfer_mode": "direct",
+  "runner_sha256": "a94b9426723d7ee851687b5913b997f54e59f56c3df7f696f3d2df1f58afe2ea",
+  "dependency_sha256": {
+    "examples/run_general_codec_rerun.py": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24",
+    "examples/run_precompute_family_transfer.py": "a32ed9e99135400ed7449210b8f16468e203c0a83f0afb345d02293e148f5f7b"
+  },
+  "source_model": {
+    "key": "olmo2-13b",
+    "label": "OLMo-2-1124-13B",
+    "family": "OLMo 2",
+    "suites": [
+      "model-storing"
+    ],
+    "backend": "hf",
+    "source": "allenai/OLMo-2-1124-13B",
+    "parameters_b": 13.0,
+    "constructor": null,
+    "subfolder": null,
+    "weight_file": null,
+    "preferred_host": "relela-06"
+  },
+  "source_revision": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+  "source_weights": {
+    "snapshot": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+    "revision": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+    "weight_artifacts": [
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00001-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/d98857770936dacb09e4bcfffc98d6eb17d9fb64ead69ccde1c4e4c712978257",
+        "size_bytes": 4907502536,
+        "digest_algorithm": "sha256",
+        "digest": "d98857770936dacb09e4bcfffc98d6eb17d9fb64ead69ccde1c4e4c712978257",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00001-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00002-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/da8fae969618d33af8174ac76c437906ad9857024db2c143e5c61d739f5c0a94",
+        "size_bytes": 4970582888,
+        "digest_algorithm": "sha256",
+        "digest": "da8fae969618d33af8174ac76c437906ad9857024db2c143e5c61d739f5c0a94",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00002-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00003-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/f03c834e34c87a9fa71c4b2c38f7d451b1037dc29f81d93251bb5067eabab8d1",
+        "size_bytes": 4970582888,
+        "digest_algorithm": "sha256",
+        "digest": "f03c834e34c87a9fa71c4b2c38f7d451b1037dc29f81d93251bb5067eabab8d1",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00003-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00004-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/11ae8c3a4a7b90f19ae3742a894c85cf14296042f230dfaa943227ad2d646257",
+        "size_bytes": 4970582928,
+        "digest_algorithm": "sha256",
+        "digest": "11ae8c3a4a7b90f19ae3742a894c85cf14296042f230dfaa943227ad2d646257",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00004-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00005-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/fefe1d9619d19162177708ad55e462571cba2cc42f9721169f2eb93ba75b0fb7",
+        "size_bytes": 4792283808,
+        "digest_algorithm": "sha256",
+        "digest": "fefe1d9619d19162177708ad55e462571cba2cc42f9721169f2eb93ba75b0fb7",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00005-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00006-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/fdc566735dedae56caed260f49988cff5c93cc965c554f0168d9837a7b2e11ef",
+        "size_bytes": 4792325016,
+        "digest_algorithm": "sha256",
+        "digest": "fdc566735dedae56caed260f49988cff5c93cc965c554f0168d9837a7b2e11ef",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00006-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00007-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/4aad6698968645ba46ba258cbd1e336c6f9e986c468a0fdf0d7aa1babc0cb94e",
+        "size_bytes": 4792325016,
+        "digest_algorithm": "sha256",
+        "digest": "4aad6698968645ba46ba258cbd1e336c6f9e986c468a0fdf0d7aa1babc0cb94e",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00007-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00008-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/140b9f897f4f68877071b84d4c0cb792f27ed319980420eef16c89ebe67a3410",
+        "size_bytes": 4970541752,
+        "digest_algorithm": "sha256",
+        "digest": "140b9f897f4f68877071b84d4c0cb792f27ed319980420eef16c89ebe67a3410",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00008-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00009-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/b59cf9c1a7a1b56323eb2b8643605c2d6d635c4a02f642efef36fa251b107e41",
+        "size_bytes": 4970582928,
+        "digest_algorithm": "sha256",
+        "digest": "b59cf9c1a7a1b56323eb2b8643605c2d6d635c4a02f642efef36fa251b107e41",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00009-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00010-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/6344d8e63d866e783a58694aedc2429463c9c232296b0c432830add37fa953fb",
+        "size_bytes": 4970582928,
+        "digest_algorithm": "sha256",
+        "digest": "6344d8e63d866e783a58694aedc2429463c9c232296b0c432830add37fa953fb",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00010-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00011-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/ea1c24d5a94d0047769a32bf113ffa067be04b3c580aad5a390df4365e1e3df6",
+        "size_bytes": 3701743344,
+        "digest_algorithm": "sha256",
+        "digest": "ea1c24d5a94d0047769a32bf113ffa067be04b3c580aad5a390df4365e1e3df6",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00011-of-00012.safetensors"
+      },
+      {
+        "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model-00012-of-00012.safetensors",
+        "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/8f27e406a792cc69eafa56c98016e4eebdaa4c06c6e3d04e514c3830f8ccaf59",
+        "size_bytes": 2055209088,
+        "digest_algorithm": "sha256",
+        "digest": "8f27e406a792cc69eafa56c98016e4eebdaa4c06c6e3d04e514c3830f8ccaf59",
+        "digest_source": "huggingface-content-addressed-cache",
+        "repository_path": "model-00012-of-00012.safetensors"
+      }
+    ],
+    "index_artifact": {
+      "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/snapshots/3fefddc1bf18a30e1d9b91000271630718f2aa8b/model.safetensors.index.json",
+      "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-13B/blobs/b8b026481f7393cc8291c8c4b8a3fe40975fa77c",
+      "size_bytes": 36954,
+      "digest_algorithm": "git-blob-sha1",
+      "digest": "b8b026481f7393cc8291c8c4b8a3fe40975fa77c",
+      "digest_source": "huggingface-content-addressed-cache",
+      "repository_path": "model.safetensors.index.json"
+    },
+    "weights_fingerprint": "353aabd3d398d41f2c0316b7bd524dc6429c5435d7875cc11f036b992515e461",
+    "floating_numel": 13716198400,
+    "declared_parameters_b": 13.0,
+    "minimum_parameter_coverage": 0.7
+  },
+  "source_parameters": 13716198400,
+  "tensor_scope": "complete floating checkpoint",
+  "source_setup": {
+    "clustering_seconds": 58.58371058758348,
+    "codebook_seconds": 115.03795698285103,
+    "total_seconds": 173.6216675704345,
+    "clusters": 195,
+    "codebooks": 112,
+    "selected_modes": {
+      "raw": 71,
+      "local_huff0": 207,
+      "packed_huff0_n3": 10,
+      "shared_huff0": 80,
+      "packed_huff0_n2": 3,
+      "packed_huff0_n4": 19
+    }
+  },
+  "source_plan_sha256": "ad1572ba16b79442658d3cdd155454b222392e4c54b03a136843ea0e0ba5893f",
+  "target_histograms_computed": false,
+  "target_js_matching": false,
+  "target_mode_probing": false,
+  "exact_target_cache": false,
+  "targets": [
+    {
+      "target_key": "olmo2-7b",
+      "target_model": {
+        "key": "olmo2-7b",
+        "label": "OLMo-2-7B",
+        "family": "OLMo 2",
+        "suites": [
+          "model-storing"
+        ],
+        "backend": "hf",
+        "source": "allenai/OLMo-2-1124-7B",
+        "parameters_b": 7.0,
+        "constructor": null,
+        "subfolder": null,
+        "weight_file": null,
+        "preferred_host": "relela-06"
+      },
+      "target_revision": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
+      "target_weights": {
+        "snapshot": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032",
+        "revision": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
+        "weight_artifacts": [
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00001-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/880c0d9bd7311ca020584a7304504918dfcf17bfa35b464b1ab8dc01a06138d3",
+            "size_bytes": 4949546184,
+            "digest_algorithm": "sha256",
+            "digest": "880c0d9bd7311ca020584a7304504918dfcf17bfa35b464b1ab8dc01a06138d3",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00001-of-00006.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00002-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/de0b6a357d03676c4986588aaf4dc96afc3f44a0498514961d2b2cfa1940655e",
+            "size_bytes": 4991622816,
+            "digest_algorithm": "sha256",
+            "digest": "de0b6a357d03676c4986588aaf4dc96afc3f44a0498514961d2b2cfa1940655e",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00002-of-00006.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00003-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/c1038a7d346a681a8fb6949e054c2246f3f3c80e826855c1cec6af1155cc607d",
+            "size_bytes": 4924546896,
+            "digest_algorithm": "sha256",
+            "digest": "c1038a7d346a681a8fb6949e054c2246f3f3c80e826855c1cec6af1155cc607d",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00003-of-00006.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00004-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/33c0a21146ace02d36928787ae7f34be868f7c81b894dea98ec7b0e5a3ea01b2",
+            "size_bytes": 4857404928,
+            "digest_algorithm": "sha256",
+            "digest": "33c0a21146ace02d36928787ae7f34be868f7c81b894dea98ec7b0e5a3ea01b2",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00004-of-00006.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00005-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/e7f82a3014ccfc0f67208f63785ae4bc71f09aba86db48bf6139d18178abbfed",
+            "size_bytes": 4857404928,
+            "digest_algorithm": "sha256",
+            "digest": "e7f82a3014ccfc0f67208f63785ae4bc71f09aba86db48bf6139d18178abbfed",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00005-of-00006.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model-00006-of-00006.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/2dda0bdc36c113e54909a798f8847f76f052b17a082ceaf1fa8b0fd30b0b3041",
+            "size_bytes": 4613984792,
+            "digest_algorithm": "sha256",
+            "digest": "2dda0bdc36c113e54909a798f8847f76f052b17a082ceaf1fa8b0fd30b0b3041",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00006-of-00006.safetensors"
+          }
+        ],
+        "index_artifact": {
+          "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/snapshots/7df9a82518afdecae4e8c026b27adccc8c1f0032/model.safetensors.index.json",
+          "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--OLMo-2-1124-7B/blobs/9a15313360de4176e40f9ebe5e292b2c25279d39",
+          "size_bytes": 29594,
+          "digest_algorithm": "git-blob-sha1",
+          "digest": "9a15313360de4176e40f9ebe5e292b2c25279d39",
+          "digest_source": "huggingface-content-addressed-cache",
+          "repository_path": "model.safetensors.index.json"
+        },
+        "weights_fingerprint": "ce8237431bb617445cf84940fdd64cc1995518fc426ea7279e8c83a6ce3f201d",
+        "floating_numel": 7298617344,
+        "declared_parameters_b": 7.0,
+        "minimum_parameter_coverage": 0.7
+      },
+      "target_parameters": 7298617344,
+      "tensor_scope": "complete floating checkpoint",
+      "transfer_setup": {
+        "seconds": 0.0012317299842834473,
+        "mapping": "exact source tensor name, dtype, and stream",
+        "target_tensors": 355,
+        "matched_tensors": 355,
+        "matched_tensor_pct": 100.0,
+        "target_exponents": 7298617344,
+        "matched_exponents": 7298617344,
+        "matched_exponent_pct": 100.0,
+        "missing_streams": 0,
+        "selected_modes": {
+          "raw": 102,
+          "local_huff0": 477,
+          "packed_huff0": 54,
+          "shared_huff0": 77
+        },
+        "selected_symbols": {
+          "raw": 3100651520,
+          "local_huff0": 11479273472,
+          "packed_huff0": 16994304,
+          "shared_huff0": 315392
+        },
+        "target_histograms_computed": false,
+        "target_js_matching": false,
+        "target_mode_probing": false
+      },
+      "neuralzip_transferred_direct": {
+        "encode_seconds": 3.4146981332451105,
+        "roundtrip_ok": true,
+        "raw_exponents": 7298617344,
+        "compressed_exponent_bytes": 2454731935,
+        "compressed_exponent_group_bytes": 2454725232,
+        "exponent_codebook_metadata_bytes": 6703,
+        "exponent_pct": 33.632835087839894,
+        "shared_exponent_pct": 0.180594863091921,
+        "packed_exponent_pct": 0.180594863091921,
+        "local_exponent_pct": 99.81940513690807,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 7285436416,
+          "packed_huff0": 13180928
+        },
+        "mode_chunks": {
+          "local_huff0": 55660,
+          "packed_huff0": 149
+        },
+        "referenced_codebooks": 22,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "neuralzip_target_specific_direct": {
+        "encode_seconds": 4.983496800996363,
+        "roundtrip_ok": true,
+        "raw_exponents": 7298617344,
+        "compressed_exponent_bytes": 2454539017,
+        "compressed_exponent_group_bytes": 2454530143,
+        "exponent_codebook_metadata_bytes": 8874,
+        "exponent_pct": 33.63019187487355,
+        "shared_exponent_pct": 1.1184759544505858,
+        "packed_exponent_pct": 1.1184759544505858,
+        "local_exponent_pct": 98.88152404554941,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 7216984064,
+          "packed_huff0": 81633280
+        },
+        "mode_chunks": {
+          "local_huff0": 55130,
+          "packed_huff0": 679
+        },
+        "referenced_codebooks": 23,
+        "roundtrip_verified_on": "uncached warm-up",
+        "setup": {
+          "clustering_seconds": 30.44111220166087,
+          "codebook_seconds": 70.57528354320675,
+          "total_seconds": 101.01639574486762,
+          "clusters": 150,
+          "codebooks": 82,
+          "selected_modes": {
+            "raw": 29,
+            "local_huff0": 189,
+            "packed_huff0_n4": 18,
+            "shared_huff0": 59,
+            "packed_huff0_n2": 4,
+            "packed_huff0_n3": 1
+          }
+        }
+      },
+      "zipnn_source": {
+        "encode_seconds": 5.186224521137774,
+        "codec_encode_seconds": 4.50459595117718,
+        "input_copy_seconds": 0.6816285699605942,
+        "setup_seconds": 0.0,
+        "exponent_raw_bytes": 7298617344,
+        "exponent_data_bytes": 2453229194,
+        "exponent_metadata_bytes": 502281,
+        "exponent_compressed_bytes": 2453731475,
+        "exponent_ratio_pct": 33.61912756005968,
+        "tensor_count": 355,
+        "chunk_count": 55809,
+        "roundtrip_ok": true,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "verification": {
+        "neuralzip_transferred_direct": true,
+        "neuralzip_target_specific_direct": true,
+        "zipnn_source": true
+      },
+      "comparison": {
+        "direct_transfer_speedup_vs_zipnn_source": 1.5187944347540665,
+        "direct_transfer_speedup_vs_target_specific": 1.4594252863752752,
+        "direct_transfer_ratio_delta_vs_zipnn_source_pp": 0.013707527780212558,
+        "direct_transfer_ratio_delta_vs_target_specific_pp": 0.0026432129663405135
+      }
+    },
+    {
+      "target_key": "olmo2-1b",
+      "target_model": {
+        "key": "olmo2-1b",
+        "label": "OLMo-2-1B",
+        "family": "OLMo 2",
+        "suites": [
+          "model-storing"
+        ],
+        "backend": "hf",
+        "source": "allenai/Olmo-2-0425-1B",
+        "parameters_b": 1.0,
+        "constructor": null,
+        "subfolder": null,
+        "weight_file": null,
+        "preferred_host": "relela-06"
+      },
+      "target_revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
+      "target_weights": {
+        "snapshot": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/snapshots/a1847dff35000b4271fa70afc5db10fd29fedbdf",
+        "revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
+        "weight_artifacts": [
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/snapshots/a1847dff35000b4271fa70afc5db10fd29fedbdf/model-00001-of-00002.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/blobs/c52e4ac8bf4867e698d908f9e8c2b84aa891b91dff066d46bf2a7cf453ad77fb",
+            "size_bytes": 4983360992,
+            "digest_algorithm": "sha256",
+            "digest": "c52e4ac8bf4867e698d908f9e8c2b84aa891b91dff066d46bf2a7cf453ad77fb",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00001-of-00002.safetensors"
+          },
+          {
+            "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/snapshots/a1847dff35000b4271fa70afc5db10fd29fedbdf/model-00002-of-00002.safetensors",
+            "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/blobs/5f80762572fe28aca49b01b98895d96ca529b9792fc10925a977a161ad768d30",
+            "size_bytes": 956326560,
+            "digest_algorithm": "sha256",
+            "digest": "5f80762572fe28aca49b01b98895d96ca529b9792fc10925a977a161ad768d30",
+            "digest_source": "huggingface-content-addressed-cache",
+            "repository_path": "model-00002-of-00002.safetensors"
+          }
+        ],
+        "index_artifact": {
+          "cache_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/snapshots/a1847dff35000b4271fa70afc5db10fd29fedbdf/model.safetensors.index.json",
+          "resolved_path": "/dev/shm/mbravo-neuralzip-transfer-20260719/hf-cache/models--allenai--Olmo-2-0425-1B/blobs/64893bc51d60e692025d2d041ac1d28a22284e2c",
+          "size_bytes": 14873,
+          "digest_algorithm": "git-blob-sha1",
+          "digest": "64893bc51d60e692025d2d041ac1d28a22284e2c",
+          "digest_source": "huggingface-content-addressed-cache",
+          "repository_path": "model.safetensors.index.json"
+        },
+        "weights_fingerprint": "9e97e9bc96956ebff040b2a69cf7c45cb658e4aa2261a0d89d30607c1bb4c4da",
+        "floating_numel": 1484916736,
+        "declared_parameters_b": 1.0,
+        "minimum_parameter_coverage": 0.7
+      },
+      "target_parameters": 1484916736,
+      "tensor_scope": "complete floating checkpoint",
+      "transfer_setup": {
+        "seconds": 0.0006798999384045601,
+        "mapping": "exact source tensor name, dtype, and stream",
+        "target_tensors": 179,
+        "matched_tensors": 179,
+        "matched_tensor_pct": 100.0,
+        "target_exponents": 1484916736,
+        "matched_exponents": 1484916736,
+        "matched_exponent_pct": 100.0,
+        "missing_streams": 0,
+        "selected_modes": {
+          "raw": 58,
+          "local_huff0": 231,
+          "packed_huff0": 24,
+          "shared_huff0": 45
+        },
+        "selected_symbols": {
+          "raw": 759175168,
+          "local_huff0": 2206324736,
+          "packed_huff0": 4241408,
+          "shared_huff0": 92160
+        },
+        "target_histograms_computed": false,
+        "target_js_matching": false,
+        "target_mode_probing": false
+      },
+      "neuralzip_transferred_direct": {
+        "encode_seconds": 0.5955262975767255,
+        "roundtrip_ok": true,
+        "raw_exponents": 1484916736,
+        "compressed_exponent_bytes": 489899584,
+        "compressed_exponent_group_bytes": 489897952,
+        "exponent_codebook_metadata_bytes": 1632,
+        "exponent_pct": 32.99172082332837,
+        "shared_exponent_pct": 0.28287431195064666,
+        "packed_exponent_pct": 0.28287431195064666,
+        "local_exponent_pct": 99.71712568804935,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 1480716288,
+          "packed_huff0": 4200448
+        },
+        "mode_chunks": {
+          "local_huff0": 11358,
+          "packed_huff0": 35
+        },
+        "referenced_codebooks": 3,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "neuralzip_target_specific_direct": {
+        "encode_seconds": 0.609229352325201,
+        "roundtrip_ok": true,
+        "raw_exponents": 1484916736,
+        "compressed_exponent_bytes": 489438750,
+        "compressed_exponent_group_bytes": 489435225,
+        "exponent_codebook_metadata_bytes": 3525,
+        "exponent_pct": 32.9606864906397,
+        "shared_exponent_pct": 0.5675415863856221,
+        "packed_exponent_pct": 0.5675415863856221,
+        "local_exponent_pct": 99.43245841361438,
+        "raw_exponent_pct": 0.0,
+        "mode_symbols": {
+          "local_huff0": 1476489216,
+          "packed_huff0": 8427520
+        },
+        "mode_chunks": {
+          "local_huff0": 11310,
+          "packed_huff0": 83
+        },
+        "referenced_codebooks": 9,
+        "roundtrip_verified_on": "uncached warm-up",
+        "setup": {
+          "clustering_seconds": 6.64818515535444,
+          "codebook_seconds": 10.568962992168963,
+          "total_seconds": 17.217148147523403,
+          "clusters": 60,
+          "codebooks": 12,
+          "selected_modes": {
+            "raw": 10,
+            "local_huff0": 98,
+            "packed_huff0_n4": 7,
+            "packed_huff0_n2": 2,
+            "shared_huff0": 3
+          }
+        }
+      },
+      "zipnn_source": {
+        "encode_seconds": 1.3531245151534677,
+        "codec_encode_seconds": 1.0651701036840677,
+        "input_copy_seconds": 0.28795441146939993,
+        "setup_seconds": 0.0,
+        "exponent_raw_bytes": 1484916736,
+        "exponent_data_bytes": 489286596,
+        "exponent_metadata_bytes": 102537,
+        "exponent_compressed_bytes": 489389133,
+        "exponent_ratio_pct": 32.95734509116611,
+        "tensor_count": 179,
+        "chunk_count": 11393,
+        "roundtrip_ok": true,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "verification": {
+        "neuralzip_transferred_direct": true,
+        "neuralzip_target_specific_direct": true,
+        "zipnn_source": true
+      },
+      "comparison": {
+        "direct_transfer_speedup_vs_zipnn_source": 2.2721490564892073,
+        "direct_transfer_speedup_vs_target_specific": 1.0230099910016317,
+        "direct_transfer_ratio_delta_vs_zipnn_source_pp": 0.03437573216226042,
+        "direct_transfer_ratio_delta_vs_target_specific_pp": 0.031034332688669508
+      }
+    }
+  ]
+}

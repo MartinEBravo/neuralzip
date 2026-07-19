@@ -1,0 +1,608 @@
+[efficientnet] loading source EfficientNet-B7
+Downloading: "https://download.pytorch.org/models/efficientnet_b7_lukemelas-c5b4e57e.pth" to /data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b7_lukemelas-c5b4e57e.pth
+  0%|          | 0.00/255M [00:00<?, ?B/s]  1%|          | 2.50M/255M [00:00<00:10, 25.6MB/s]  2%|▏         | 5.50M/255M [00:00<00:09, 28.9MB/s]  3%|▎         | 8.75M/255M [00:00<00:09, 27.0MB/s]  5%|▍         | 12.1M/255M [00:00<00:08, 29.6MB/s]  6%|▌         | 15.6M/255M [00:00<00:07, 31.7MB/s]  8%|▊         | 20.2M/255M [00:00<00:06, 37.0MB/s]  9%|▉         | 24.1M/255M [00:00<00:06, 38.1MB/s] 12%|█▏        | 30.1M/255M [00:00<00:05, 42.8MB/s] 14%|█▍        | 35.8M/255M [00:00<00:04, 47.4MB/s] 16%|█▋        | 42.0M/255M [00:01<00:04, 52.6MB/s] 19%|█▉        | 48.8M/255M [00:01<00:03, 57.8MB/s] 22%|██▏       | 55.4M/255M [00:01<00:03, 61.2MB/s] 25%|██▍       | 63.5M/255M [00:01<00:02, 68.3MB/s] 28%|██▊       | 72.5M/255M [00:01<00:02, 75.9MB/s] 32%|███▏      | 81.1M/255M [00:01<00:02, 80.0MB/s] 36%|███▌      | 91.1M/255M [00:01<00:01, 87.2MB/s] 40%|███▉      | 101M/255M [00:01<00:01, 93.1MB/s]  44%|████▍     | 112M/255M [00:01<00:01, 97.0MB/s] 47%|████▋     | 121M/255M [00:01<00:01, 95.7MB/s] 52%|█████▏    | 131M/255M [00:02<00:01, 99.3MB/s] 55%|█████▌    | 141M/255M [00:02<00:01, 99.0MB/s] 59%|█████▉    | 151M/255M [00:02<00:01, 101MB/s]  63%|██████▎   | 161M/255M [00:02<00:00, 101MB/s] 67%|██████▋   | 171M/255M [00:02<00:00, 101MB/s] 72%|███████▏  | 182M/255M [00:02<00:00, 104MB/s] 76%|███████▌  | 192M/255M [00:02<00:00, 105MB/s] 80%|███████▉  | 202M/255M [00:02<00:00, 104MB/s] 83%|████████▎ | 212M/255M [00:02<00:00, 103MB/s] 88%|████████▊ | 223M/255M [00:03<00:00, 105MB/s] 91%|█████████▏| 233M/255M [00:03<00:00, 103MB/s] 95%|█████████▌| 243M/255M [00:03<00:00, 103MB/s] 99%|█████████▉| 253M/255M [00:03<00:00, 104MB/s]100%|██████████| 255M/255M [00:03<00:00, 80.1MB/s]
+[efficientnet] building one frozen source plan
+[efficientnet] loading target EfficientNet-B3
+Downloading: "https://download.pytorch.org/models/efficientnet_b3_rwightman-b3899882.pth" to /data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b3_rwightman-b3899882.pth
+  0%|          | 0.00/47.2M [00:00<?, ?B/s] 21%|██        | 9.75M/47.2M [00:00<00:00, 102MB/s] 45%|████▍     | 21.0M/47.2M [00:00<00:00, 111MB/s] 68%|██████▊   | 32.2M/47.2M [00:00<00:00, 114MB/s] 91%|█████████▏| 43.1M/47.2M [00:00<00:00, 112MB/s]100%|██████████| 47.2M/47.2M [00:00<00:00, 112MB/s]
+[efficientnet] mapping EfficientNet-B3
+[efficientnet] transferred warm-up EfficientNet-B3
+[efficientnet] target-specific control EfficientNet-B3
+[efficientnet] ZipNN source control EfficientNet-B3
+[efficientnet] loading target EfficientNet-B0
+Downloading: "https://download.pytorch.org/models/efficientnet_b0_rwightman-7f5810bc.pth" to /data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b0_rwightman-7f5810bc.pth
+  0%|          | 0.00/20.5M [00:00<?, ?B/s] 49%|████▉     | 10.0M/20.5M [00:00<00:00, 104MB/s]100%|██████████| 20.5M/20.5M [00:00<00:00, 110MB/s]
+[efficientnet] mapping EfficientNet-B0
+[efficientnet] transferred warm-up EfficientNet-B0
+[efficientnet] target-specific control EfficientNet-B0
+[efficientnet] ZipNN source control EfficientNet-B0
+{
+  "schema_version": 1,
+  "complete": true,
+  "started_at": "2026-07-19T12:36:28.172518+00:00",
+  "completed_at": "2026-07-19T12:37:05.336639+00:00",
+  "family": {
+    "key": "efficientnet",
+    "label": "EfficientNet",
+    "source_key": "efficientnet-b7",
+    "target_keys": [
+      "efficientnet-b3",
+      "efficientnet-b0"
+    ]
+  },
+  "host": "godel",
+  "host_provenance": {
+    "hostname": "godel",
+    "machine": "x86_64",
+    "kernel": "6.12.85+deb12-amd64",
+    "cpu_model": "AMD EPYC 7343 16-Core Processor",
+    "logical_cpus": 64,
+    "machine_id_sha256": "82bef0b21e55bd9a80fb9443a00beb0c1203670f91b11ccf4155788adc378696",
+    "fingerprint": "8ee0710bffab5cd9ca7416b8fc2fe4e4a741b31021fafeddec75bb8df065dc55"
+  },
+  "code_provenance": {
+    "digest": "68a6f5ab4cc3f614e12db24c85406e1a51fcc26752f75ef2fb6111a32b640e30",
+    "artifacts": [
+      {
+        "component": "runner",
+        "path": "run_general_codec_rerun.py",
+        "size_bytes": 71852,
+        "sha256": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24"
+      },
+      {
+        "component": "neuralzip",
+        "path": "__init__.py",
+        "size_bytes": 320,
+        "sha256": "9d8a5ec56478df10e0de7441563d8fcd307895c7201a9a55c22356431b975119"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_arithmetic_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 41448,
+        "sha256": "cb84ea00377a758cd16906801a7ea885132e3dca6c1761915b13838af04ce891"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huff0_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 294120,
+        "sha256": "f02a0091479f4c3ae8829f1843241545c5ec90bbf01ca4b772aab222ec9ae0c6"
+      },
+      {
+        "component": "neuralzip",
+        "path": "_huffman_cpp.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 51552,
+        "sha256": "8d7ffe0c207f42993098192e0b516c6cf1532dbf5aa47759f63ea3fcb5870920"
+      },
+      {
+        "component": "neuralzip",
+        "path": "ablations.py",
+        "size_bytes": 78661,
+        "sha256": "853189816077f1dd0cc78d1da90546dd568bed4a74587c3adbddec61b7923526"
+      },
+      {
+        "component": "neuralzip",
+        "path": "archive.py",
+        "size_bytes": 10446,
+        "sha256": "f9ced64c93e7a57bef6510dd499857be58f243a760d56bcf49e84ce05899050e"
+      },
+      {
+        "component": "neuralzip",
+        "path": "compressor.py",
+        "size_bytes": 31969,
+        "sha256": "d3c4aaff8323452e877a62de2bbbdbba26f8fa89e15704e16bf5ab42e30be33b"
+      },
+      {
+        "component": "neuralzip",
+        "path": "experiment_scenarios.py",
+        "size_bytes": 113329,
+        "sha256": "7c62713b5e99b0ef1567f0ad22aa65da4d1159d250998d746989f409a142256f"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huff0.py",
+        "size_bytes": 18004,
+        "sha256": "7ecfe99ad771c5503e707f525c0530842875df733d77bf5d8a523d02af26d844"
+      },
+      {
+        "component": "neuralzip",
+        "path": "huffman.py",
+        "size_bytes": 5907,
+        "sha256": "01b78288a489feac68b36b56613cf38de27c7c5a6e73527feee01a8ddeee7443"
+      },
+      {
+        "component": "neuralzip",
+        "path": "mode_selection.py",
+        "size_bytes": 8019,
+        "sha256": "57175d6ade7c5b0a0c29cf375a39b5fad7b61cadf4ff54cfc6fd57bf70f41a47"
+      },
+      {
+        "component": "neuralzip",
+        "path": "model.py",
+        "size_bytes": 1503,
+        "sha256": "d38a5f80305cd86be1f7e97da2a75427416e4f4fe5aaa86f88810182eb346909"
+      },
+      {
+        "component": "neuralzip",
+        "path": "neuralzip_codec.py",
+        "size_bytes": 126047,
+        "sha256": "c35111802f2f5bf044dc5453c1c378387572e623e7ee483c08d6dacc81f72cad"
+      },
+      {
+        "component": "neuralzip",
+        "path": "packed_exponents.py",
+        "size_bytes": 4340,
+        "sha256": "78ed3b2d0987a0c0ab8550d3dd9b2dfde9333d1f3d2e60e755d514e6a251b212"
+      },
+      {
+        "component": "neuralzip",
+        "path": "payloads.py",
+        "size_bytes": 6759,
+        "sha256": "fc039935d89e117fc7d8aa6177e0b0a7c6a6168f48eb0e113f5fa84fdbe233f5"
+      },
+      {
+        "component": "neuralzip",
+        "path": "turborc.py",
+        "size_bytes": 5006,
+        "sha256": "09dbc92b9d1c76b8de85e88a8430dc8c177fa220f8a84380e938681c03f96c0d"
+      },
+      {
+        "component": "neuralzip",
+        "path": "utils.py",
+        "size_bytes": 3642,
+        "sha256": "6176e6575f85e6e41cd008b995767ddfc86393eda22c6ecff6a99cb1325fe995"
+      },
+      {
+        "component": "neuralzip",
+        "path": "zipnn_codec.py",
+        "size_bytes": 15203,
+        "sha256": "c321d565ec9c5b88309767eb3cc06aef56ef4ac854915f7ed1efee01a22f8f74"
+      },
+      {
+        "component": "zipnn",
+        "path": "__init__.py",
+        "size_bytes": 54,
+        "sha256": "40a02b691e6b8e822c5563036c096a82dff856a911f22769996df692fa36bafd"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_header.py",
+        "size_bytes": 1623,
+        "sha256": "5cfef22309aebeb24a7dae02568d54f31c8653fd583dbbe28260f3689f541471"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_patch.py",
+        "size_bytes": 1046,
+        "sha256": "12a40b11705cacd2504df6e546d02c2e1533235f829e72e65c3ce1f1e54f152d"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_safetensors.py",
+        "size_bytes": 1483,
+        "sha256": "4efa43ed2036e1d72b508620a70d4fb55ba47fae14cbe43e5fa128d9e45b0267"
+      },
+      {
+        "component": "zipnn",
+        "path": "util_torch.py",
+        "size_bytes": 8300,
+        "sha256": "5447d9b7728d1caf1214ef90782481b233f4f7d0586e62c54e96e2c38f2ed579"
+      },
+      {
+        "component": "zipnn",
+        "path": "zipnn.py",
+        "size_bytes": 67368,
+        "sha256": "c3367ec3719fcde2f575cbbd73f80d44dac9b4c2739c71d6ef0e198ba1f008f2"
+      },
+      {
+        "component": "zipnn_core",
+        "path": "zipnn_core.cpython-311-x86_64-linux-gnu.so",
+        "size_bytes": 122016,
+        "sha256": "7a87638b9e5be08289e57e0ae032cdf39a8c4b9c8b11a83b089a6a962efe7844"
+      }
+    ],
+    "versions": {
+      "torch": "2.12.1+cpu",
+      "torchvision": "0.27.1+cpu",
+      "neuralzip": "0.1.0",
+      "zipnn": null
+    }
+  },
+  "dtype": "bfloat16",
+  "threads": 12,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "chunk_size": 262144,
+  "compression_threshold": 0.95,
+  "warmup_repetitions": 1,
+  "measured_repetitions": 1,
+  "transfer_mode": "direct",
+  "runner_sha256": "a94b9426723d7ee851687b5913b997f54e59f56c3df7f696f3d2df1f58afe2ea",
+  "dependency_sha256": {
+    "examples/run_general_codec_rerun.py": "29bc730825166802e3fcf07dc21d6497350bcdca57516370445397e80bc24d24",
+    "examples/run_precompute_family_transfer.py": "a32ed9e99135400ed7449210b8f16468e203c0a83f0afb345d02293e148f5f7b"
+  },
+  "source_model": {
+    "key": "efficientnet-b7",
+    "label": "EfficientNet-B7",
+    "family": "EfficientNet",
+    "suites": [
+      "vision",
+      "model-storing"
+    ],
+    "backend": "torchvision",
+    "source": "torchvision.models.efficientnet_b7",
+    "parameters_b": 0.066,
+    "constructor": "efficientnet_b7",
+    "subfolder": null,
+    "weight_file": null,
+    "preferred_host": "relela-06"
+  },
+  "source_revision": "EfficientNet_B7_Weights.IMAGENET1K_V1",
+  "source_weights": {
+    "snapshot": "https://download.pytorch.org/models/efficientnet_b7_lukemelas-c5b4e57e.pth",
+    "revision": "EfficientNet_B7_Weights.IMAGENET1K_V1",
+    "weight_artifacts": [
+      {
+        "cache_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b7_lukemelas-c5b4e57e.pth",
+        "resolved_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b7_lukemelas-c5b4e57e.pth",
+        "size_bytes": 267046505,
+        "digest_algorithm": "sha256",
+        "digest": "c5b4e57e0da1a10bb4f8a5b410dd3b7b6e7461f9b757209be29409707c3d87dd",
+        "digest_source": "computed",
+        "repository_path": "efficientnet_b7_lukemelas-c5b4e57e.pth"
+      }
+    ],
+    "index_artifact": null,
+    "weights_fingerprint": "310c8dc23b3df9569eb31d60ab78c6fd977c2966b8f306d6d92a4694bb3e0071",
+    "floating_numel": 66658680
+  },
+  "source_parameters": 66658680,
+  "tensor_scope": "complete floating checkpoint",
+  "source_setup": {
+    "clustering_seconds": 6.408645245246589,
+    "codebook_seconds": 7.615510564297438,
+    "total_seconds": 14.024155809544027,
+    "clusters": 865,
+    "codebooks": 60,
+    "selected_modes": {
+      "local_huff0": 952,
+      "raw": 718,
+      "packed_huff0_n2": 41,
+      "shared_huff0": 13,
+      "packed_huff0_n4": 2,
+      "packed_huff0_n3": 4
+    }
+  },
+  "source_plan_sha256": "2161c14c43c17fb257dd9a869023e0e008f6202a7f76a6f40c88944656af8697",
+  "target_histograms_computed": false,
+  "target_js_matching": false,
+  "target_mode_probing": false,
+  "exact_target_cache": false,
+  "targets": [
+    {
+      "target_key": "efficientnet-b3",
+      "target_model": {
+        "key": "efficientnet-b3",
+        "label": "EfficientNet-B3",
+        "family": "EfficientNet",
+        "suites": [
+          "vision",
+          "model-storing"
+        ],
+        "backend": "torchvision",
+        "source": "torchvision.models.efficientnet_b3",
+        "parameters_b": 0.012,
+        "constructor": "efficientnet_b3",
+        "subfolder": null,
+        "weight_file": null,
+        "preferred_host": "relela-06"
+      },
+      "target_revision": "EfficientNet_B3_Weights.IMAGENET1K_V1",
+      "target_weights": {
+        "snapshot": "https://download.pytorch.org/models/efficientnet_b3_rwightman-b3899882.pth",
+        "revision": "EfficientNet_B3_Weights.IMAGENET1K_V1",
+        "weight_artifacts": [
+          {
+            "cache_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b3_rwightman-b3899882.pth",
+            "resolved_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b3_rwightman-b3899882.pth",
+            "size_bytes": 49475909,
+            "digest_algorithm": "sha256",
+            "digest": "b3899882250c22946d0229d266049fcd133c169233530b36b9ffa7983988362f",
+            "digest_source": "computed",
+            "repository_path": "efficientnet_b3_rwightman-b3899882.pth"
+          }
+        ],
+        "index_artifact": null,
+        "weights_fingerprint": "77bbea826c17942ae427445486163528165183e325c17b022635fc11e53363cd",
+        "floating_numel": 12320528
+      },
+      "target_parameters": 12320528,
+      "tensor_scope": "complete floating checkpoint",
+      "transfer_setup": {
+        "seconds": 0.001658150926232338,
+        "mapping": "exact source tensor name, dtype, and stream",
+        "target_tensors": 496,
+        "matched_tensors": 496,
+        "matched_tensor_pct": 100.0,
+        "target_exponents": 12320528,
+        "matched_exponents": 12320528,
+        "matched_exponent_pct": 100.0,
+        "missing_streams": 0,
+        "selected_modes": {
+          "local_huff0": 564,
+          "raw": 393,
+          "packed_huff0": 30,
+          "shared_huff0": 5
+        },
+        "selected_symbols": {
+          "local_huff0": 11572278,
+          "raw": 10045210,
+          "packed_huff0": 3014784,
+          "shared_huff0": 8784
+        },
+        "target_histograms_computed": false,
+        "target_js_matching": false,
+        "target_mode_probing": false
+      },
+      "neuralzip_transferred_direct": {
+        "encode_seconds": 0.01519879512488842,
+        "roundtrip_ok": true,
+        "raw_exponents": 12320528,
+        "compressed_exponent_bytes": 4308896,
+        "compressed_exponent_group_bytes": 4293906,
+        "exponent_codebook_metadata_bytes": 14990,
+        "exponent_pct": 34.97330633881924,
+        "shared_exponent_pct": 22.029575355861372,
+        "packed_exponent_pct": 22.029575355861372,
+        "local_exponent_pct": 77.96495409936976,
+        "raw_exponent_pct": 0.005470544768860555,
+        "mode_symbols": {
+          "local_huff0": 9605694,
+          "raw": 674,
+          "packed_huff0": 2714160
+        },
+        "mode_chunks": {
+          "local_huff0": 485,
+          "raw": 31,
+          "packed_huff0": 36
+        },
+        "referenced_codebooks": 15,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "neuralzip_target_specific_direct": {
+        "encode_seconds": 0.015328305773437023,
+        "roundtrip_ok": true,
+        "raw_exponents": 12320528,
+        "compressed_exponent_bytes": 4125059,
+        "compressed_exponent_group_bytes": 4123797,
+        "exponent_codebook_metadata_bytes": 1262,
+        "exponent_pct": 33.4811868452391,
+        "shared_exponent_pct": 0.23765215257008465,
+        "packed_exponent_pct": 0.23765215257008465,
+        "local_exponent_pct": 99.7572668963538,
+        "raw_exponent_pct": 0.005080951076122712,
+        "mode_symbols": {
+          "local_huff0": 12290622,
+          "raw": 626,
+          "packed_huff0": 29280
+        },
+        "mode_chunks": {
+          "local_huff0": 521,
+          "raw": 29,
+          "packed_huff0": 2
+        },
+        "referenced_codebooks": 2,
+        "roundtrip_verified_on": "uncached warm-up",
+        "setup": {
+          "clustering_seconds": 1.7626270530745387,
+          "codebook_seconds": 1.7927954839542508,
+          "total_seconds": 3.5554225370287895,
+          "clusters": 417,
+          "codebooks": 3,
+          "selected_modes": {
+            "local_huff0": 456,
+            "raw": 375,
+            "shared_huff0": 1,
+            "packed_huff0_n2": 1,
+            "packed_huff0_n4": 1
+          }
+        }
+      },
+      "zipnn_source": {
+        "encode_seconds": 0.34968697372823954,
+        "codec_encode_seconds": 0.29831963405013084,
+        "input_copy_seconds": 0.05136733967810869,
+        "setup_seconds": 0.0,
+        "exponent_raw_bytes": 12320528,
+        "exponent_data_bytes": 4100358,
+        "exponent_metadata_bytes": 4968,
+        "exponent_compressed_bytes": 4105326,
+        "exponent_ratio_pct": 33.32102325484752,
+        "tensor_count": 496,
+        "chunk_count": 552,
+        "roundtrip_ok": true,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "verification": {
+        "neuralzip_transferred_direct": true,
+        "neuralzip_target_specific_direct": true,
+        "zipnn_source": true
+      },
+      "comparison": {
+        "direct_transfer_speedup_vs_zipnn_source": 23.007545720227395,
+        "direct_transfer_speedup_vs_target_specific": 1.0085211128569347,
+        "direct_transfer_ratio_delta_vs_zipnn_source_pp": 1.6522830839717244,
+        "direct_transfer_ratio_delta_vs_target_specific_pp": 1.492119493580141
+      }
+    },
+    {
+      "target_key": "efficientnet-b0",
+      "target_model": {
+        "key": "efficientnet-b0",
+        "label": "EfficientNet-B0",
+        "family": "EfficientNet",
+        "suites": [
+          "vision",
+          "model-storing"
+        ],
+        "backend": "torchvision",
+        "source": "torchvision.models.efficientnet_b0",
+        "parameters_b": 0.005,
+        "constructor": "efficientnet_b0",
+        "subfolder": null,
+        "weight_file": null,
+        "preferred_host": "relela-06"
+      },
+      "target_revision": "EfficientNet_B0_Weights.IMAGENET1K_V1",
+      "target_weights": {
+        "snapshot": "https://download.pytorch.org/models/efficientnet_b0_rwightman-7f5810bc.pth",
+        "revision": "EfficientNet_B0_Weights.IMAGENET1K_V1",
+        "weight_artifacts": [
+          {
+            "cache_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b0_rwightman-7f5810bc.pth",
+            "resolved_path": "/data/mbravo/neuralzip-transfer-20260719/torch/hub/checkpoints/efficientnet_b0_rwightman-7f5810bc.pth",
+            "size_bytes": 21444401,
+            "digest_algorithm": "sha256",
+            "digest": "7f5810bc96def8f7552d5b7e68d53c4786f81167d28291b21c0d90e1fca14934",
+            "digest_source": "computed",
+            "repository_path": "efficientnet_b0_rwightman-7f5810bc.pth"
+          }
+        ],
+        "index_artifact": null,
+        "weights_fingerprint": "f2bef7ece2b6e1f1e3c6347e7b1748ce4bcb2c94d9f0af4de929b8dd6112ee9f",
+        "floating_numel": 5330564
+      },
+      "target_parameters": 5330564,
+      "tensor_scope": "complete floating checkpoint",
+      "transfer_setup": {
+        "seconds": 0.0011871401220560074,
+        "mapping": "exact source tensor name, dtype, and stream",
+        "target_tensors": 311,
+        "matched_tensors": 311,
+        "matched_tensor_pct": 100.0,
+        "target_exponents": 5330564,
+        "matched_exponents": 5330564,
+        "matched_exponent_pct": 100.0,
+        "missing_streams": 0,
+        "selected_modes": {
+          "local_huff0": 357,
+          "raw": 252,
+          "packed_huff0": 12,
+          "shared_huff0": 1
+        },
+        "selected_symbols": {
+          "local_huff0": 4011968,
+          "raw": 5154824,
+          "packed_huff0": 1493184,
+          "shared_huff0": 1152
+        },
+        "target_histograms_computed": false,
+        "target_js_matching": false,
+        "target_mode_probing": false
+      },
+      "neuralzip_transferred_direct": {
+        "encode_seconds": 0.013382244855165482,
+        "roundtrip_ok": true,
+        "raw_exponents": 5330564,
+        "compressed_exponent_bytes": 1833166,
+        "compressed_exponent_group_bytes": 1828649,
+        "exponent_codebook_metadata_bytes": 4517,
+        "exponent_pct": 34.3897193617786,
+        "shared_exponent_pct": 26.575799483882005,
+        "packed_exponent_pct": 26.575799483882005,
+        "local_exponent_pct": 73.41602126904395,
+        "raw_exponent_pct": 0.008179247074043198,
+        "mode_symbols": {
+          "local_huff0": 3913488,
+          "raw": 436,
+          "packed_huff0": 1416640
+        },
+        "mode_chunks": {
+          "local_huff0": 292,
+          "raw": 23,
+          "packed_huff0": 17
+        },
+        "referenced_codebooks": 6,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "neuralzip_target_specific_direct": {
+        "encode_seconds": 0.01401494536548853,
+        "roundtrip_ok": true,
+        "raw_exponents": 5330564,
+        "compressed_exponent_bytes": 1768956,
+        "compressed_exponent_group_bytes": 1768234,
+        "exponent_codebook_metadata_bytes": 722,
+        "exponent_pct": 33.18515639245678,
+        "shared_exponent_pct": 0.20050411176003138,
+        "packed_exponent_pct": 0.19450099464146758,
+        "local_exponent_pct": 99.79131664116592,
+        "raw_exponent_pct": 0.008179247074043198,
+        "mode_symbols": {
+          "local_huff0": 5319440,
+          "raw": 436,
+          "packed_huff0": 10368,
+          "shared_huff0": 320
+        },
+        "mode_chunks": {
+          "local_huff0": 307,
+          "raw": 23,
+          "packed_huff0": 1,
+          "shared_huff0": 1
+        },
+        "referenced_codebooks": 2,
+        "roundtrip_verified_on": "uncached warm-up",
+        "setup": {
+          "clustering_seconds": 0.6896180231124163,
+          "codebook_seconds": 0.8664780706167221,
+          "total_seconds": 1.5560960937291384,
+          "clusters": 273,
+          "codebooks": 2,
+          "selected_modes": {
+            "raw": 257,
+            "local_huff0": 287,
+            "packed_huff0_n3": 1,
+            "shared_huff0": 1
+          }
+        }
+      },
+      "zipnn_source": {
+        "encode_seconds": 0.18330979999154806,
+        "codec_encode_seconds": 0.17999250069260597,
+        "input_copy_seconds": 0.003317299298942089,
+        "setup_seconds": 0.0,
+        "exponent_raw_bytes": 5330564,
+        "exponent_data_bytes": 1754040,
+        "exponent_metadata_bytes": 2988,
+        "exponent_compressed_bytes": 1757028,
+        "exponent_ratio_pct": 32.961390201862315,
+        "tensor_count": 311,
+        "chunk_count": 332,
+        "roundtrip_ok": true,
+        "roundtrip_verified_on": "uncached warm-up"
+      },
+      "verification": {
+        "neuralzip_transferred_direct": true,
+        "neuralzip_target_specific_direct": true,
+        "zipnn_source": true
+      },
+      "comparison": {
+        "direct_transfer_speedup_vs_zipnn_source": 13.697985799504435,
+        "direct_transfer_speedup_vs_target_specific": 1.0472791013145173,
+        "direct_transfer_ratio_delta_vs_zipnn_source_pp": 1.428329159916288,
+        "direct_transfer_ratio_delta_vs_target_specific_pp": 1.2045629693218203
+      }
+    }
+  ]
+}

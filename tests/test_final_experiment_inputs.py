@@ -11,9 +11,16 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
+import examples.run_precompute_family_suite as family_suite
+from examples.run_general_codec_rerun import MappingModel
 from examples.run_precompute_family_transfer import (
     floating_parameters,
     select_snapshot_weights,
+)
+from examples.run_precompute_family_suite import (
+    FAMILY_SPECS,
+    FamilySpec,
+    canonical_tensor_name,
 )
 from examples.run_quantized_nibble_compression import (
     _bytes_from_nibbles,
@@ -69,6 +76,152 @@ def test_family_transfer_uses_complete_floating_state_once():
     assert "1.running_mean" in names
     assert "1.running_var" in names
     assert "1.num_batches_tracked" not in names
+
+
+def test_family_transfer_suite_has_the_planned_coverage():
+    assert len(FAMILY_SPECS) == 11
+    assert sum(len(spec.target_keys) for spec in FAMILY_SPECS.values()) == 20
+    assert len(
+        {
+            key
+            for spec in FAMILY_SPECS.values()
+            for key in (spec.source_key, *spec.target_keys)
+        }
+    ) == 31
+    assert all(
+        spec.source_key not in spec.target_keys for spec in FAMILY_SPECS.values()
+    )
+
+
+def test_family_transfer_canonicalizes_gemma_text_backbones():
+    multimodal = "language_model.model.layers.0.mlp.up_proj.weight"
+    text_only = "model.layers.0.mlp.up_proj.weight"
+
+    assert canonical_tensor_name("gemma3-12b", multimodal) == text_only
+    assert canonical_tensor_name("gemma3-4b", multimodal) == text_only
+    assert canonical_tensor_name("gemma3-1b", text_only) == text_only
+    assert canonical_tensor_name("gemma3-12b", "vision_tower.weight") is None
+
+
+def test_family_audit_reports_targets_independently(monkeypatch, tmp_path):
+    family = FamilySpec("test", "Test", "source", ("target-a", "target-b"))
+    names = {
+        "source": {"a", "b", "c"},
+        "target-a": {"a", "b"},
+        "target-b": {"a", "d"},
+    }
+    calls = []
+
+    def fake_names(key, **_):
+        calls.append(key)
+        return names[key]
+
+    monkeypatch.setattr(family_suite, "checkpoint_names", fake_names)
+    result = family_suite.audit_family(
+        family,
+        cache_dir=tmp_path,
+        allow_download=False,
+    )
+
+    assert calls == ["source", "target-a", "target-b"]
+    assert result["targets"][0]["matched_tensors"] == 2
+    assert result["targets"][0]["missing_tensors"] == []
+    assert result["targets"][1]["matched_tensors"] == 1
+    assert result["targets"][1]["missing_tensors"] == ["d"]
+
+
+def test_named_tensors_applies_gemma_scope_before_transfer():
+    model = MappingModel(
+        "gemma",
+        {
+            "language_model.model.weight": torch.ones(4, dtype=torch.bfloat16),
+            "language_model.empty": torch.empty(0, dtype=torch.bfloat16),
+            "vision_tower.weight": torch.ones(4, dtype=torch.bfloat16),
+            "language_model.counter": torch.ones(1, dtype=torch.int64),
+        },
+        {},
+    )
+
+    tensors = family_suite.named_tensors(model, "gemma3-12b")
+
+    assert [name for name, _ in tensors] == ["model.weight"]
+
+
+def test_frozen_plan_detects_in_place_mode_mutation():
+    tensor = torch.ones(32768, dtype=torch.bfloat16)
+    codec, _ = family_suite.setup_neuralzip(
+        [("layer.weight", tensor)],
+        threads=2,
+    )
+    fingerprint = family_suite.frozen_plan_fingerprint(codec)
+    first_mode = next(iter(codec._mode_by_tensor_stream.values()))
+    first_mode["kind"] = "corrupted"
+
+    with pytest.raises(RuntimeError, match="changed the frozen source plan"):
+        family_suite.assert_frozen_plan(codec, fingerprint)
+
+
+def test_run_family_builds_one_source_plan_for_multiple_targets(
+    monkeypatch,
+    tmp_path,
+):
+    family = FamilySpec(
+        "test",
+        "Test",
+        "resnet34",
+        ("resnet18", "resnet50"),
+    )
+    source = MappingModel(
+        "source",
+        {"weight": torch.ones(8, dtype=torch.bfloat16)},
+        {"revision": "source-revision"},
+    )
+
+    class FakeCodec:
+        enable_prepacked_cache = True
+
+        def clear_prepacked_cache(self):
+            return None
+
+    codec = FakeCodec()
+    setup_calls = []
+    target_calls = []
+
+    monkeypatch.setattr(family_suite, "load_model", lambda *_, **__: source)
+
+    def fake_setup(tensors, *, threads):
+        setup_calls.append((list(tensors), threads))
+        return codec, {"total_seconds": 1.0}
+
+    def fake_target(_family, received_codec, _source_names, target_key, **kwargs):
+        target_calls.append((target_key, received_codec, kwargs["plan_fingerprint"]))
+        return {"target_key": target_key}
+
+    monkeypatch.setattr(family_suite, "setup_neuralzip", fake_setup)
+    monkeypatch.setattr(family_suite, "frozen_plan_fingerprint", lambda _: "frozen")
+    monkeypatch.setattr(family_suite, "benchmark_target", fake_target)
+    monkeypatch.setattr(family_suite, "host_provenance", lambda: {})
+    monkeypatch.setattr(family_suite, "code_provenance", lambda: {})
+
+    result = family_suite.run_family(
+        family,
+        cache_dir=tmp_path,
+        allow_download=False,
+        threads=12,
+    )
+
+    assert len(setup_calls) == 1
+    assert [target for target, _, _ in target_calls] == ["resnet18", "resnet50"]
+    assert all(received is codec for _, received, _ in target_calls)
+    assert all(fingerprint == "frozen" for _, _, fingerprint in target_calls)
+    assert [row["target_key"] for row in result["targets"]] == [
+        "resnet18",
+        "resnet50",
+    ]
+    assert result["target_histograms_computed"] is False
+    assert result["target_js_matching"] is False
+    assert result["target_mode_probing"] is False
+    assert result["exact_target_cache"] is False
 
 
 def test_family_snapshot_rejects_an_index_with_a_missing_shard(tmp_path):

@@ -12,7 +12,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
 import examples.run_precompute_family_suite as family_suite
-from examples.run_general_codec_rerun import MappingModel
+from examples.run_general_codec_rerun import MODEL_SPECS, MappingModel
 from examples.run_precompute_family_transfer import (
     floating_parameters,
     select_snapshot_weights,
@@ -409,4 +409,37 @@ def test_every_quantized_model_has_an_explicit_artifact_selector():
     assert latam["artifact_selector"] == {
         "kind": "exact-files",
         "files": ("latamgpt-Q4_K_M.gguf",),
+    }
+
+
+def test_lossy_lossless_suite_has_final_format_and_distillation_coverage():
+    quantized = [
+        spec
+        for spec in LOSSY_LOSSLESS_MODEL_SUITE
+        if spec.get("category") == "quantized"
+    ]
+    distilled = [
+        spec
+        for spec in LOSSY_LOSSLESS_MODEL_SUITE
+        if spec.get("category") == "distilled"
+    ]
+
+    assert len(quantized) == 6
+    assert {spec["representation"] for spec in quantized} >= {
+        "4-bit quantized",
+        "4-bit AWQ",
+        "4-bit GPTQ",
+    }
+    assert len(distilled) == 4
+    assert {
+        "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    } <= {spec["model_id"] for spec in distilled}
+    assert not any("adapter" in spec["model_id"].lower() for spec in distilled)
+
+    runner_distilled = [
+        spec for spec in MODEL_SPECS if "distilled" in spec.suites
+    ]
+    assert {spec.source for spec in runner_distilled} == {
+        spec["model_id"] for spec in distilled
     }

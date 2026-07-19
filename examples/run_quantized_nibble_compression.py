@@ -959,6 +959,7 @@ def _result_row(
         "experiment": "lossy-lossless-quantized-nibbles-final",
         "model": str(spec["name"]),
         "model_id": str(spec["model_id"]),
+        "representation": str(spec["representation"]),
         "resolved_revision": manifest["resolved_revision"],
         "sample_fingerprint": manifest["sample_fingerprint"],
         "compressor": compressor,
@@ -1095,10 +1096,12 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 def _backend_fingerprint() -> dict:
     extension = Path(huff0._huff0_cpp.__file__).resolve()
+    config = Path(__file__).resolve().with_name("config.py")
     return {
         "huff0_extension": str(extension),
         "huff0_extension_sha256": _sha256_file(extension),
         "runner_sha256": _sha256_file(Path(__file__).resolve()),
+        "config_sha256": _sha256_file(config),
     }
 
 
@@ -1209,6 +1212,7 @@ def main() -> int:
             ]
             for spec in specs
         },
+        "selected_specs_sha256": _canonical_digest(specs),
         "rows": len(rows),
     }
     _write_json(args.output_dir / "run_metadata.json", metadata)

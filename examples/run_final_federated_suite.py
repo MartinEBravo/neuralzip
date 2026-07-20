@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import io
 import json
 import math
@@ -52,6 +53,20 @@ COMPRESSOR_SRC = "ZipNN src"
 COMPRESSOR_NEURALZIP = "NeuralZip"
 DATASET_NAME = "CIFAR-10"
 DTYPE_NAME = "float32"
+
+
+class SuspendAutomaticGC:
+    """Keep incidental cyclic collection outside the measured encode region."""
+
+    def __enter__(self):
+        self._was_enabled = gc.isenabled()
+        if self._was_enabled:
+            gc.disable()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self._was_enabled:
+            gc.enable()
 
 
 class HFCIFAR10Parquet(Dataset):
@@ -214,12 +229,15 @@ class ZipNNSrcStateCodec:
                 raise TypeError(f"{name} is {tensor.dtype}; FP32 is required.")
             # ZipNN source reorders the input buffer in place.  The clone is a
             # required part of a non-destructive encode and is timed.
-            started = time.perf_counter()
-            compressor_input = tensor.detach().cpu().contiguous().clone()
-            if tensor.numel() and compressor_input.data_ptr() == tensor.data_ptr():
-                raise AssertionError("ZipNN source input clone aliases the model state.")
-            payload = self._encoder.compress(compressor_input)
-            encode_seconds += time.perf_counter() - started
+            with SuspendAutomaticGC():
+                started = time.perf_counter()
+                compressor_input = tensor.detach().cpu().contiguous().clone()
+                if tensor.numel() and compressor_input.data_ptr() == tensor.data_ptr():
+                    raise AssertionError(
+                        "ZipNN source input clone aliases the model state."
+                    )
+                payload = self._encoder.compress(compressor_input)
+                encode_seconds += time.perf_counter() - started
 
             # Archive bookkeeping and exponent-ratio parsing are deliberately
             # outside the encoding timer, matching the NeuralZip adapter.
@@ -271,9 +289,10 @@ class NeuralZipStateCodec:
             if tensor.dtype != torch.float32:
                 raise TypeError(f"{name} is {tensor.dtype}; FP32 is required.")
 
-        started = time.perf_counter()
-        payload_list = self.codec.compress_tensors(list(tensors.items()))
-        encode_seconds = time.perf_counter() - started
+        with SuspendAutomaticGC():
+            started = time.perf_counter()
+            payload_list = self.codec.compress_tensors(list(tensors.items()))
+            encode_seconds = time.perf_counter() - started
         payloads = {payload.name: payload for payload in payload_list}
         if payloads.keys() != tensors.keys():
             raise RuntimeError("NeuralZip changed the floating-state tensor names.")
@@ -691,8 +710,9 @@ def _run_architecture(
         ),
         "time_metric": (
             "downlink encode plus maximum client uplink encode per round; "
-            "decode and training excluded"
+            "decode, training, and automatic cyclic GC excluded"
         ),
+        "automatic_gc_during_encode": False,
         "ratio_metric": (
             "exact exponent-group payload plus its group metadata divided by "
             "raw exponent symbols; the final summary also reports the ratio "

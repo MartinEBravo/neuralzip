@@ -1,5 +1,5 @@
 {
-  "protocol_version": 2,
+  "protocol_version": 3,
   "model": "bert-base",
   "model_configuration": "official-default",
   "dataset_file_sha256": "e83889baabc497075506f91975be5fac0d45c5290b6b20582c8cd1e853d0c9f7",
@@ -58,6 +58,7 @@
   "threads": 12,
   "chunk_size": 262144,
   "compression_threshold": 0.95,
+  "automatic_gc_during_encode": false,
   "torch": "2.5.1+cu121",
   "transformers": "5.14.1",
   "smoke": false,
@@ -65,7 +66,7 @@
   "dataset_file": "/data-local/martinb/neuralzip-language-20260719b/data/wikitext/wikitext-2-raw-v1/train-00000-of-00001.parquet",
   "document_count": 629,
   "reconstruction": "top-level WikiText headings; no cross-document sequences",
-  "protocol_fingerprint": "b84c36c978db272d39a9f6d3fdf5a951e667c28311b0c870416bab0025deb6dc",
+  "protocol_fingerprint": "ef2fa53351c3d3ff9159a59ff6707255469ad7daadbe969f5abfbdc085edd729",
   "target_rounds": 200,
   "dtype": "float32",
   "task": "masked language modeling",
@@ -109,7 +110,7 @@
   ],
   "neuralzip_plan": "built once on random initialization (round 0) and frozen",
   "trajectory": "NeuralZip-decoded canonical FP32 storages after bitwise equality with ZipNN-src; exact tied aliases restored before training and FedAvg",
-  "time_metric": "downlink encode plus maximum client uplink encode per round; decode, training, alias restoration, and setup excluded",
+  "time_metric": "downlink encode plus maximum client uplink encode per round; decode, training, alias restoration, setup, and automatic cyclic GC excluded",
   "ratio_metric": "exact exponent-group payload plus group metadata divided by raw exponent symbols over the same unique-storage messages",
   "resume": "server canonical state, cumulative metrics, and all complete round rows atomically checkpointed; resume requires an exact protocol fingerprint",
   "setup": {
@@ -118,7 +119,7 @@
       "bytes": 0
     },
     "NeuralZip": {
-      "seconds": 4.585396046284586,
+      "seconds": 4.838197202887386,
       "bytes": 784
     }
   },

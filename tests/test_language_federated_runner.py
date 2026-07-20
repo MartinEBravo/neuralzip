@@ -1,3 +1,4 @@
+import gc
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from examples.run_final_federated_language_suite import (
     _tokenize_partition,
     _unique_floating_state,
 )
+from examples.run_final_federated_suite import SuspendAutomaticGC
 
 
 class _TiedToyModel(torch.nn.Module):
@@ -179,3 +181,18 @@ def test_cpu_set_parser_and_disabled_timing_isolation():
     )
     with isolation:
         assert not isolation.enabled
+
+
+def test_encode_gc_guard_restores_the_callers_gc_state():
+    gc.enable()
+    with SuspendAutomaticGC():
+        assert not gc.isenabled()
+    assert gc.isenabled()
+
+    gc.disable()
+    try:
+        with SuspendAutomaticGC():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    finally:
+        gc.enable()

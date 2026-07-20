@@ -1,7 +1,7 @@
 {
   "architecture": "resnet34",
   "dataset": "CIFAR-10",
-  "dataset_source": "CIFAR-10 Python archive",
+  "dataset_source": "uoft-cs/cifar10 Parquet",
   "dtype": "float32",
   "clients": 10,
   "rounds": 200,
@@ -10,7 +10,7 @@
   "learning_rate": 0.02,
   "seed": 2026,
   "train_subset": null,
-  "device": "cuda",
+  "device": "cuda:0",
   "threads": 12,
   "chunk_size": 262144,
   "compression_threshold": 0.95,
@@ -32,8 +32,8 @@
       "bytes": 0
     },
     "NeuralZip": {
-      "seconds": 3.381071458104998,
-      "bytes": 776
+      "seconds": 3.6369108050130308,
+      "bytes": 913
     }
   }
 }

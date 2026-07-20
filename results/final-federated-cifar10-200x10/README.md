@@ -1,12 +1,12 @@
 # Final CIFAR-10 federated run
 
-Final thesis artifacts produced on `relela-06` on 2026-07-17/18 with
+Final thesis artifacts produced sequentially on `relela-06` on 2026-07-20 with
 `examples/run_final_federated_suite.py`.
 
 - Dataset: real CIFAR-10 from the Python archive.
 - Protocol: ResNet-18 and ResNet-34, 200 communication rounds, 10 clients,
   one local batch per client and round, batch size 64, seed 2026, FP32.
-- Compression: ZipNN source and NeuralZip, 12 pinned CPU threads and one
+- Compression: ZipNN source and NeuralZip, 12 CPU threads and one
   verified warm-up. The thesis reports `downlink_encode_seconds`: one direct
   encode of the global model per round. Client encoding, training and decoding
   are excluded from this timing. The CSV also retains the downlink-plus-slowest-
@@ -15,6 +15,13 @@ Final thesis artifacts produced on `relela-06` on 2026-07-17/18 with
   NeuralZip ratio charges the one-time codebook payload once per client.
 - Trajectory: the NeuralZip-decoded state is used only after bitwise equality
   with the ZipNN-source decoded state has been verified.
+- Scheduling: the retained ResNet-34 trajectory and the GC-clean ResNet-18
+  rerun were each executed without another compression process sharing host
+  load.
+- Timing stability: ResNet-18 is the GC-clean rerun. Automatic cyclic garbage
+  collection is suspended inside each timed encode and restored immediately
+  afterward for both compressors. ResNet-34 retains its earlier sequential
+  run, which did not exhibit periodic NeuralZip GC events.
 - Completeness: each architecture contains 400 rows = 200 rounds x 2
   compressors. All round and summary rows passed `roundtrip_ok`.
 

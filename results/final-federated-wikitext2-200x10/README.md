@@ -1,6 +1,6 @@
 # Final WikiText-2 federated run
 
-Final thesis artifacts produced on `relela-06` on 2026-07-19 with
+Final thesis artifacts produced sequentially on `relela-06` on 2026-07-19/20 with
 `examples/run_final_federated_language_suite.py`.
 
 - Dataset: real WikiText-2, reconstructed into 629 articles and assigned as
@@ -21,11 +21,14 @@ Final thesis artifacts produced on `relela-06` on 2026-07-19 with
   after bitwise-equal decoded states are verified.
 - Setup accounting: `setup_bytes_once` contains serialized shared-codebook
   metadata. It does not serialize or claim the complete structural map.
-- Reporting: the two language trajectories trained concurrently on separate
-  A5000 GPUs and therefore shared host load. The trajectory figure retains the
-  directly measured downlink times; comparisons are paired within each model
-  rather than across architectures. Exponent ratios depend only on measured
-  payload bytes and are unaffected by host load.
+- Reporting: GPT-2 completed before BERT began, so the two trajectories did
+  not share host load with another compression process. The trajectory figure
+  retains every directly measured downlink time. Exponent ratios depend only
+  on measured payload bytes.
+- Timing stability: BERT Base is the GC-clean rerun. Automatic cyclic garbage
+  collection is suspended inside each timed encode and restored immediately
+  afterward for both compressors. GPT-2 retains its earlier sequential run,
+  which did not exhibit periodic NeuralZip GC events.
 - Completeness: each model contains 400 rows = 200 rounds x 2 compressors. All
   rows and summaries pass `roundtrip_ok`.
 

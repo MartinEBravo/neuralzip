@@ -93,7 +93,7 @@ GPT2_TOKENIZER = "openai-community/gpt2"
 BERT_TOKENIZER = "google-bert/bert-base-uncased"
 MODEL_GPT2 = "gpt2"
 MODEL_BERT = "bert-base"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 def _parse_cpu_set(value: str) -> tuple[int, ...]:
@@ -1114,6 +1114,7 @@ def _run_model(
         "threads": int(args.threads),
         "chunk_size": int(args.chunk_size),
         "compression_threshold": float(args.compression_threshold),
+        "automatic_gc_during_encode": False,
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "smoke": bool(args.smoke),
@@ -1239,8 +1240,10 @@ def _run_model(
         ),
         "time_metric": (
             "downlink encode plus maximum client uplink encode per round; "
-            "decode, training, alias restoration, and setup excluded"
+            "decode, training, alias restoration, setup, and automatic cyclic "
+            "GC excluded"
         ),
+        "automatic_gc_during_encode": False,
         "ratio_metric": (
             "exact exponent-group payload plus group metadata divided by raw "
             "exponent symbols over the same unique-storage messages"

@@ -11,14 +11,14 @@ The resulting figures use the thesis layout requested for both experiments:
 
 * columns: GPT-2, BERT Base, ResNet-18, and ResNet-34;
 * top row: exponent-field compression ratio;
-* bottom row: direct encoding time (checkpoint) or paired critical-path
-  encoding speedup (federated).
+* bottom row: direct encoding time.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +54,7 @@ FEDERATED_REQUIRED_COLUMNS = {
     "round",
     "compressor",
     "exponent_ratio_pct",
-    "encoding_critical_seconds",
+    "downlink_encode_seconds",
     "roundtrip_ok",
 }
 CANONICAL_FIELDS = (
@@ -262,8 +262,8 @@ def _canonicalize_federated(spec: InputSpec) -> list[dict[str, object]]:
                     path=spec.path,
                 ),
                 "encoding_seconds": _finite_nonnegative(
-                    row["encoding_critical_seconds"],
-                    field="encoding_critical_seconds",
+                    row["downlink_encode_seconds"],
+                    field="downlink_encode_seconds",
                     path=spec.path,
                 ),
                 "source_path": str(spec.path.resolve()),
@@ -324,22 +324,33 @@ def _render(
     output_stem: Path,
     x_label: str,
     time_label: str,
-    time_mode: str = "absolute",
+    ratio_tick: float | None = None,
+    time_zero: bool = False,
 ) -> tuple[Path, Path]:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    if time_mode not in {"absolute", "speedup"}:
-        raise ValueError(f"Unsupported time mode: {time_mode}")
+    ratio_limits: tuple[float, float] | None = None
+    ratio_ticks: list[float] | None = None
+    if ratio_tick is not None:
+        if ratio_tick <= 0:
+            raise ValueError("ratio_tick must be positive")
+        ratio_values = [float(row["exponent_ratio_pct"]) for row in rows]
+        lower = math.floor(min(ratio_values) / ratio_tick) * ratio_tick
+        upper = math.ceil(max(ratio_values) / ratio_tick) * ratio_tick
+        if upper <= lower:
+            upper = lower + ratio_tick
+        ratio_limits = (lower, upper)
+        tick_count = int(round((upper - lower) / ratio_tick))
+        ratio_ticks = [lower + index * ratio_tick for index in range(tick_count + 1)]
 
     fig, axes = plt.subplots(2, 4, figsize=(14.4, 6.2), sharex="col")
     for column, model in enumerate(MODEL_ORDER):
         ratio_axis = axes[0, column]
         time_axis = axes[1, column]
         ratio_axis.set_title(MODEL_LABELS[model], fontsize=11)
-        groups: dict[str, list[Mapping[str, object]]] = {}
         for compressor in COMPRESSORS:
             group = sorted(
                 (
@@ -349,7 +360,6 @@ def _render(
                 ),
                 key=lambda row: int(row["step"]),
             )
-            groups[compressor] = group
             steps = [int(row["step"]) for row in group]
             markevery = max(1, len(group) // 10)
             style = {
@@ -365,51 +375,16 @@ def _render(
                 [float(row["exponent_ratio_pct"]) for row in group],
                 **style,
             )
-            if time_mode == "absolute":
-                time_axis.plot(
-                    steps,
-                    [float(row["encoding_seconds"]) for row in group],
-                    **style,
-                )
-        if time_mode == "speedup":
-            source_group = groups[COMPRESSOR_SRC]
-            neuralzip_group = groups[COMPRESSOR_NEURALZIP]
-            source_steps = [int(row["step"]) for row in source_group]
-            neuralzip_steps = [int(row["step"]) for row in neuralzip_group]
-            if source_steps != neuralzip_steps:
-                raise ValueError(f"Mismatched paired timing steps for {model}")
-            neuralzip_times = [
-                float(row["encoding_seconds"]) for row in neuralzip_group
-            ]
-            if any(value <= 0 for value in neuralzip_times):
-                raise ValueError(f"Non-positive NeuralZip timing for {model}")
-            markevery = max(1, len(source_group) // 10)
-            cumulative_source = 0.0
-            cumulative_neuralzip = 0.0
-            cumulative_speedups = []
-            for source, neuralzip_time in zip(source_group, neuralzip_times):
-                cumulative_source += float(source["encoding_seconds"])
-                cumulative_neuralzip += neuralzip_time
-                cumulative_speedups.append(
-                    cumulative_source / cumulative_neuralzip
-                )
             time_axis.plot(
-                source_steps,
-                [1.0] * len(source_steps),
-                color=COLORS[COMPRESSOR_SRC],
-                linewidth=1.5,
-                label=COMPRESSOR_SRC,
+                steps,
+                [float(row["encoding_seconds"]) for row in group],
+                **style,
             )
-            time_axis.plot(
-                source_steps,
-                cumulative_speedups,
-                color=COLORS[COMPRESSOR_NEURALZIP],
-                marker=MARKERS[COMPRESSOR_NEURALZIP],
-                markersize=2.8,
-                markevery=markevery,
-                linewidth=1.5,
-                label=COMPRESSOR_NEURALZIP,
-            )
+        if ratio_limits is not None and ratio_ticks is not None:
+            ratio_axis.set_ylim(*ratio_limits)
+            ratio_axis.set_yticks(ratio_ticks)
+        if time_zero:
+            time_axis.set_ylim(bottom=0.0)
         for axis in (ratio_axis, time_axis):
             axis.grid(True, axis="y", color="#dddddd", linewidth=0.6)
             axis.spines["top"].set_visible(False)
@@ -483,7 +458,6 @@ def build_checkpoint_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path
         output_stem=args.output_dir / "figures" / "checkpoint_training",
         x_label="Epoch",
         time_label="Encoding time (s)",
-        time_mode="absolute",
     )
     return csv_path, pdf_path, png_path
 
@@ -520,8 +494,9 @@ def build_federated_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path]
         rows,
         output_stem=args.output_dir / "figures" / "federated_training",
         x_label="Round",
-        time_label="Cumulative speedup (\N{MULTIPLICATION SIGN})",
-        time_mode="speedup",
+        time_label="Encoding time (s)",
+        ratio_tick=0.1,
+        time_zero=True,
     )
     return csv_path, pdf_path, png_path
 

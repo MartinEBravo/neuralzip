@@ -51,7 +51,7 @@ def _federated_rows(model: str) -> list[dict[str, object]]:
             "round": round_index,
             "compressor": compressor,
             "exponent_ratio_pct": 31.0 + round_index,
-            "encoding_critical_seconds": 0.2 + round_index,
+            "downlink_encode_seconds": 0.1 + round_index,
             "roundtrip_ok": True,
         }
         for round_index in (1, 2)

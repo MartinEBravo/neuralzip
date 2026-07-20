@@ -7,9 +7,10 @@ Final thesis artifacts produced on `relela-06` on 2026-07-17/18 with
 - Protocol: ResNet-18 and ResNet-34, 200 communication rounds, 10 clients,
   one local batch per client and round, batch size 64, seed 2026, FP32.
 - Compression: ZipNN source and NeuralZip, 12 pinned CPU threads and one
-  verified warm-up. The reported critical encoding time is the downlink encode
-  plus the slowest client uplink encode per round; training and decoding are
-  excluded.
+  verified warm-up. The thesis reports `downlink_encode_seconds`: one direct
+  encode of the global model per round. Client encoding, training and decoding
+  are excluded from this timing. The CSV also retains the downlink-plus-slowest-
+  uplink critical-path field as a diagnostic.
 - Ratio: exact exponent symbols plus raw fallback and metadata. The final
   NeuralZip ratio charges the one-time codebook payload once per client.
 - Trajectory: the NeuralZip-decoded state is used only after bitwise equality

@@ -11,8 +11,8 @@ The resulting figures use the thesis layout requested for both experiments:
 
 * columns: GPT-2, BERT Base, ResNet-18, and ResNet-34;
 * top row: exponent-field compression ratio;
-* bottom row: direct encoding time (checkpoint) or critical encoding time
-  (federated).
+* bottom row: direct encoding time (checkpoint) or paired critical-path
+  encoding speedup (federated).
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ from typing import Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 
-COMPRESSORS = ("ZipNN src", "NeuralZip")
+COMPRESSOR_SRC = "ZipNN src"
+COMPRESSOR_NEURALZIP = "NeuralZip"
+COMPRESSORS = (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP)
 MODEL_ORDER = ("gpt2", "bert-base", "resnet18", "resnet34")
 MODEL_LABELS = {
     "gpt2": "GPT-2",
@@ -322,17 +324,22 @@ def _render(
     output_stem: Path,
     x_label: str,
     time_label: str,
+    time_mode: str = "absolute",
 ) -> tuple[Path, Path]:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    if time_mode not in {"absolute", "speedup"}:
+        raise ValueError(f"Unsupported time mode: {time_mode}")
+
     fig, axes = plt.subplots(2, 4, figsize=(14.4, 6.2), sharex="col")
     for column, model in enumerate(MODEL_ORDER):
         ratio_axis = axes[0, column]
         time_axis = axes[1, column]
         ratio_axis.set_title(MODEL_LABELS[model], fontsize=11)
+        groups: dict[str, list[Mapping[str, object]]] = {}
         for compressor in COMPRESSORS:
             group = sorted(
                 (
@@ -342,6 +349,7 @@ def _render(
                 ),
                 key=lambda row: int(row["step"]),
             )
+            groups[compressor] = group
             steps = [int(row["step"]) for row in group]
             markevery = max(1, len(group) // 10)
             style = {
@@ -357,10 +365,50 @@ def _render(
                 [float(row["exponent_ratio_pct"]) for row in group],
                 **style,
             )
+            if time_mode == "absolute":
+                time_axis.plot(
+                    steps,
+                    [float(row["encoding_seconds"]) for row in group],
+                    **style,
+                )
+        if time_mode == "speedup":
+            source_group = groups[COMPRESSOR_SRC]
+            neuralzip_group = groups[COMPRESSOR_NEURALZIP]
+            source_steps = [int(row["step"]) for row in source_group]
+            neuralzip_steps = [int(row["step"]) for row in neuralzip_group]
+            if source_steps != neuralzip_steps:
+                raise ValueError(f"Mismatched paired timing steps for {model}")
+            neuralzip_times = [
+                float(row["encoding_seconds"]) for row in neuralzip_group
+            ]
+            if any(value <= 0 for value in neuralzip_times):
+                raise ValueError(f"Non-positive NeuralZip timing for {model}")
+            markevery = max(1, len(source_group) // 10)
+            cumulative_source = 0.0
+            cumulative_neuralzip = 0.0
+            cumulative_speedups = []
+            for source, neuralzip_time in zip(source_group, neuralzip_times):
+                cumulative_source += float(source["encoding_seconds"])
+                cumulative_neuralzip += neuralzip_time
+                cumulative_speedups.append(
+                    cumulative_source / cumulative_neuralzip
+                )
             time_axis.plot(
-                steps,
-                [float(row["encoding_seconds"]) for row in group],
-                **style,
+                source_steps,
+                [1.0] * len(source_steps),
+                color=COLORS[COMPRESSOR_SRC],
+                linewidth=1.5,
+                label=COMPRESSOR_SRC,
+            )
+            time_axis.plot(
+                source_steps,
+                cumulative_speedups,
+                color=COLORS[COMPRESSOR_NEURALZIP],
+                marker=MARKERS[COMPRESSOR_NEURALZIP],
+                markersize=2.8,
+                markevery=markevery,
+                linewidth=1.5,
+                label=COMPRESSOR_NEURALZIP,
             )
         for axis in (ratio_axis, time_axis):
             axis.grid(True, axis="y", color="#dddddd", linewidth=0.6)
@@ -435,6 +483,7 @@ def build_checkpoint_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path
         output_stem=args.output_dir / "figures" / "checkpoint_training",
         x_label="Epoch",
         time_label="Encoding time (s)",
+        time_mode="absolute",
     )
     return csv_path, pdf_path, png_path
 
@@ -471,7 +520,8 @@ def build_federated_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path]
         rows,
         output_stem=args.output_dir / "figures" / "federated_training",
         x_label="Round",
-        time_label="Critical encoding time (s)",
+        time_label="Cumulative speedup (\N{MULTIPLICATION SIGN})",
+        time_mode="speedup",
     )
     return csv_path, pdf_path, png_path
 

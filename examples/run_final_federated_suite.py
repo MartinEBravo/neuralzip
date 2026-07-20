@@ -508,8 +508,12 @@ def _training_dataset(data_dir: Path) -> tuple[Dataset, str]:
 def _append_csv(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
-    with path.open("a", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(rows[0].keys()),
+            lineterminator="\n",
+        )
         if not exists:
             writer.writeheader()
         writer.writerows(rows)
@@ -520,8 +524,12 @@ def _append_csv(path: Path, rows: list[dict[str, object]]) -> None:
 def _write_csv_atomic(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(rows[0].keys()),
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
     temporary.replace(path)

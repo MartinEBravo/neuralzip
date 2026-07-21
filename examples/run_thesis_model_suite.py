@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import hashlib
+import importlib.metadata
 import json
 import math
 import platform
@@ -443,13 +444,27 @@ def production_exponent_measure(
         raise RuntimeError(
             f"Round-trip failed for {view.spec.label} {method}."
         )
+    if method == "zipnn-src":
+        raw_bytes, compressed_bytes = zipnn_exponent_metrics(
+            result,
+            method,
+            threads,
+        )
+        exponent_metrics = {
+            "raw_bytes": raw_bytes,
+            "compressed_bytes": compressed_bytes,
+            "codebook_bytes": 0,
+            "compression_pct": 100.0 * compressed_bytes / raw_bytes,
+        }
+    else:
+        exponent_metrics = component_exponent_metrics(result)
     measured = {
-        **component_exponent_metrics(result),
+        **exponent_metrics,
         "encode_seconds": float(result["encode_seconds"]),
         "precompute_seconds": float(
             result.get("precompute_total_seconds") or 0.0
         ),
-        "clusters": int(result["header"].get("clusters") or 0),
+        "clusters": int((result.get("header") or {}).get("clusters") or 0),
         "selected_modes": result.get("selected_modes") or {},
         "roundtrip_ok": bool(result["roundtrip_ok"]),
     }
@@ -465,7 +480,7 @@ def run_component(view: ModelView, threads: int):
         for index, (name, _) in enumerate(floating_parameters(view))
     }
     variants = (
-        ("ZipNN", "zipnn-local", {}),
+        ("ZipNN", "zipnn-src", {"zipnn_method": "HUFFMAN"}),
         (
             "Sharing Only",
             "neuralzip",
@@ -507,7 +522,10 @@ def run_component(view: ModelView, threads: int):
             "repetitions": 1,
             "warmup_runs": 1,
             "threads": int(threads),
-            "backend": "production direct encoder",
+            "backend": "official ZipNN source and NeuralZip production encoder",
+            "zipnn_source_version": importlib.metadata.version("zipnn"),
+            "zipnn_defensive_copy_included": True,
+            "ratio_scope": "exponent payload plus compressor-native metadata",
             "seconds": time.perf_counter() - start,
         },
     )

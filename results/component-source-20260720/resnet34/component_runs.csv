@@ -1,0 +1,5 @@
+model,variant,repeats,raw_bytes,compressed_bytes,codebook_bytes,compression_pct,encode_seconds,precompute_seconds,clusters,selected_modes,roundtrip_ok
+ResNet-34,ZipNN,1,21797672,7256376,0,33.289683412063454,0.06995905935764313,0.0,0,{},True
+ResNet-34,Sharing Only,1,21797672,7262209,98,33.31644315044286,0.010546703822910786,0.6490211384370923,77,"{'raw': 66, 'local_huff0': 87, 'shared_huff0': 1}",True
+ResNet-34,Packing Only,1,21797672,7073246,4836,32.449547823272134,0.014891896396875381,2.2610110035166144,110,"{'raw': 92, 'local_huff0': 123, 'packed_huff0_n2': 2, 'packed_huff0_n3': 2, 'packed_huff0_n4': 1}",True
+ResNet-34,NeuralZip,1,21797672,7113807,2450,32.63562732754213,0.01480899564921856,2.2822270402684808,77,"{'local_huff0': 88, 'raw': 62, 'shared_huff0': 1, 'packed_huff0_n2': 1, 'packed_huff0_n3': 1, 'packed_huff0_n4': 1}",True

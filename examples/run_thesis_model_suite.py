@@ -925,8 +925,7 @@ def render_figures():
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 10.2), squeeze=False)
     image = None
     for axis, (label, matrix) in zip(axes.ravel(), heatmaps):
-        visible = np.ma.masked_where(np.triu(np.ones_like(matrix), k=1), matrix)
-        image = axis.imshow(visible, cmap="magma", vmin=0, vmax=max_distance)
+        image = axis.imshow(matrix, cmap="magma", vmin=0, vmax=max_distance)
         axis.set_title(label)
         step = max(1, matrix.shape[0] // 6)
         ticks = np.arange(0, matrix.shape[0], step)

@@ -2,7 +2,6 @@ import unittest
 
 import torch
 
-from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -19,14 +18,6 @@ class ZipNNCodecTests(unittest.TestCase):
                     torch.equal(source.view(torch.uint8), restored.view(torch.uint8))
                 )
                 self.assertGreater(payload.huffman_chunks, 0)
-
-    def test_neuralzip_inherits_shared_batch_executor(self):
-        self.assertNotIn("_encode_huff0_chunks", NeuralZipCodec.__dict__)
-        self.assertIs(
-            NeuralZipCodec._encode_huff0_chunks,
-            ZipNNCodec._encode_huff0_chunks,
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

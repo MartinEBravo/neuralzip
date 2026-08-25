@@ -37,10 +37,6 @@ def _dtype_name(dtype):
     return str(dtype).replace("torch.", "")
 
 
-def _raw_tensor_bytes(tensor):
-    return int(tensor.numel() * tensor.element_size())
-
-
 def _tensor_raw_bytes(tensor):
     tensor = tensor.detach().cpu().contiguous()
     return tensor.view(torch.uint8).reshape(-1).numpy().tobytes()
@@ -284,17 +280,6 @@ class ZipNNCodec:
                 )
             )
         return tuple(groups)
-
-    def _encode_huff0_chunks(self, chunks, codebook, *, metadata_bytes):
-        """Shared native batch executor used by ZipNN and NeuralZip paths."""
-        return huff0.encode_many_with_codebook(
-            chunks,
-            codebook,
-            min_saving_bytes=self.min_saving_bytes,
-            compression_threshold=self.compression_threshold,
-            metadata_bytes=metadata_bytes,
-            threads=self.threads,
-        )
 
     def _decompress_stream(self, group):
         output = bytearray()

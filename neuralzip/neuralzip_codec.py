@@ -16,9 +16,12 @@ from .mode_selection import (
     select_fastest_within_ratio,
     select_packed_time_budget,
 )
+from .metrics import jensen_shannon_distance as _jensen_shannon
 from .payloads import (
     ByteGroupPayload,
     CodebookPayload,
+    PACKED_CHUNK_METADATA_BYTES,
+    SHARED_CHUNK_METADATA_BYTES,
     StreamChunk,
     TensorPayload,
 )
@@ -36,21 +39,6 @@ from .zipnn_codec import (
 
 def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
-
-
-def _jensen_shannon(left, right):
-    left = np.asarray(left, dtype=np.float64)
-    right = np.asarray(right, dtype=np.float64)
-    middle = 0.5 * (left + right)
-    left_mask = left > 0
-    right_mask = right > 0
-    divergence = 0.5 * np.sum(
-        left[left_mask] * np.log2(left[left_mask] / middle[left_mask])
-    )
-    divergence += 0.5 * np.sum(
-        right[right_mask] * np.log2(right[right_mask] / middle[right_mask])
-    )
-    return float(np.sqrt(divergence))
 
 
 def _exponent_distribution(tensor):
@@ -378,7 +366,8 @@ class NeuralZipCodec(ZipNNCodec):
         if mode["kind"] == "shared_huff0":
             max_payload_bytes = max(
                 0,
-                int(len(chunk) * self.compression_threshold) - (1 + 8 + 8 + 8),
+                int(len(chunk) * self.compression_threshold)
+                - SHARED_CHUNK_METADATA_BYTES,
             )
             encoder = (
                 huff0.encode_with_codebook_4x
@@ -403,7 +392,7 @@ class NeuralZipCodec(ZipNNCodec):
             max_payload_bytes = max(
                 0,
                 int(len(chunk) * self.compression_threshold)
-                - (1 + 8 + 8 + 8 + 8 + 1 + 8 + 8),
+                - PACKED_CHUNK_METADATA_BYTES,
             )
             encoder = (
                 huff0.encode_ngram_with_codebook_4x
@@ -1322,7 +1311,7 @@ class NeuralZipCodec(ZipNNCodec):
                 mode["codebook"],
                 min_saving_bytes=self.min_saving_bytes,
                 compression_threshold=self.compression_threshold,
-                metadata_bytes=1 + 8 + 8 + 8,
+                metadata_bytes=SHARED_CHUNK_METADATA_BYTES,
                 threads=self.threads,
             )
             for index, (chunk, payload) in enumerate(
@@ -1348,7 +1337,7 @@ class NeuralZipCodec(ZipNNCodec):
                 n=mode["ngram_n"],
                 min_saving_bytes=self.min_saving_bytes,
                 compression_threshold=self.compression_threshold,
-                metadata_bytes=1 + 8 + 8 + 8 + 8 + 1 + 8 + 8,
+                metadata_bytes=PACKED_CHUNK_METADATA_BYTES,
                 threads=self.threads,
             )
             for index, (chunk, payload) in enumerate(
@@ -1472,7 +1461,7 @@ class NeuralZipCodec(ZipNNCodec):
             mode["codebook"],
             min_saving_bytes=self.min_saving_bytes,
             compression_threshold=self.compression_threshold,
-            metadata_bytes=1 + 8 + 8 + 8,
+            metadata_bytes=SHARED_CHUNK_METADATA_BYTES,
             threads=self.threads,
         )
         encoded_chunks = [None] * len(source_chunks)
@@ -1575,7 +1564,6 @@ class NeuralZipCodec(ZipNNCodec):
         source_chunks = tuple(chunk["source"] for chunk in cached_chunks)
         token_chunks = tuple(chunk["tokens"] for chunk in cached_chunks)
         if mode.get("frame_4x", False):
-            metadata_bytes = 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8
             limits = tuple(
                 max(
                     0,
@@ -1583,7 +1571,7 @@ class NeuralZipCodec(ZipNNCodec):
                         len(cached["tokens"]) - self.min_saving_bytes - 1,
                         int(np.ceil(len(cached["source"]) * self.compression_threshold))
                         - 1
-                        - metadata_bytes
+                        - PACKED_CHUNK_METADATA_BYTES
                         - len(cached["escapes"])
                         - len(cached["tail"]),
                     ),
@@ -2503,7 +2491,6 @@ class NeuralZipCodec(ZipNNCodec):
                     }
                 )
 
-        packed_metadata_bytes = 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8
         for batch in packed_batches.values():
             mode = batch["mode"]
             is_prepacked = all(
@@ -2532,7 +2519,7 @@ class NeuralZipCodec(ZipNNCodec):
                                     )
                                 )
                                 - 1
-                                - packed_metadata_bytes
+                                - PACKED_CHUNK_METADATA_BYTES
                                 - len(cached["escapes"])
                                 - len(cached["tail"]),
                             ),
@@ -2574,7 +2561,7 @@ class NeuralZipCodec(ZipNNCodec):
                     n=mode["ngram_n"],
                     min_saving_bytes=self.min_saving_bytes,
                     compression_threshold=self.compression_threshold,
-                    metadata_bytes=packed_metadata_bytes,
+                    metadata_bytes=PACKED_CHUNK_METADATA_BYTES,
                     threads=self.threads,
                 )
 

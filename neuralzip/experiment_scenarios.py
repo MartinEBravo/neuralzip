@@ -8,6 +8,15 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from .codec_protocol import (
+    CODEC_PROTOCOL_VERSION,
+    assert_tensor_roundtrip,
+    decode_tensor_batch,
+    encode_tensor_batch,
+    is_current_codec_protocol,
+    payload_exponent_sizes,
+    prepare_neuralzip_codec,
+)
 from .compressor import Compressor
 from .neuralzip_codec import NeuralZipCodec
 from .zipnn_codec import ZipNNCodec
@@ -189,6 +198,15 @@ def _result_exponent_metrics(result):
     }
 
 
+def _encoder_path_for_method(method):
+    key = str(method).strip().lower().replace("_", "-")
+    if key in {"zipnn-src", "zipnn-source", "official-zipnn"}:
+        return "zipnn-src"
+    if key in {"neuralzip", "neural-zip"}:
+        return "compress_tensors"
+    return "compress_tensor"
+
+
 def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
     rows = []
     wrapped = MappingModel(model_name=model_name, model=tensor_mapping)
@@ -198,11 +216,27 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
             result = Compressor(method, verify=False).compress(wrapped)
             elapsed = time.perf_counter() - start
             exponent_metrics = _result_exponent_metrics(result)
+            encode_seconds = result.get("encode_seconds")
+            compression_seconds = result.get("compression_seconds")
+            if compression_seconds is None:
+                compression_seconds = (
+                    encode_seconds if encode_seconds is not None else elapsed
+                )
+            total_compression_seconds = result.get("total_compression_seconds")
+            if total_compression_seconds is None:
+                total_compression_seconds = compression_seconds
+            cold_encode_seconds = result.get("cold_encode_seconds")
+            if cold_encode_seconds is None:
+                cold_encode_seconds = total_compression_seconds
             rows.append(
                 {
                     "model": model_name,
                     "compressor": compressor_name,
                     "method": result.get("method"),
+                    "codec_protocol_version": CODEC_PROTOCOL_VERSION,
+                    "encoder_path": _encoder_path_for_method(
+                        result.get("method", method)
+                    ),
                     "scope": result.get("scope", "full checkpoint"),
                     "status": "ok",
                     "raw_bytes": result.get("raw_bytes"),
@@ -215,10 +249,10 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
                     "codebook_setup_seconds": result.get(
                         "codebook_setup_seconds"
                     ),
-                    "encode_seconds": result.get("encode_seconds"),
-                    "compression_seconds": result.get("encode_seconds", elapsed),
-                    "total_compression_seconds": result.get("encode_seconds", elapsed),
-                    "cold_encode_seconds": result.get("encode_seconds", elapsed),
+                    "encode_seconds": encode_seconds,
+                    "compression_seconds": compression_seconds,
+                    "total_compression_seconds": total_compression_seconds,
+                    "cold_encode_seconds": cold_encode_seconds,
                     "clusters": result.get("clusters"),
                     "codebooks": (
                         len(result.get("codebooks"))
@@ -236,6 +270,8 @@ def _compress_mapping(model_name, tensor_mapping, *, methods=DEFAULT_METHODS):
                     "model": model_name,
                     "compressor": compressor_name,
                     "method": method,
+                    "codec_protocol_version": CODEC_PROTOCOL_VERSION,
+                    "encoder_path": _encoder_path_for_method(method),
                     "scope": None,
                     "status": "failed",
                     "raw_bytes": None,
@@ -487,8 +523,21 @@ def _model_methods_completed(existing_rows, model_name, methods):
         if row.get("model_name") == model_name
         and row.get("status") == "ok"
         and row.get("compressor") is not None
+        and is_current_codec_protocol(row.get("codec_protocol_version"))
+        and row.get("encoder_path")
+        == _encoder_path_for_method(row.get("method"))
     }
     return all(name in completed for name, _ in methods)
+
+
+def _upsert_model_compressor_row(rows, row):
+    key = (row.get("model_name"), row.get("compressor"))
+    rows[:] = [
+        existing
+        for existing in rows
+        if (existing.get("model_name"), existing.get("compressor")) != key
+    ]
+    rows.append(row)
 
 
 def run_vision_diffusion_experiment(
@@ -613,7 +662,7 @@ def run_vision_diffusion_experiment(
                 row["floating_raw_bytes"] = floating_raw_bytes
                 row["load_seconds"] = load_seconds
                 row["load_backend"] = load_metadata.get("load_backend")
-                rows.append(row)
+                _upsert_model_compressor_row(rows, row)
 
             pd.DataFrame(rows).to_csv(result_path, index=False)
             del tensors
@@ -1264,78 +1313,6 @@ class _HFCIFARParquet(torch.utils.data.Dataset):
         return image, self._labels[int(index)]
 
 
-def _codec_compress_tensors(codec, tensors):
-    payloads = []
-    raw_bytes = 0
-    compressed_bytes = 0
-    huffman_chunks = 0
-    raw_chunks = 0
-    shared_refs = 0
-
-    start = time.perf_counter()
-    for name, tensor in tensors.items():
-        payload = codec.compress_tensor(name, tensor)
-        payloads.append(payload)
-        raw_bytes += payload.raw_bytes
-        compressed_bytes += payload.compressed_bytes
-        huffman_chunks += payload.huffman_chunks
-        raw_chunks += payload.raw_chunks
-        shared_refs += getattr(payload, "shared_codebook_refs", 0)
-    seconds = time.perf_counter() - start
-
-    return {
-        "payloads": payloads,
-        "raw_bytes": raw_bytes,
-        "compressed_bytes": compressed_bytes,
-        "seconds": seconds,
-        "huffman_chunks": huffman_chunks,
-        "raw_chunks": raw_chunks,
-        "shared_refs": shared_refs,
-    }
-
-
-def _prepare_neuralzip_codec(codec, named_tensors):
-    named_tensors = list(named_tensors)
-    started = time.perf_counter()
-    codec.prepare_clusters(named_tensors)
-    precompute_seconds = time.perf_counter() - started
-
-    started = time.perf_counter()
-    codec.build_codebooks_and_select_modes(named_tensors)
-    codebook_setup_seconds = time.perf_counter() - started
-    return {
-        "precompute_seconds": precompute_seconds,
-        "codebook_setup_seconds": codebook_setup_seconds,
-        "total_setup_seconds": precompute_seconds + codebook_setup_seconds,
-    }
-
-
-def _codec_decompress_tensors(codec, payloads):
-    start = time.perf_counter()
-    tensors = {payload.name: codec.decompress_tensor(payload) for payload in payloads}
-    seconds = time.perf_counter() - start
-    return tensors, seconds
-
-
-def _payload_exponent_sizes(payload):
-    if not payload.groups:
-        return 0, 0
-    exponent_group = payload.groups[int(payload.element_size) - 1]
-    return int(exponent_group.symbol_count), int(exponent_group.compressed_bytes)
-
-
-def _assert_tensor_roundtrip(expected, decoded, *, method, checkpoint):
-    if expected.keys() != decoded.keys():
-        raise AssertionError(
-            f"{method} changed the tensor names for checkpoint {checkpoint}."
-        )
-    for name, tensor in expected.items():
-        if not torch.equal(tensor, decoded[name]):
-            raise AssertionError(
-                f"{method} failed bitwise roundtrip for {checkpoint}:{name}."
-            )
-
-
 def compress_training_checkpoints(
     checkpoint_dir,
     output_dir,
@@ -1380,6 +1357,17 @@ def compress_training_checkpoints(
     )
     if rows and any(row.get("setup_scope") != "per-checkpoint" for row in rows):
         rows = []
+    expected_encoder_paths = {
+        "ZipNN": "compress_tensor",
+        "NeuralZip": "compress_tensors",
+    }
+    rows = [
+        row
+        for row in rows
+        if is_current_codec_protocol(row.get("codec_protocol_version"))
+        and row.get("encoder_path")
+        == expected_encoder_paths.get(str(row.get("method")))
+    ]
     completed = {
         (str(row["method"]), int(row["epoch"]))
         for row in rows
@@ -1416,7 +1404,7 @@ def compress_training_checkpoints(
                 top_k=top_k,
                 packed_source_budget_ratio=packed_source_budget_ratio,
             )
-            neuralzip_setup = _prepare_neuralzip_codec(
+            neuralzip_setup = prepare_neuralzip_codec(
                 neuralzip_codec,
                 tensors.items(),
             )
@@ -1433,13 +1421,11 @@ def compress_training_checkpoints(
                     "NeuralZip",
                     neuralzip_codec,
                     {
-                        "setup_seconds": neuralzip_setup["total_setup_seconds"],
-                        "cluster_setup_seconds": neuralzip_setup[
-                            "precompute_seconds"
-                        ],
-                        "codebook_setup_seconds": neuralzip_setup[
-                            "codebook_setup_seconds"
-                        ],
+                        "setup_seconds": neuralzip_setup.total_setup_seconds,
+                        "cluster_setup_seconds": neuralzip_setup.precompute_seconds,
+                        "codebook_setup_seconds": (
+                            neuralzip_setup.codebook_setup_seconds
+                        ),
                         "setup_bytes": int(
                             neuralzip_codec.codebook_metadata_bytes()
                         ),
@@ -1454,24 +1440,24 @@ def compress_training_checkpoints(
         for method, codec, setup in protocols:
             if (method, epoch) in completed:
                 continue
-            encoded = _codec_compress_tensors(codec, tensors)
+            encoded = encode_tensor_batch(codec, tensors)
             exponent_raw_bytes = 0
             exponent_compressed_bytes = 0
-            for payload in encoded["payloads"]:
-                raw_size, compressed_size = _payload_exponent_sizes(payload)
+            for payload in encoded.payloads:
+                raw_size, compressed_size = payload_exponent_sizes(payload)
                 exponent_raw_bytes += raw_size
                 exponent_compressed_bytes += compressed_size
             exponent_compressed_bytes += int(setup["exponent_codebook_bytes"])
-            stored_bytes = int(encoded["compressed_bytes"]) + int(
+            stored_bytes = int(encoded.compressed_bytes) + int(
                 setup["setup_bytes"]
             )
 
-            decoded, decode_seconds = _codec_decompress_tensors(
+            decoded, decode_seconds = decode_tensor_batch(
                 codec,
-                encoded["payloads"],
+                encoded.payloads,
             )
             if verify:
-                _assert_tensor_roundtrip(
+                assert_tensor_roundtrip(
                     tensors,
                     decoded,
                     method=method,
@@ -1483,6 +1469,8 @@ def compress_training_checkpoints(
                 "checkpoint": checkpoint_path.name,
                 "epoch": epoch,
                 "method": method,
+                "codec_protocol_version": CODEC_PROTOCOL_VERSION,
+                "encoder_path": encoded.encoder_path,
                 "setup_scope": "per-checkpoint",
                 "dtype": (
                     str(dtype).replace("torch.", "")
@@ -1490,12 +1478,12 @@ def compress_training_checkpoints(
                     else "checkpoint"
                 ),
                 "tensor_count": len(tensors),
-                "raw_bytes": int(encoded["raw_bytes"]),
-                "payload_compressed_bytes": int(encoded["compressed_bytes"]),
+                "raw_bytes": int(encoded.raw_bytes),
+                "payload_compressed_bytes": int(encoded.compressed_bytes),
                 "stored_bytes": stored_bytes,
                 "compression_ratio_pct": (
-                    100 * stored_bytes / encoded["raw_bytes"]
-                    if encoded["raw_bytes"]
+                    100 * stored_bytes / encoded.raw_bytes
+                    if encoded.raw_bytes
                     else 0.0
                 ),
                 "exponent_raw_bytes": int(exponent_raw_bytes),
@@ -1505,13 +1493,13 @@ def compress_training_checkpoints(
                     if exponent_raw_bytes
                     else 0.0
                 ),
-                "encode_seconds": float(encoded["seconds"]),
-                "total_compression_seconds": float(encoded["seconds"])
+                "encode_seconds": float(encoded.encode_seconds),
+                "total_compression_seconds": float(encoded.encode_seconds)
                 + float(setup["setup_seconds"]),
                 "decode_seconds": float(decode_seconds),
-                "huffman_chunks": int(encoded["huffman_chunks"]),
-                "raw_chunks": int(encoded["raw_chunks"]),
-                "shared_codebook_refs": int(encoded["shared_refs"]),
+                "huffman_chunks": int(encoded.huffman_chunks),
+                "raw_chunks": int(encoded.raw_chunks),
+                "shared_codebook_refs": int(encoded.shared_codebook_refs),
                 "roundtrip_exact": True,
                 "status": "ok",
                 **setup,
@@ -1540,10 +1528,17 @@ def compress_training_checkpoints(
         gc.collect()
 
     result_df = pd.DataFrame(rows)
+    if any(
+        group[["codec_protocol_version", "encoder_path"]].nunique().max() != 1
+        for _, group in result_df.groupby("method")
+    ):
+        raise RuntimeError("Checkpoint summary mixes incompatible codec protocols.")
     summary = (
         result_df.groupby("method", as_index=False)
         .agg(
             architecture=("architecture", "first"),
+            codec_protocol_version=("codec_protocol_version", "first"),
+            encoder_path=("encoder_path", "first"),
             checkpoints=("epoch", "count"),
             setup_seconds=("setup_seconds", "sum"),
             setup_bytes=("setup_bytes", "sum"),
@@ -1687,18 +1682,18 @@ def run_federated_codec_protocol_online(
         cluster_js_threshold=cluster_js_threshold,
         max_codebook_sample_bytes=max_codebook_sample_bytes,
     )
-    neuralzip_setup = _prepare_neuralzip_codec(
+    neuralzip_setup = prepare_neuralzip_codec(
         neuralzip_codec, initial_tensors.items()
     )
-    neuralzip_setup_seconds = neuralzip_setup["total_setup_seconds"]
+    neuralzip_setup_seconds = neuralzip_setup.total_setup_seconds
     neuralzip_codebooks = neuralzip_codec.export_codebooks()
     protocols.append(
         {
             "name": "NeuralZip",
             "codec": neuralzip_codec,
             "setup_seconds": neuralzip_setup_seconds,
-            "precompute_seconds": neuralzip_setup["precompute_seconds"],
-            "codebook_setup_seconds": neuralzip_setup["codebook_setup_seconds"],
+            "precompute_seconds": neuralzip_setup.precompute_seconds,
+            "codebook_setup_seconds": neuralzip_setup.codebook_setup_seconds,
             "setup_bytes": neuralzip_codec.codebook_metadata_bytes(),
             "clusters": neuralzip_codec.cluster_count,
             "codebooks": len(neuralzip_codebooks),
@@ -1710,26 +1705,27 @@ def run_federated_codec_protocol_online(
         server_tensors = _floating_tensors_from_state(server_state, dtype=dtype)
         downlink_metrics = {}
         for protocol in protocols:
-            downlink = _codec_compress_tensors(protocol["codec"], server_tensors)
-            decoded_downlink, downlink_decode_seconds = _codec_decompress_tensors(
+            downlink = encode_tensor_batch(protocol["codec"], server_tensors)
+            decoded_downlink, downlink_decode_seconds = decode_tensor_batch(
                 protocol["codec"],
-                downlink["payloads"],
+                downlink.payloads,
             )
             if verify:
-                _assert_tensor_roundtrip(
+                assert_tensor_roundtrip(
                     server_tensors,
                     decoded_downlink,
                     method=protocol["name"],
                     checkpoint=f"round-{round_index}-downlink",
                 )
             downlink_metrics[protocol["name"]] = {
-                "encode_seconds": float(downlink["seconds"]),
+                "encoder_path": downlink.encoder_path,
+                "encode_seconds": float(downlink.encode_seconds),
                 "decode_one_seconds": float(downlink_decode_seconds),
-                "raw_bytes": int(downlink["raw_bytes"]),
-                "compressed_bytes": int(downlink["compressed_bytes"]),
-                "huffman_chunks": int(downlink["huffman_chunks"]),
-                "raw_chunks": int(downlink["raw_chunks"]),
-                "shared_refs": int(downlink["shared_refs"]),
+                "raw_bytes": int(downlink.raw_bytes),
+                "compressed_bytes": int(downlink.compressed_bytes),
+                "huffman_chunks": int(downlink.huffman_chunks),
+                "raw_chunks": int(downlink.raw_chunks),
+                "shared_refs": int(downlink.shared_codebook_refs),
             }
             del decoded_downlink, downlink
 
@@ -1793,25 +1789,29 @@ def run_federated_codec_protocol_online(
 
             for client_state in client_states:
                 client_tensors = _floating_tensors_from_state(client_state, dtype=dtype)
-                uplink = _codec_compress_tensors(codec, client_tensors)
-                decoded_uplink, decode_seconds = _codec_decompress_tensors(
+                uplink = encode_tensor_batch(codec, client_tensors)
+                if uplink.encoder_path != downlink_metrics[protocol["name"]][
+                    "encoder_path"
+                ]:
+                    raise RuntimeError("Codec changed encoder path within one round.")
+                decoded_uplink, decode_seconds = decode_tensor_batch(
                     codec,
-                    uplink["payloads"],
+                    uplink.payloads,
                 )
                 if verify:
-                    _assert_tensor_roundtrip(
+                    assert_tensor_roundtrip(
                         client_tensors,
                         decoded_uplink,
                         method=protocol["name"],
                         checkpoint=f"round-{round_index}-uplink",
                     )
-                uplink_encode_seconds.append(float(uplink["seconds"]))
+                uplink_encode_seconds.append(float(uplink.encode_seconds))
                 uplink_decode_seconds.append(float(decode_seconds))
-                uplink_bytes += int(uplink["compressed_bytes"])
-                uplink_raw_bytes += int(uplink["raw_bytes"])
-                huffman_chunks += int(uplink["huffman_chunks"])
-                raw_chunks += int(uplink["raw_chunks"])
-                shared_refs += int(uplink["shared_refs"])
+                uplink_bytes += int(uplink.compressed_bytes)
+                uplink_raw_bytes += int(uplink.raw_bytes)
+                huffman_chunks += int(uplink.huffman_chunks)
+                raw_chunks += int(uplink.raw_chunks)
+                shared_refs += int(uplink.shared_codebook_refs)
                 del client_tensors, decoded_uplink, uplink
 
             downlink = downlink_metrics[protocol["name"]]
@@ -1840,6 +1840,8 @@ def run_federated_codec_protocol_online(
                     "architecture": architecture,
                     "dataset": str(dataset),
                     "protocol": protocol["name"],
+                    "codec_protocol_version": CODEC_PROTOCOL_VERSION,
+                    "encoder_path": downlink["encoder_path"],
                     "round": round_index,
                     "clients": int(clients),
                     "local_batches": int(local_batches),
@@ -1913,11 +1915,18 @@ def run_federated_codec_protocol_online(
             )
 
     round_df = pd.DataFrame(rows)
+    if any(
+        group[["codec_protocol_version", "encoder_path"]].nunique().max() != 1
+        for _, group in round_df.groupby("protocol")
+    ):
+        raise RuntimeError("Federated summary mixes incompatible codec protocols.")
     summary = (
         round_df.groupby("protocol", as_index=False)
         .agg(
             architecture=("architecture", "first"),
             dataset=("dataset", "first"),
+            codec_protocol_version=("codec_protocol_version", "first"),
+            encoder_path=("encoder_path", "first"),
             rounds=("round", "count"),
             clients=("clients", "mean"),
             local_batches=("local_batches", "first"),

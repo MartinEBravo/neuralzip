@@ -1,4 +1,4 @@
-__all__ = ["Compressor", "HFModel"]
+__all__ = ["Compressor", "HFModel", "NeuralZipPlan"]
 
 
 def __getattr__(name):
@@ -10,4 +10,8 @@ def __getattr__(name):
         from .model import HFModel
 
         return HFModel
+    if name == "NeuralZipPlan":
+        from .plan import NeuralZipPlan
+
+        return NeuralZipPlan
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

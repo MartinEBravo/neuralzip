@@ -1,5 +1,8 @@
 import unittest
 
+import torch
+
+from neuralzip.ablations import zipnn_exponent_stream
 from neuralzip.packed_exponents import (
     restore_2d_stream,
     restore_ngrams,
@@ -24,6 +27,34 @@ class PackedExponentTests(unittest.TestCase):
         transposed, layout = transpose_2d_stream(source, (3, 4))
         self.assertEqual(layout, "transpose2d")
         self.assertEqual(restore_2d_stream(transposed, (3, 4), layout), source)
+
+    def test_ablation_transpose_is_byte_identical_to_legacy_layout(self):
+        tensor = torch.tensor(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            dtype=torch.bfloat16,
+        )
+        original = zipnn_exponent_stream(tensor, layout="original")
+        expected = (
+            torch.frombuffer(bytearray(original), dtype=torch.uint8)
+            .reshape(tuple(tensor.shape))
+            .t()
+            .contiguous()
+            .reshape(-1)
+            .numpy()
+            .tobytes()
+        )
+
+        self.assertEqual(
+            zipnn_exponent_stream(tensor, layout="transpose2d"),
+            expected,
+        )
+
+    def test_ablation_transpose_preserves_non_matrix_stream(self):
+        tensor = torch.arange(12, dtype=torch.float32).reshape(2, 2, 3)
+        self.assertEqual(
+            zipnn_exponent_stream(tensor, layout="transpose2d"),
+            zipnn_exponent_stream(tensor, layout="original"),
+        )
 
     def test_empty_vocabulary_uses_escapes(self):
         source = b"abcdefg"

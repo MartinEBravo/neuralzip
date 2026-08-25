@@ -1,6 +1,22 @@
 from dataclasses import dataclass
 
 
+RAW_CHUNK_METADATA_BYTES = 1 + 8 + 8
+SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + 8
+PACKED_CHUNK_METADATA_BYTES = SHARED_CHUNK_METADATA_BYTES + 8 + 1 + 8 + 8
+
+
+def stream_chunk_metadata_bytes(mode, code_lengths_bytes=0):
+    """Return the serialized metadata overhead for one stream chunk."""
+    if mode == "huffman":
+        return SHARED_CHUNK_METADATA_BYTES + int(code_lengths_bytes)
+    if mode in {"shared_huffman", "shared_huff0"}:
+        return SHARED_CHUNK_METADATA_BYTES
+    if mode == "packed_huff0":
+        return PACKED_CHUNK_METADATA_BYTES
+    return RAW_CHUNK_METADATA_BYTES
+
+
 @dataclass(frozen=True)
 class CodebookPayload:
     codebook_id: int
@@ -51,14 +67,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        base_header = 1 + 8 + 8
-        if self.mode == "huffman":
-            return base_header + 8 + len(self.code_lengths)
-        if self.mode in {"shared_huffman", "shared_huff0"}:
-            return base_header + 8
-        if self.mode == "packed_huff0":
-            return base_header + 8 + 8 + 1 + 8 + 8
-        return base_header
+        return stream_chunk_metadata_bytes(self.mode, len(self.code_lengths))
 
     @property
     def compressed_bytes(self):

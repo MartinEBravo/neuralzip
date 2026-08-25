@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from examples import config, model_catalog
+from examples import model_catalog
 import examples.run_general_codec_rerun as general_runner
 
 
@@ -45,12 +45,10 @@ EXPECTED_FAMILY_ORDER = {
     "Llama 3 / derivatives": 10,
     "Llama 3 / LatamGPT": 11,
 }
-EXPECTED_SNAPSHOTS = {
-    "MODEL_SPECS": (51, "2e1c215e1de86d7c100c3fc74dae6b6f782871f6732525c14bcdb73ef0d34ca5"),
-    "MODEL_SUITE": (22, "25fd794519b7bafefedcf1eab3d8931f8c2e382069b0a7c1fb7f90dbb7fb4930"),
-    "LOSSY_LOSSLESS_MODEL_SUITE": (10, "a2fa96dfad5ef681cbf42fe8c27a8eeeb2da8d14a4329f5d13764f9e0dd59733"),
-    "VISION_DIFFUSION_MODEL_SUITE": (6, "1bc11c6068c9cafd4c87eaeb7c425e556a335c1dab3f8b70a5ee8d3e587bfeb4"),
-}
+EXPECTED_MODEL_SPECS = (
+    51,
+    "2e1c215e1de86d7c100c3fc74dae6b6f782871f6732525c14bcdb73ef0d34ca5",
+)
 
 
 def _digest(value):
@@ -66,10 +64,10 @@ class ModelCatalogTests(unittest.TestCase):
     def test_catalog_preserves_every_spec_and_family_order(self):
         specs = model_catalog.MODEL_SPECS
         self.assertEqual(tuple(spec.key for spec in specs), EXPECTED_MODEL_KEYS)
-        self.assertEqual(len(specs), EXPECTED_SNAPSHOTS["MODEL_SPECS"][0])
+        self.assertEqual(len(specs), EXPECTED_MODEL_SPECS[0])
         self.assertEqual(
             _digest([asdict(spec) for spec in specs]),
-            EXPECTED_SNAPSHOTS["MODEL_SPECS"][1],
+            EXPECTED_MODEL_SPECS[1],
         )
         self.assertEqual(
             Counter(suite for spec in specs for suite in spec.suites),
@@ -93,67 +91,16 @@ class ModelCatalogTests(unittest.TestCase):
             )
         )
 
-    def test_legacy_suite_dicts_are_exact_snapshots(self):
-        for name, (expected_count, expected_digest) in EXPECTED_SNAPSHOTS.items():
-            if name == "MODEL_SPECS":
-                continue
-            with self.subTest(suite=name):
-                suite = getattr(config, name)
-                self.assertEqual(len(suite), expected_count)
-                self.assertEqual(_digest(suite), expected_digest)
-                self.assertTrue(all(isinstance(entry, dict) for entry in suite))
-
-    def test_catalog_projections_preserve_names_ids_parameters_and_categories(self):
-        model_specs = tuple(
-            spec
-            for spec in model_catalog.MODEL_SPECS
-            if "model-storing" in spec.suites and "vision" not in spec.suites
-        )
-        distilled_specs = tuple(
-            spec
-            for spec in model_catalog.MODEL_SPECS
-            if "distilled" in spec.suites
-        )
-
-        for specs, entries in (
-            (model_specs, config.MODEL_SUITE),
-            (distilled_specs, config.LOSSY_LOSSLESS_MODEL_SUITE[-4:]),
-        ):
-            self.assertEqual(
-                tuple((entry["name"], entry["model_id"], entry["parameters_b"]) for entry in entries),
-                tuple((spec.label, spec.source, spec.parameters_b) for spec in specs),
-            )
-
+    def test_quantized_catalog_has_explicit_artifact_selection(self):
+        specs = model_catalog.QUANTIZED_MODEL_SPECS
+        self.assertEqual(len(specs), 6)
+        self.assertTrue(all(spec["category"] == "quantized" for spec in specs))
+        self.assertTrue(all(spec["artifact_selector"] for spec in specs))
         self.assertEqual(
-            tuple(entry.get("category") for entry in config.MODEL_SUITE),
-            (
-                None,
-                None,
-                "model-storing",
-                "model-storing",
-                None,
-                None,
-                "model-storing",
-                None,
-                "model-storing",
-                "model-storing",
-                "model-storing",
-                "model-storing",
-                None,
-                None,
-                "model-storing",
-                "model-storing",
-                "model-storing",
-                None,
-                None,
-                "model-storing",
-                "model-storing",
-                None,
-            ),
-        )
-        self.assertEqual(
-            tuple(entry["category"] for entry in config.LOSSY_LOSSLESS_MODEL_SUITE),
-            ("quantized",) * 6 + ("distilled",) * 4,
+            next(spec for spec in specs if "LatamGPT" in spec["name"])[
+                "artifact_selector"
+            ],
+            {"kind": "exact-files", "files": ("latamgpt-Q4_K_M.gguf",)},
         )
 
     def test_general_runner_reexports_canonical_catalog(self):

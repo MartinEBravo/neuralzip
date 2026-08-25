@@ -17,7 +17,6 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 DEFAULT_KIND_PRIORITY = (
-    "prepacked_huff0",
     "shared_huff0",
     "packed_huff0",
     "local_huff0",
@@ -67,7 +66,7 @@ def select_fastest_within_ratio(
     eligible candidate wins.  Remaining ties use byte count and then
     ``kind_priority`` so the result is stable across input ordering.
 
-    This policy lets a precomputed/shared representation replace
+    This policy lets a shared representation replace
     ``local_huff0`` when it is faster and its ratio regression is acceptable.
     """
 
@@ -210,9 +209,8 @@ def select_packed_time_budget(
         "packed_time_budget_seconds": budget_seconds,
         "packed_extra_seconds": used_seconds,
         "packed_estimated_bytes_saved": saved_bytes,
-        # ``packed_candidates`` is retained for compatibility with existing
-        # result readers.  It counts positive byte-saving opportunities, not
-        # every packed mode that the precompute evaluated.
+        # Count positive byte-saving opportunities, not every packed mode
+        # evaluated during setup.
         "packed_candidates": len(opportunities),
         "packed_opportunities": len(opportunities),
         "packed_selected": len(selected_keys),

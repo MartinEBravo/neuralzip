@@ -117,7 +117,6 @@ class NeuralZipPlan:
         named_tensors = named_tensor_items(named_tensors)
         codec = NeuralZipCodec(**codec_options) if codec is None else codec
         setup_report = prepare_neuralzip_codec(codec, named_tensors)
-        codec.clear_prepacked_cache()
         return cls(codec=codec, setup_report=setup_report)
 
     @property
@@ -149,12 +148,7 @@ class NeuralZipPlan:
             )
         raise ValueError("strategy must be 'structural' or 'js'.")
 
-    def materialize(self, named_tensors):
-        return self.codec.materialize_precompute(named_tensor_items(named_tensors))
-
-    def encode(self, named_tensors, *, clear_materialization=False):
-        if clear_materialization:
-            self.codec.clear_prepacked_cache()
+    def encode(self, named_tensors):
         return encode_tensor_batch(self.codec, named_tensor_items(named_tensors))
 
     def decode(self, payloads):

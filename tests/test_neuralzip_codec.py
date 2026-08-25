@@ -22,126 +22,7 @@ from neuralzip.zipnn_codec import (
 
 class NeuralZipCodecTests(unittest.TestCase):
     @staticmethod
-    def _prepared_packed_codec(tensor, *, prepack):
-        codec = NeuralZipCodec(
-            threads=2,
-            ngram_values=(2,),
-            packed_source_budget_ratio=1.0,
-            max_codebook_sample_bytes=1 << 20,
-            enable_prepacked_cache=True,
-        )
-        tensors = [("packed.weight", tensor)]
-        codec.prepare_clusters(tensors)
-        codec.build_codebooks_and_select_modes(tensors)
-        if prepack:
-            codec.materialize_precompute(tensors)
-        return codec
-
-    def test_prepacked_cache_preserves_payload_and_roundtrip(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
-        ).repeat(65536)
-        cached = self._prepared_packed_codec(tensor, prepack=True)
-        regular = self._prepared_packed_codec(tensor, prepack=False)
-
-        with mock.patch(
-            "neuralzip.neuralzip_codec.tokenize_ngrams",
-            side_effect=AssertionError("hot encode retokenized packed exponents"),
-        ):
-            cached_payload = cached.compress_tensors(
-                [("packed.weight", tensor)]
-            )[0]
-        regular_payload = regular.compress_tensors(
-            [("packed.weight", tensor)]
-        )[0]
-
-        self.assertEqual(cached_payload, regular_payload)
-        self.assertTrue(
-            torch.equal(cached.decompress_tensor(cached_payload), tensor)
-        )
-        stats = cached.prepacked_cache_stats
-        self.assertGreater(stats["cache_bytes"], 0)
-        self.assertGreater(stats["source_stream_bytes"], 0)
-        self.assertGreater(stats["packed_token_bytes"], 0)
-        self.assertEqual(stats["identity_hits"], 1)
-
-    def test_prepacked_cache_rejects_mutated_tensor(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
-        ).repeat(65536)
-        codec = self._prepared_packed_codec(tensor, prepack=True)
-        tensor.add_(1)
-
-        payload = codec.compress_tensors([("packed.weight", tensor)])[0]
-
-        restored = codec.decompress_tensor(payload)
-        self.assertTrue(torch.equal(restored.view(torch.uint8), tensor.view(torch.uint8)))
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 1)
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-
-    def test_prepacked_cache_rejects_content_identical_new_tensor(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
-        ).repeat(65536)
-        codec = self._prepared_packed_codec(tensor, prepack=True)
-        clone = tensor.clone()
-
-        payload = codec.compress_tensors([("packed.weight", clone)])[0]
-
-        self.assertTrue(torch.equal(codec.decompress_tensor(payload), clone))
-        self.assertEqual(codec.prepacked_cache_stats["cache_hits"], 0)
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 1)
-
-    def test_exact_prepacked_cache_is_disabled_by_default(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
-        ).repeat(4096)
-        name = "default.weight"
-        codec = NeuralZipCodec(threads=2, ngram_values=())
-        codec._clusters_prepared = True
-        codec._mode_by_tensor_stream = {
-            (name, "bfloat16", stream_id): {"kind": "local_huff0"}
-            for stream_id in range(2)
-        }
-
-        self.assertFalse(codec.enable_prepacked_cache)
-        stats = codec.materialize_precompute([(name, tensor)])
-        payload = codec.compress_tensor(name, tensor)
-
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-        self.assertTrue(
-            all(
-                stats[key] == 0
-                for key in (
-                    "entries",
-                    "cache_bytes",
-                    "cache_hits",
-                    "identity_hits",
-                    "cache_misses",
-                )
-            )
-        )
-        self.assertTrue(torch.equal(codec.decompress_tensor(payload), tensor))
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 0)
-
-    def test_explicit_cache_clear_handles_untracked_storage_mutation(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
-        ).repeat(65536)
-        codec = self._prepared_packed_codec(tensor, prepack=True)
-
-        # ``.data`` deliberately bypasses the source tensor's version counter;
-        # callers using such aliases must invalidate the exact-object cache.
-        tensor.data[0] = 7
-        codec.clear_prepacked_cache()
-        payload = codec.compress_tensors([("packed.weight", tensor)])[0]
-
-        restored = codec.decompress_tensor(payload)
-        self.assertTrue(torch.equal(restored.view(torch.uint8), tensor.view(torch.uint8)))
-        self.assertEqual(codec.prepacked_cache_stats["cache_hits"], 0)
-
-    @staticmethod
-    def _prepared_direct_transfer_codec(*, enable_prepacked_cache=True):
+    def _prepared_direct_transfer_codec():
         source_tensor = torch.tensor(
             [1.0, 2.0, 1.0, 2.0], dtype=torch.bfloat16
         ).repeat(16384)
@@ -155,13 +36,12 @@ class NeuralZipCodecTests(unittest.TestCase):
             ngram_values=(2,),
             packed_source_budget_ratio=1.0,
             max_codebook_sample_bytes=1 << 20,
-            enable_prepacked_cache=enable_prepacked_cache,
         )
         codec.prepare_clusters(source)
         codec.build_codebooks_and_select_modes(source)
         return codec, source, target
 
-    def test_direct_transfer_materialization_skips_histogram_js_and_probe(self):
+    def test_direct_transfer_skips_histogram_js_and_probe(self):
         codec, _, target = self._prepared_direct_transfer_codec()
         source_codebooks = codec.export_codebooks()
         source_mode_ids = {
@@ -174,78 +54,7 @@ class NeuralZipCodecTests(unittest.TestCase):
                 side_effect=AssertionError("target histogram was computed"),
             ),
             mock.patch(
-                "neuralzip.neuralzip_codec._jensen_shannon",
-                side_effect=AssertionError("target JS matching was computed"),
-            ),
-            mock.patch.object(
-                codec,
-                "_select_transfer_mode",
-                side_effect=AssertionError("target mode probing was run"),
-            ),
-            mock.patch.object(
-                codec,
-                "_evaluate_modes",
-                side_effect=AssertionError("target modes were evaluated"),
-            ),
-        ):
-            stats = codec.prepare_direct_transfer_target(target)
-            uncached = codec.compress_tensors(target)[0]
-            cache_stats = codec.materialize_transfer_target(target)
-
-        cached = codec.compress_tensors(target)[0]
-        restored = codec.decompress_tensor(cached)
-
-        self.assertFalse(stats["target_histograms_computed"])
-        self.assertFalse(stats["target_js_matching"])
-        self.assertFalse(stats["target_mode_probing"])
-        self.assertEqual(stats["matched_tensor_pct"], 100.0)
-        self.assertEqual(stats["missing_streams"], 0)
-        self.assertGreater(cache_stats["entries"], 0)
-        self.assertGreater(cache_stats["cache_bytes"], 0)
-        self.assertEqual(cached, uncached)
-        self.assertEqual(codec.export_codebooks(), source_codebooks)
-        self.assertEqual(
-            {key: id(mode) for key, mode in codec._mode_by_tensor_stream.items()},
-            source_mode_ids,
-        )
-        self.assertTrue(
-            torch.equal(
-                restored.view(torch.uint8),
-                target[0][1].view(torch.uint8),
-            )
-        )
-
-    def test_direct_transfer_without_exact_cache_keeps_source_plan_frozen(self):
-        codec, _, target = self._prepared_direct_transfer_codec(
-            enable_prepacked_cache=False
-        )
-        source_codebooks = codec.export_codebooks()
-        source_mode_ids = {
-            key: id(mode) for key, mode in codec._mode_by_tensor_stream.items()
-        }
-
-        with (
-            mock.patch.object(
-                codec,
-                "materialize_transfer_target",
-                side_effect=AssertionError("target cache was materialized"),
-            ),
-            mock.patch.object(
-                codec,
-                "materialize_precompute",
-                side_effect=AssertionError("exact cache was materialized"),
-            ),
-            mock.patch.object(
-                codec,
-                "prepare_prepacked_cache",
-                side_effect=AssertionError("target streams were prepacked"),
-            ),
-            mock.patch(
-                "neuralzip.neuralzip_codec._exponent_distribution",
-                side_effect=AssertionError("target histogram was computed"),
-            ),
-            mock.patch(
-                "neuralzip.neuralzip_codec._jensen_shannon",
+                "neuralzip.neuralzip_codec.jensen_shannon_distance",
                 side_effect=AssertionError("target JS matching was computed"),
             ),
             mock.patch.object(
@@ -263,30 +72,15 @@ class NeuralZipCodecTests(unittest.TestCase):
             payload = codec.compress_tensors(target)[0]
 
         restored = codec.decompress_tensor(payload)
-        cache_stats = codec.prepacked_cache_stats
 
         self.assertFalse(stats["target_histograms_computed"])
         self.assertFalse(stats["target_js_matching"])
         self.assertFalse(stats["target_mode_probing"])
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-        for key in (
-            "entries",
-            "cache_bytes",
-            "cache_hits",
-            "identity_hits",
-            "cache_misses",
-        ):
-            self.assertEqual(cache_stats[key], 0)
+        self.assertEqual(stats["matched_tensor_pct"], 100.0)
+        self.assertEqual(stats["missing_streams"], 0)
         self.assertEqual(codec.export_codebooks(), source_codebooks)
         self.assertEqual(
             {key: id(mode) for key, mode in codec._mode_by_tensor_stream.items()},
-            source_mode_ids,
-        )
-        self.assertEqual(
-            {
-                key: id(mode)
-                for key, mode in codec._transfer_mode_by_tensor_stream.items()
-            },
             source_mode_ids,
         )
         self.assertTrue(
@@ -296,10 +90,8 @@ class NeuralZipCodecTests(unittest.TestCase):
             )
         )
 
-    def test_direct_native_path_matches_legacy_without_python_materialization(self):
-        codec, _, target = self._prepared_direct_transfer_codec(
-            enable_prepacked_cache=False
-        )
+    def test_direct_native_path_matches_python_stream_path(self):
+        codec, _, target = self._prepared_direct_transfer_codec()
         codec.prepare_direct_transfer_target(target)
 
         # A one-dimensional tensor is unchanged by transpose2d, but selecting
@@ -321,7 +113,7 @@ class NeuralZipCodecTests(unittest.TestCase):
             ) as mixed_single,
             mock.patch(
                 "neuralzip.neuralzip_codec._zipnn_reordered_bytes",
-                side_effect=AssertionError("direct encode materialized reordered bytes"),
+                side_effect=AssertionError("direct encode constructed reordered bytes"),
             ),
             mock.patch(
                 "neuralzip.neuralzip_codec.tokenize_ngrams",
@@ -338,126 +130,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         mixed_many.assert_called_once()
         mixed_single.assert_not_called()
         self.assertEqual(direct, legacy)
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
         self.assertTrue(torch.equal(codec.decompress_tensor(direct), target[0][1]))
-
-    def test_direct_transfer_hot_encode_uses_exact_target_cache(self):
-        codec, _, target = self._prepared_direct_transfer_codec()
-        codec.prepare_direct_transfer_target(target)
-        codec.materialize_transfer_target(target)
-
-        with (
-            mock.patch(
-                "neuralzip.neuralzip_codec._zipnn_reordered_bytes",
-                side_effect=AssertionError("hot encode reordered target bytes"),
-            ),
-            mock.patch(
-                "neuralzip.neuralzip_codec.tokenize_ngrams",
-                side_effect=AssertionError("hot encode retokenized target bytes"),
-            ),
-            mock.patch.object(
-                huff0,
-                "build_prebuilt_block_codebook",
-                side_effect=AssertionError("hot encode rebuilt a local tree"),
-            ),
-            mock.patch.object(
-                codec,
-                "_compress_local_huff0_chunks",
-                side_effect=AssertionError("hot encode used the uncached local path"),
-            ),
-        ):
-            payload = codec.compress_tensors(target)[0]
-
-        self.assertEqual(codec.prepacked_cache_stats["identity_hits"], 1)
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 0)
-        self.assertTrue(
-            torch.equal(codec.decompress_tensor(payload), target[0][1])
-        )
-
-    def test_direct_transfer_cache_invalidates_on_target_mutation(self):
-        codec, _, target = self._prepared_direct_transfer_codec()
-        codec.prepare_direct_transfer_target(target)
-        codec.materialize_transfer_target(target)
-        target[0][1].add_(1)
-
-        payload = codec.compress_tensors(target)[0]
-
-        restored = codec.decompress_tensor(payload)
-        self.assertTrue(
-            torch.equal(restored.view(torch.uint8), target[0][1].view(torch.uint8))
-        )
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 1)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-
-    def test_direct_transfer_replaces_source_cache_with_exact_target_cache(self):
-        codec, source, target = self._prepared_direct_transfer_codec()
-        codec.materialize_precompute(source)
-        codec.compress_tensors(source)
-        self.assertEqual(codec.prepacked_cache_stats["identity_hits"], 1)
-
-        codec.prepare_direct_transfer_target(target)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
-        self.assertEqual(codec.prepacked_cache_stats["identity_hits"], 0)
-        codec.materialize_transfer_target(target)
-
-        source_payload = codec.compress_tensors(source)[0]
-        target_payload = codec.compress_tensors(target)[0]
-
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 1)
-        self.assertEqual(codec.prepacked_cache_stats["identity_hits"], 1)
-        self.assertTrue(
-            torch.equal(codec.decompress_tensor(source_payload), source[0][1])
-        )
-        self.assertTrue(
-            torch.equal(codec.decompress_tensor(target_payload), target[0][1])
-        )
-
-    def test_transfer_cache_rejects_tensor_outside_frozen_plan(self):
-        codec, _, target = self._prepared_direct_transfer_codec()
-        codec.prepare_direct_transfer_target(target)
-        unknown = [("other.weight", target[0][1])]
-
-        with self.assertRaisesRegex(ValueError, "missing other.weight"):
-            codec.materialize_transfer_target(unknown)
-
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
-
-    def test_direct_transfer_cached_rejection_matches_uncached_fallback(self):
-        codec, _, prepared_target = self._prepared_direct_transfer_codec()
-        generator = torch.Generator().manual_seed(12)
-        target_tensor = torch.randint(
-            0,
-            256,
-            (prepared_target[0][1].numel() * 2,),
-            generator=generator,
-            dtype=torch.uint8,
-        ).view(torch.bfloat16)
-        target = [("family.weight", target_tensor)]
-        self.assertEqual(
-            {mode["kind"] for mode in codec._mode_by_tensor_stream.values()},
-            {"shared_huff0", "packed_huff0"},
-        )
-
-        codec.prepare_direct_transfer_target(target)
-        uncached = codec.compress_tensors(target)[0]
-        self.assertTrue(
-            all(
-                chunk.mode == "raw"
-                for group in uncached.groups
-                for chunk in group.chunks
-            )
-        )
-
-        codec.materialize_transfer_target(target)
-        cached = codec.compress_tensors(target)[0]
-        restored = codec.decompress_tensor(cached)
-
-        self.assertEqual(cached, uncached)
-        self.assertTrue(
-            torch.equal(restored.view(torch.uint8), target_tensor.view(torch.uint8))
-        )
 
     def test_direct_transfer_requires_complete_exact_name_mapping(self):
         codec, _, target = self._prepared_direct_transfer_codec()
@@ -467,7 +140,6 @@ class NeuralZipCodecTests(unittest.TestCase):
             codec.prepare_direct_transfer_target(unknown)
 
         self.assertFalse(codec._transfer_active)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
 
     def test_mode_cost_uses_local_fallback_after_shared_rejection(self):
         codec = NeuralZipCodec(
@@ -488,75 +160,6 @@ class NeuralZipCodecTests(unittest.TestCase):
 
         self.assertEqual(estimated, local.compressed_bytes)
         self.assertLess(estimated, codec._raw_chunk(source).compressed_bytes)
-
-    def test_prepacked_local_tables_preserve_exact_zipnn_frames(self):
-        tensor = torch.tensor(
-            [1.0, 2.0, 1.0, 1.0, 2.0, 1.0],
-            dtype=torch.bfloat16,
-        ).repeat(32768)
-        name = "local.weight"
-        cached = NeuralZipCodec(
-            threads=2,
-            ngram_values=(),
-            enable_prepacked_cache=True,
-        )
-        regular = NeuralZipCodec(threads=2, ngram_values=())
-        for codec in (cached, regular):
-            codec._clusters_prepared = True
-            codec._mode_by_tensor_stream = {
-                (name, "bfloat16", stream_id): {"kind": "local_huff0"}
-                for stream_id in range(2)
-            }
-
-        stats = cached.materialize_precompute([(name, tensor)])
-        with mock.patch.object(
-            huff0,
-            "build_prebuilt_block_codebook",
-            side_effect=AssertionError("hot encode rebuilt a local tree"),
-        ):
-            cached_payload = cached.compress_tensor(name, tensor)
-        regular_payload = regular.compress_tensor(name, tensor)
-
-        self.assertEqual(cached_payload, regular_payload)
-        self.assertTrue(torch.equal(cached.decompress_tensor(cached_payload), tensor))
-        self.assertGreater(stats["local_prebuilt_blocks"], 0)
-        self.assertGreater(stats["local_codebook_bytes"], 0)
-        self.assertGreater(stats["local_source_chunk_bytes"], 0)
-
-    def test_prepacked_raw_stream_skips_hot_reorder_and_copy(self):
-        raw = torch.arange(256, dtype=torch.uint8).repeat(1024)
-        tensor = raw.view(torch.bfloat16)
-        name = "raw.weight"
-        codec = NeuralZipCodec(
-            threads=2,
-            ngram_values=(),
-            enable_prepacked_cache=True,
-        )
-        codec._clusters_prepared = True
-        codec._mode_by_tensor_stream = {
-            (name, "bfloat16", stream_id): {"kind": "raw"}
-            for stream_id in range(2)
-        }
-
-        stats = codec.materialize_precompute([(name, tensor)])
-        with mock.patch(
-            "neuralzip.neuralzip_codec._zipnn_reordered_bytes",
-            wraps=_zipnn_reordered_bytes,
-        ) as reorder:
-            payload = codec.compress_tensor(name, tensor)
-
-        reorder.assert_not_called()
-        self.assertEqual(stats["source_stream_bytes"], tensor.numel() * 2)
-        self.assertEqual(stats["cache_bytes"], stats["source_stream_bytes"])
-        self.assertTrue(
-            all(
-                isinstance(chunk.payload, memoryview)
-                for group in payload.groups
-                for chunk in group.chunks
-            )
-        )
-        restored = codec.decompress_tensor(payload)
-        self.assertTrue(torch.equal(restored.view(torch.uint8), tensor.view(torch.uint8)))
 
     def test_model_batch_uses_one_native_queue_and_matches_sequential_payloads(self):
         tensors = [
@@ -615,7 +218,6 @@ class NeuralZipCodecTests(unittest.TestCase):
             threads=4,
             compression_threshold=1.0,
             exponent_layout="original",
-            enable_prepacked_cache=False,
         )
         packed_mode = {
             "kind": "packed_huff0",
@@ -713,12 +315,7 @@ class NeuralZipCodecTests(unittest.TestCase):
                         tensor.view(torch.uint8),
                     )
                 )
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
-        self.assertEqual(codec.prepacked_cache_stats["cache_hits"], 0)
-        self.assertEqual(codec.prepacked_cache_stats["cache_misses"], 0)
-
-    def test_direct_native_batches_are_bounded_without_retained_cache(self):
+    def test_direct_native_batches_respect_input_byte_bound(self):
         tensors = [
             (f"encoder.block.{index}.weight", torch.arange(64, dtype=torch.bfloat16))
             for index in range(3)
@@ -726,7 +323,6 @@ class NeuralZipCodecTests(unittest.TestCase):
         codec = NeuralZipCodec(
             threads=2,
             exponent_layout="original",
-            enable_prepacked_cache=False,
             direct_batch_bytes=200,
         )
         codec._clusters_prepared = True
@@ -749,9 +345,6 @@ class NeuralZipCodecTests(unittest.TestCase):
             self.assertTrue(
                 torch.equal(restored.view(torch.uint8), tensor.view(torch.uint8))
             )
-        self.assertEqual(codec.prepacked_cache_bytes, 0)
-        self.assertEqual(codec.prepacked_cache_stats["entries"], 0)
-
     def test_direct_mode_timing_uses_mixed_path_warmup_and_best_of_three(self):
         codec = NeuralZipCodec(
             threads=3,
@@ -975,24 +568,16 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["method"], "neuralzip")
         self.assertAlmostEqual(
-            result["compression_seconds"],
-            result["codebook_setup_seconds"] + result["encode_seconds"],
+            result["setup_seconds"],
+            result["clustering_seconds"] + result["codebook_setup_seconds"],
         )
         self.assertAlmostEqual(
-            result["total_compression_seconds"],
-            result["precompute_seconds"] + result["compression_seconds"],
+            result["total_seconds"],
+            result["setup_seconds"] + result["encode_seconds"],
         )
-        self.assertAlmostEqual(
-            result["precompute_total_seconds"],
-            result["clustering_seconds"]
-            + result["codebook_setup_seconds"]
-            + result["prepack_seconds"],
-        )
-        self.assertEqual(result["hot_encode_seconds"], result["encode_seconds"])
         self.assertEqual(
-            result["precompute_memory_bytes"],
-            result["prepacked_cache_bytes"]
-            + result["precomputed_codebook_memory_bytes"],
+            result["setup_memory_bytes"],
+            compressor.codec.setup_memory_bytes,
         )
         self.assertEqual(
             result["selection_stats"]["selection_strategy"],

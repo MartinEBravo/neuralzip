@@ -20,9 +20,9 @@ import numpy as np
 from huggingface_hub import HfApi, HfFileSystem
 
 try:
-    from config import LOSSY_LOSSLESS_MODEL_SUITE
+    from model_catalog import QUANTIZED_MODEL_SPECS
 except ModuleNotFoundError:  # Imported as examples.run_quantized_nibble_compression.
-    from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
+    from examples.model_catalog import QUANTIZED_MODEL_SPECS
 
 from neuralzip import huff0
 from neuralzip.checkpoint_loading import resolve_weight_map
@@ -162,11 +162,7 @@ def _slug(value: str) -> str:
 
 
 def _quantized_specs() -> list[dict]:
-    return [
-        dict(spec)
-        for spec in LOSSY_LOSSLESS_MODEL_SUITE
-        if spec.get("category") == "quantized"
-    ]
+    return [dict(spec) for spec in QUANTIZED_MODEL_SPECS]
 
 
 def _spec_aliases(spec: dict) -> set[str]:
@@ -1066,12 +1062,12 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 def _backend_fingerprint() -> dict:
     extension = Path(huff0._huff0_cpp.__file__).resolve()
-    config = Path(__file__).resolve().with_name("config.py")
+    catalog = Path(__file__).resolve().with_name("model_catalog.py")
     return {
         "huff0_extension": str(extension),
         "huff0_extension_sha256": _sha256_file(extension),
         "runner_sha256": _sha256_file(Path(__file__).resolve()),
-        "config_sha256": _sha256_file(config),
+        "catalog_sha256": _sha256_file(catalog),
     }
 
 

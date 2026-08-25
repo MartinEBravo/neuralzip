@@ -24,11 +24,6 @@ def jensen_shannon_distance(left, right):
     return float(np.sqrt(max(float(divergence), 0.0)))
 
 
-# Descriptive alias for experiment code that historically used this shorter
-# name.  Both names intentionally refer to the same implementation.
-jensen_shannon = jensen_shannon_distance
-
-
 def shannon_entropy_from_counts(counts):
     """Return zero-order base-2 entropy for non-negative symbol counts."""
 

@@ -21,17 +21,6 @@ from .tensors import bitwise_equal
 CODEC_PROTOCOL_VERSION = 1
 
 
-@dataclass(frozen=True)
-class CodecProtocolSpec:
-    version: int = CODEC_PROTOCOL_VERSION
-    prefer_batch: bool = True
-    timer_scope: str = "codec encode call only"
-    size_scope: str = "serialized tensor bytes; setup metadata reported separately"
-
-
-DEFAULT_CODEC_PROTOCOL = CodecProtocolSpec()
-
-
 def is_current_codec_protocol(value):
     """Accept integer-like CSV values while rejecting missing/legacy rows."""
 
@@ -43,14 +32,12 @@ def is_current_codec_protocol(value):
 
 @dataclass(frozen=True)
 class SetupReport:
-    precompute_seconds: float
+    clustering_seconds: float
     codebook_setup_seconds: float
-    clustering_seconds: float = 0.0
-    prepack_seconds: float = 0.0
 
     @property
-    def total_setup_seconds(self):
-        return self.precompute_seconds + self.codebook_setup_seconds
+    def setup_seconds(self):
+        return self.clustering_seconds + self.codebook_setup_seconds
 
 
 @dataclass(frozen=True)
@@ -63,9 +50,6 @@ class EncodedTensorBatch:
     raw_chunks: int
     shared_codebook_refs: int
     used_batch: bool
-    materialization_active: bool
-    materialization_bytes: int
-    materialization_hits: int
     tensor_encode_seconds: tuple = ()
 
     @property
@@ -115,15 +99,12 @@ def _allocate_elapsed(elapsed, weights):
     return tuple(allocations)
 
 
-def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
+def encode_tensor_batch(codec, tensors):
     """Encode one named tensor batch under a stable timing/size contract."""
 
     named_tensors = named_tensor_items(tensors)
     batch_encoder = getattr(codec, "compress_tensors", None)
-    used_batch = bool(protocol.prefer_batch and callable(batch_encoder))
-    cache_stats = getattr(codec, "prepacked_cache_stats", {}) or {}
-    cache_hits_before = int(cache_stats.get("cache_hits", 0))
-    materialization_bytes = int(getattr(codec, "prepacked_cache_bytes", 0))
+    used_batch = callable(batch_encoder)
 
     if used_batch:
         started = time.perf_counter()
@@ -140,12 +121,6 @@ def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
         payloads = tuple(payloads)
         tensor_encode_seconds = tuple(tensor_encode_seconds)
         encode_seconds = sum(tensor_encode_seconds)
-    cache_stats = getattr(codec, "prepacked_cache_stats", {}) or {}
-    materialization_hits = max(
-        0,
-        int(cache_stats.get("cache_hits", 0)) - cache_hits_before,
-    )
-
     if len(payloads) != len(named_tensors):
         raise RuntimeError("Codec returned a different number of tensor payloads.")
     expected_names = tuple(str(name) for name, _ in named_tensors)
@@ -194,14 +169,11 @@ def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
             for payload in payloads
         ),
         used_batch=used_batch,
-        materialization_active=materialization_hits > 0,
-        materialization_bytes=materialization_bytes,
-        materialization_hits=materialization_hits,
         tensor_encode_seconds=tensor_encode_seconds,
     )
 
 
-def prepare_neuralzip_codec(codec, named_tensors, *, materialize=False):
+def prepare_neuralzip_codec(codec, named_tensors):
     """Fit clustering and codebooks while keeping both setup costs separate."""
 
     named_tensors = named_tensor_items(named_tensors)
@@ -213,21 +185,9 @@ def prepare_neuralzip_codec(codec, named_tensors, *, materialize=False):
     codec.build_codebooks_and_select_modes(named_tensors)
     codebook_setup_seconds = time.perf_counter() - started
 
-    prepack_seconds = 0.0
-    materializer = getattr(codec, "materialize_precompute", None)
-    if (
-        materialize
-        and callable(materializer)
-        and getattr(codec, "enable_prepacked_cache", False)
-    ):
-        started = time.perf_counter()
-        materializer(named_tensors)
-        prepack_seconds = time.perf_counter() - started
     return SetupReport(
-        precompute_seconds=float(clustering_seconds + prepack_seconds),
-        codebook_setup_seconds=float(codebook_setup_seconds),
         clustering_seconds=float(clustering_seconds),
-        prepack_seconds=float(prepack_seconds),
+        codebook_setup_seconds=float(codebook_setup_seconds),
     )
 
 

@@ -1,3 +1,0 @@
-model,method,encode_seconds,codec_encode_seconds,input_copy_seconds,raw_bytes,compressed_bytes,compressed_pct,full_raw_bytes,full_compressed_bytes,roundtrip_ok
-ResNet-34,zipnn-local,0.02615991234779358,0.02615991234779358,0.0,21797672,7262543,33.317975424164565,43595344,29081055,True
-ResNet-34,zipnn-src,0.06938661355525255,0.0666951322928071,0.00269148126244545,21797672,7256376,33.289683412063454,43595344,29059970,True

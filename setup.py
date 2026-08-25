@@ -32,7 +32,6 @@ setup(
             ],
             define_macros=[
                 ("ZSTD_DISABLE_ASM", "1"),
-                ("HUF_DISABLE_FAST_DECODE", "0"),
             ],
             language="c++",
             extra_compile_args=huff0_compile_args,

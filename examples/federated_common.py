@@ -145,7 +145,7 @@ class NeuralZipStateCodec:
     def prepare_once(self, tensors: Mapping[str, torch.Tensor]) -> None:
         named_tensors = list(tensors.items())
         report = prepare_neuralzip_codec(self.codec, named_tensors)
-        self.setup_seconds = report.total_setup_seconds
+        self.setup_seconds = report.setup_seconds
         self.setup_bytes = int(self.codec.codebook_metadata_bytes())
 
     def encode(self, tensors: Mapping[str, torch.Tensor]) -> EncodedState:

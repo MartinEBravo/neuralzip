@@ -364,7 +364,6 @@ def compression_protocol(args: argparse.Namespace) -> dict:
         },
         "neuralzip": {
             "plan": "frozen-epoch-0",
-            "enable_prepacked_cache": False,
             "compression_threshold": 0.95,
         },
         "ratio_scope": "exponent symbols + raw fallback + metadata",

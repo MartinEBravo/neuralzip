@@ -1,4 +1,3 @@
-import struct
 import unittest
 
 from neuralzip import huff0
@@ -6,64 +5,6 @@ from neuralzip.packed_exponents import tokenize_ngrams, topk_vocab
 
 
 class Huff0PrecomputedFourStreamTests(unittest.TestCase):
-    def test_bounded_prebuilt_frame_keeps_four_stream_workspace_slack(self):
-        # Regression: constraining Huff0's destination buffer to the final
-        # threshold before encoding rejected this valid 12-byte frame.
-        source = bytes.fromhex("00010001000100010001000100010000")
-        regular = huff0.compress_many([source], threads=1)[0]
-        codebook = huff0.build_prebuilt_block_codebook(source)
-
-        self.assertIsNotNone(codebook)
-        self.assertEqual(len(regular), 12)
-        self.assertEqual(
-            huff0.encode_prebuilt_block(
-                source,
-                codebook,
-                compression_threshold=1.0,
-            ),
-            regular,
-        )
-        unlimited = huff0.encode_with_codebook_4x(source, codebook)
-        self.assertIsNotNone(unlimited)
-        self.assertEqual(codebook.codebook + unlimited.payload, regular)
-
-    def test_prebuilt_local_frames_match_regular_local_blocks(self):
-        chunks = [
-            bytes([1, 2, 1, 2, 1, 3]) * (16 << 10),
-            bytes([9, 8, 9, 8, 7, 8]) * (16 << 10),
-        ]
-        codebooks = [huff0.build_prebuilt_block_codebook(chunk) for chunk in chunks]
-        self.assertTrue(all(codebook is not None for codebook in codebooks))
-
-        frames = huff0.encode_prebuilt_blocks(
-            chunks,
-            codebooks,
-            compression_threshold=1.0,
-            threads=4,
-        )
-        regular = huff0.compress_many(chunks, threads=4)
-
-        self.assertEqual(frames, regular)
-        self.assertEqual(
-            huff0.encode_prebuilt_block(
-                chunks[0],
-                codebooks[0],
-                compression_threshold=1.0,
-            ),
-            regular[0],
-        )
-        for source, frame in zip(chunks, frames):
-            self.assertEqual(huff0.decompress_block(frame, len(source)), source)
-
-        expected_native_bytes = len(codebooks[0].codebook) + 257 * struct.calcsize("P")
-        self.assertEqual(
-            huff0.codebook_memory_bytes(codebooks[0]),
-            expected_native_bytes,
-        )
-        self.assertIsNone(
-            huff0.build_prebuilt_block_codebook(bytes(range(256)) * 256)
-        )
-
     def test_single_and_parallel_precomputed_four_stream_roundtrip(self):
         chunks = [
             b"abcde" * (16 << 10),

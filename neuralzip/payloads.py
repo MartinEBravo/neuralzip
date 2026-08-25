@@ -147,18 +147,6 @@ class TensorPayload:
         return serialized_tensor_size(self)
 
     @property
-    def huffman_groups(self):
-        return sum(group.huffman_chunks > 0 for group in self.groups)
-
-    @property
-    def raw_groups(self):
-        return sum(group.raw_chunks > 0 for group in self.groups)
-
-    @property
-    def zero_groups(self):
-        return sum(group.zero_chunks > 0 for group in self.groups)
-
-    @property
     def huffman_chunks(self):
         return sum(group.huffman_chunks for group in self.groups)
 

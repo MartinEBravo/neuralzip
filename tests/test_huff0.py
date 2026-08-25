@@ -16,6 +16,19 @@ def _raw_from_bit_reordered_streams(*streams):
 
 
 class Huff0Tests(unittest.TestCase):
+    def test_single_block_facade_composes_codebook_encode_and_decode(self):
+        source = b"abcde" * 4096
+        codebook = huff0.build_codebook(source, prior_count=1)
+        encoded = huff0.encode_with_codebook(source, codebook)
+        payload = huff0.compress(source, prior_count=1)
+
+        self.assertIsNotNone(encoded)
+        self.assertEqual(payload, encoded)
+        self.assertEqual(huff0.decompress(payload), source)
+        self.assertIsNone(huff0.compress(source, min_saving_bytes=len(source)))
+        with self.assertRaisesRegex(ValueError, "min_saving_bytes"):
+            huff0.compress(source, min_saving_bytes=-1)
+
     def test_parallel_local_blocks_roundtrip_and_keep_order(self):
         chunks = [
             bytes([index % 5 for index in range(64 << 10)]),

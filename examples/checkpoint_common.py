@@ -353,14 +353,13 @@ def load_or_fit_frozen_codec(
             "epoch0_checkpoint": str(files[0]),
             **dict(identity),
             "threads": threads,
-            "enable_prepacked_cache": False,
             **dict(metadata),
         }
         plan.save(plan_path, named_tensors)
         atomic_write_json(setup_path, setup)
 
     print(
-        f"[{slug}] epoch-0 NeuralZip setup={setup['total_seconds']:.3f}s",
+        f"[{slug}] epoch-0 NeuralZip setup={setup['setup_seconds']:.3f}s",
         flush=True,
     )
     del checkpoint, named_tensors

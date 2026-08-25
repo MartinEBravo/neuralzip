@@ -77,17 +77,19 @@ def max_block_size():
 
 
 def compress(data, *, min_saving_bytes=0, prior_count=0):
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        data = bytes(data)
-    result = _huff0_cpp.compress(
-        data,
-        min_saving_bytes=int(min_saving_bytes),
-        prior_count=int(prior_count),
-    )
-    if result is None:
+    data = _bytes(data)
+    min_saving_bytes = int(min_saving_bytes)
+    if min_saving_bytes < 0:
+        raise ValueError("min_saving_bytes must be non-negative.")
+
+    codebook = build_codebook(data, prior_count=prior_count)
+    result = encode_with_codebook(data, codebook)
+    if (
+        result is None
+        or len(result.payload) + len(result.codebook) + min_saving_bytes >= len(data)
+    ):
         return None
-    payload, codebook, symbol_count = result
-    return Huff0Payload(payload=payload, codebook=codebook, symbol_count=symbol_count)
+    return result
 
 
 def compress_many(chunks, *, min_saving_bytes=0, threads=0):
@@ -191,19 +193,12 @@ def compress_zipnn_mixed(
     This primitive implements the original ZipNN stream layout. Callers using
     a transposed exponent layout must retain the existing Python path.
     """
-    element_size = int(element_size)
-    native_modes = _normalize_zipnn_mixed_modes(element_size, stream_modes)
-
-    return _huff0_cpp.compress_zipnn_mixed(
-        data,
-        element_size,
-        int(bit_reorder),
-        int(chunk_size),
-        native_modes,
+    return compress_zipnn_mixed_many(
+        ((data, element_size, bit_reorder, chunk_size, stream_modes),),
         min_saving_bytes=int(min_saving_bytes),
         threads=int(threads),
         compression_threshold=float(compression_threshold),
-    )
+    )[0]
 
 
 def compress_zipnn_mixed_many(
@@ -252,17 +247,6 @@ def build_codebook(data, *, prior_count=0):
     if not isinstance(data, (bytes, bytearray, memoryview)):
         data = bytes(data)
     handle, codebook = _huff0_cpp.build_codebook(data, prior_count=int(prior_count))
-    return Huff0Codebook(handle=handle, codebook=codebook)
-
-
-def build_prebuilt_block_codebook(data):
-    """Build the exact CTable/header pair used by a local Huff0 block."""
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        data = bytes(data)
-    result = _huff0_cpp.build_prebuilt_block_codebook(data)
-    if result is None:
-        return None
-    handle, codebook = result
     return Huff0Codebook(handle=handle, codebook=codebook)
 
 
@@ -384,47 +368,6 @@ def _encode_many_with_codebook(
         min_saving_bytes=int(min_saving_bytes),
         compression_threshold=float(compression_threshold),
         metadata_bytes=int(metadata_bytes),
-        threads=int(threads),
-    )
-
-
-def encode_prebuilt_block(
-    data,
-    codebook,
-    *,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-):
-    """Emit a self-contained local frame from a previously built CTable."""
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        data = bytes(data)
-    return _huff0_cpp.encode_prebuilt_block(
-        data,
-        codebook.handle,
-        min_saving_bytes=int(min_saving_bytes),
-        compression_threshold=float(compression_threshold),
-    )
-
-
-def encode_prebuilt_blocks(
-    chunks,
-    codebooks,
-    *,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-    threads=0,
-):
-    """Encode self-contained local frames from one prebuilt CTable per block."""
-    normalized = [
-        chunk if isinstance(chunk, (bytes, bytearray, memoryview)) else bytes(chunk)
-        for chunk in chunks
-    ]
-    handles = [codebook.handle for codebook in codebooks]
-    return _huff0_cpp.encode_prebuilt_blocks(
-        normalized,
-        handles,
-        min_saving_bytes=int(min_saving_bytes),
-        compression_threshold=float(compression_threshold),
         threads=int(threads),
     )
 
@@ -595,11 +538,7 @@ def _encode_many_ngram_with_codebook(
 
 
 def decompress(payload):
-    return _huff0_cpp.decompress(
-        payload.payload,
-        payload.codebook,
-        payload.symbol_count,
-    )
+    return decompress_with_decodebook(payload, build_decodebook(payload.codebook))
 
 
 def decompress_block(payload, symbol_count):

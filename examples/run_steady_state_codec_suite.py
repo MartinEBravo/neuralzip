@@ -3,8 +3,8 @@
 
 The suite intentionally measures NeuralZip in the repeated-use regime: one
 setup and one verified, unmeasured warm-up are reused by every measured encode
-of a checkpoint.  Exact-target materialization remains disabled.  Each model
-runs in its own child process so a failure cannot contaminate later models and
+of a checkpoint. Each measured pass uses the fused direct encoder. Models run
+in separate child processes so a failure cannot contaminate later models, and
 all intermediate state is written atomically for safe overnight resumption.
 """
 
@@ -31,20 +31,36 @@ from neuralzip.hashing import canonical_digest, sha256_file
 from neuralzip.experiment_io import atomic_write_text as atomic_text
 from neuralzip.system import module_path, package_versions
 
-from examples.run_general_codec_rerun import (
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_COMPRESSION_THRESHOLD,
-    SPECS_BY_KEY,
-    host_provenance,
-    load_model,
-    parse_cpu_set,
-    zipnn_src_pass,
-)
-from examples.run_latency_profile_probe import (
-    atomic_json,
-    measure_profile,
-    prepare_profile,
-)
+try:
+    from .run_general_codec_rerun import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        SPECS_BY_KEY,
+        host_provenance,
+        load_model,
+        parse_cpu_set,
+        zipnn_src_pass,
+    )
+    from .run_latency_profile_probe import (
+        atomic_json,
+        measure_profile,
+        prepare_profile,
+    )
+except ImportError:  # Direct execution from the examples directory.
+    from run_general_codec_rerun import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        SPECS_BY_KEY,
+        host_provenance,
+        load_model,
+        parse_cpu_set,
+        zipnn_src_pass,
+    )
+    from run_latency_profile_probe import (
+        atomic_json,
+        measure_profile,
+        prepare_profile,
+    )
 
 
 MIB = 1 << 20
@@ -186,7 +202,6 @@ def protocol(args: argparse.Namespace) -> dict[str, object]:
         "setup_in_encode": False,
         "decode_in_encode": False,
         "metrics_in_encode": False,
-        "exact_target_cache": False,
         "profiles": ["full"],
     }
     value["code"] = code_provenance()
@@ -351,15 +366,6 @@ def median_summary(samples: list[dict[str, object]]) -> dict[str, object]:
             not value["time_stable"] for value in methods.values()
         ),
     }
-
-
-def assert_uncached(codec) -> None:
-    cache_bytes = int(getattr(codec, "prepacked_cache_bytes", 0))
-    cache_stats = dict(getattr(codec, "prepacked_cache_stats", {}) or {})
-    if cache_bytes or int(cache_stats.get("entries", 0)):
-        raise RuntimeError(
-            f"Exact-target cache is not empty: bytes={cache_bytes}, stats={cache_stats}"
-        )
 
 
 def warm_until_stable(
@@ -534,7 +540,6 @@ def worker(args: argparse.Namespace) -> int:
             direct_batch_bytes=args.batch_mib * MIB,
         )
         codec = profile["compressor"].codec
-        assert_uncached(codec)
         state["neuralzip_setup"] = {
             "clustering_seconds": profile["clustering_seconds"],
             "codebook_setup_seconds": profile["codebook_setup_seconds"],
@@ -545,22 +550,13 @@ def worker(args: argparse.Namespace) -> int:
             "selected_mode_streams": profile["selected_mode_streams"],
             "selection_stats": profile["selection_stats"],
             "direct_batch_bytes": int(codec.direct_batch_bytes),
-            "prepacked_cache_bytes": int(
-                getattr(codec, "prepacked_cache_bytes", 0)
-            ),
-            "prepacked_cache_stats": dict(
-                getattr(codec, "prepacked_cache_stats", {}) or {}
-            ),
         }
         atomic_json(output, state)
 
         # The verified NeuralZip warm-up is followed by decoding, so discard a
         # second encode immediately before the measured repeated-use phase.
         def neuralzip_warmup():
-            assert_uncached(codec)
-            metrics = measure_profile(profile)
-            assert_uncached(codec)
-            return metrics
+            return measure_profile(profile)
 
         state["neuralzip_steady_warmups"] = warm_until_stable(
             f"{spec.key}:neuralzip",
@@ -576,9 +572,7 @@ def worker(args: argparse.Namespace) -> int:
                 f"measure={spec.key}:neuralzip:repeat-{repetition}",
                 flush=True,
             )
-            assert_uncached(codec)
             metrics = measure_profile(profile)
-            assert_uncached(codec)
             state["samples"].append(
                 {
                     "variant": "neuralzip",

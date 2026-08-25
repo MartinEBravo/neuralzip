@@ -16,25 +16,25 @@ class TimeAwareModeSelectionTests(unittest.TestCase):
     def _seconds(mode):
         return mode["seconds"]
 
-    def test_faster_prepacked_mode_can_replace_ratio_best_local(self):
+    def test_faster_packed_mode_can_replace_ratio_best_local(self):
         local = {"kind": "local_huff0", "bytes": 100, "seconds": 0.10}
         shared = {"kind": "shared_huff0", "bytes": 102, "seconds": 0.04}
-        prepacked = {
-            "kind": "prepacked_huff0",
+        packed = {
+            "kind": "packed_huff0",
             "bytes": 103,
             "seconds": 0.02,
         }
 
         result = select_fastest_within_ratio(
-            [local, shared, prepacked],
+            [local, shared, packed],
             estimated_bytes=self._bytes,
             estimated_seconds=self._seconds,
             ratio_tolerance=0.03,
         )
 
-        self.assertIs(result.selected, prepacked)
+        self.assertIs(result.selected, packed)
         self.assertEqual(result.metrics["ratio_best_kind"], "local_huff0")
-        self.assertEqual(result.metrics["selected_kind"], "prepacked_huff0")
+        self.assertEqual(result.metrics["selected_kind"], "packed_huff0")
         self.assertAlmostEqual(result.metrics["selected_relative_byte_overhead"], 0.03)
         self.assertTrue(result.metrics["avoided_local_huff0"])
 

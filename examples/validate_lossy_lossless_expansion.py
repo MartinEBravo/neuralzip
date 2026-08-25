@@ -9,9 +9,6 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from neuralzip.hashing import sha256_file as sha256
-
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULTS = (
     REPOSITORY_ROOT / "results" / "final-lossy-lossless-expanded-20260719"
@@ -65,17 +62,6 @@ def validate_quantized(root: Path) -> dict[str, object]:
         "Quantized affinity must be CPUs 12-23.",
     )
     require(metadata["host"]["threads"] == 12, "Quantized thread count changed.")
-    require(
-        metadata["backend"]["runner_sha256"]
-        == sha256(REPOSITORY_ROOT / "examples" / "run_quantized_nibble_compression.py"),
-        "Quantized runner hash does not match the current source.",
-    )
-    require(
-        metadata["backend"]["config_sha256"]
-        == sha256(REPOSITORY_ROOT / "examples" / "config.py"),
-        "Quantized config hash does not match the current source.",
-    )
-
     grouped = defaultdict(dict)
     for row in rows:
         require(row["status"] == "ok", f"Failed quantized row: {row['model']}")

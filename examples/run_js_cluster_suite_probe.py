@@ -15,8 +15,8 @@ import torch
 from neuralzip.neuralzip_codec import (
     NeuralZipCodec,
     _exponent_distribution,
-    _jensen_shannon,
 )
+from neuralzip.metrics import jensen_shannon_distance
 from run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
 
 
@@ -223,7 +223,7 @@ def run_model(spec, model_root: Path, output_root: Path, threshold: float):
                 "left_cluster": left_cluster,
                 "right_cluster": right_cluster,
                 "same_cluster": left_cluster == right_cluster,
-                "js_distance": _jensen_shannon(
+                "js_distance": jensen_shannon_distance(
                     distributions[left_name], distributions[right_name]
                 ),
             }

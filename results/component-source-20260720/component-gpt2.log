@@ -1,4 +1,0 @@
-Loading weights:   0%|          | 0/148 [00:00<?, ?it/s]Loading weights:  81%|████████  | 120/148 [00:00<00:00, 1086.36it/s]Loading weights: 100%|██████████| 148/148 [00:00<00:00, 1084.23it/s]
-loaded=GPT-2 parameters=124,439,808
-phase=component status=start
-phase=component status=complete seconds=39.236

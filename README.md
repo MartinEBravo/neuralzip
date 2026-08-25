@@ -1,6 +1,6 @@
 # Checkpoint Compression Experiments
 
-Install the project in editable mode before running notebooks:
+Install the project in editable mode before running experiments:
 
 ```bash
 pip install -e ".[experiments]"
@@ -43,8 +43,8 @@ when selected with `exponent_layout="transpose2d"`; the default layout is
 `"original"`. Codebooks and vocabularies are stored once in the compressed
 header and referenced by chunks.
 
-By default, encoding retains no exact-model cache. Once modes and codebooks are
-available, a fused native pipeline reads each target tensor, performs ZipNN
+Once modes and codebooks are available, a fused native pipeline reads each
+target tensor, performs ZipNN
 reordering and stream extraction, tokenizes packed exponents, applies Huff0 and
 its local/raw fallback, and returns only the final payload. Reordered streams
 and tokens are transient. Tensors are submitted through input-size-windowed
@@ -53,14 +53,6 @@ native batches whose jobs share one queue per window. The default threshold is
 checkpoint therefore does not retain a second transformed copy of its
 floating-point parameters in memory.
 
-An exact-target cache remains available only as an explicit repeated-encoding
-option with `enable_prepacked_cache=True`. It is valid while the same named
-tensor objects remain immutable, with the same pointers and PyTorch version
-counters. It is never transferred between family members, serialized, or
-counted in the compression ratio. Writes through `tensor.data` or external
-NumPy/storage aliases bypass the version counter and require explicit cache
-invalidation.
-
 Mode selection is time-aware. Among modes within `speed_ratio_tolerance`
 (default 3% relative compressed bytes) of the best estimated ratio, it chooses
 the fastest direct encoding path. Packed opportunities are ranked by bytes
@@ -68,11 +60,10 @@ saved per additional second and admitted under `packed_time_budget_ratio`
 (default 100% of estimated base time), with `packed_source_budget_ratio` retained
 as a coverage cap.
 
-Timing is reported as `clustering_seconds`, `codebook_setup_seconds`, and
-`direct_encode_seconds` (`encode_seconds`). The encode measurement includes all
-target-dependent work. `prepack_seconds` and exact-cache memory remain zero
-unless repeated-target caching was explicitly enabled. Results also record
-selected modes, packed chunks, escape rate, and round-trip status.
+Timing is reported as `setup_seconds`, `encode_seconds`, and `total_seconds`.
+The setup is also split into `clustering_seconds` and
+`codebook_setup_seconds`; encoding includes all target-dependent work. Results
+also record selected modes, packed chunks, escape rate, and round-trip status.
 
 ```python
 compressed = Compressor(
@@ -100,11 +91,8 @@ histograms, perform JS matching or mode probing, or retain target data.
 The `compressed_bytes` metric is the exact size of this versioned archive, not
 an entropy estimate or a sum that omits container metadata.
 
-The same compressor can also encode checkpoint deltas:
+Experiment entrypoints live under `examples/` and share the model catalog in
+`examples/model_catalog.py`.
 
-```python
-delta = Compressor("zipnn-local", keep_payloads=True).compress_delta(base_model, next_model)
-restored = Compressor("zipnn-local").decompress_delta(delta, base_model)
-```
-
-The main notebook is `examples/1-model-hubs.ipynb`.
+Generated checkpoints, logs, tables, and figures are intentionally not
+versioned. Runners create them locally under `results/` or `examples/outputs/`.

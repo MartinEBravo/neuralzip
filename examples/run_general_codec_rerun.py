@@ -842,11 +842,7 @@ def neuralzip_pass(
         "encode_seconds": float(result["encode_seconds"]),
         "codec_encode_seconds": float(result["encode_seconds"]),
         "input_copy_seconds": 0.0,
-        "setup_seconds": float(
-            result.get("precompute_total_seconds")
-            or result.get("precompute_seconds")
-            or 0.0
-        ),
+        "setup_seconds": float(result.get("setup_seconds") or 0.0),
         "exponent_raw_bytes": exponent_raw,
         "exponent_data_bytes": exponent_payload,
         "exponent_metadata_bytes": exponent_metadata,

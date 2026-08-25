@@ -1,4 +1,4 @@
-"""Canonical model catalog shared by experiment runners and legacy config."""
+"""Canonical model catalog shared by experiment runners."""
 
 from __future__ import annotations
 
@@ -188,3 +188,80 @@ MODEL_SPECS = (
 )
 
 SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
+
+
+def _quantized_model(
+    name: str,
+    model_id: str,
+    parameters_b: float,
+    representation: str,
+    access: str,
+    artifact: str,
+) -> dict[str, object]:
+    selector = (
+        {"kind": "safetensors-index", "index": "model.safetensors.index.json"}
+        if artifact == "index"
+        else {"kind": "exact-files", "files": (artifact,)}
+    )
+    return {
+        "name": name,
+        "model_id": model_id,
+        "parameters_b": parameters_b,
+        "default_dtype": "auto",
+        "representation": representation,
+        "category": "quantized",
+        "access": access,
+        "artifact_selector": selector,
+    }
+
+
+QUANTIZED_MODEL_SPECS = (
+    _quantized_model(
+        "Gemma 4 31B-4bit",
+        "unsloth/gemma-4-31B-it-unsloth-bnb-4bit",
+        31.0,
+        "4-bit quantized",
+        "open-or-token",
+        "index",
+    ),
+    _quantized_model(
+        "Phi-4 14B-4bit",
+        "unsloth/phi-4-bnb-4bit",
+        14.0,
+        "4-bit quantized",
+        "open",
+        "index",
+    ),
+    _quantized_model(
+        "Qwen3.5 27B-4bit",
+        "skkwowee/Qwen3.5-27B-bnb-4bit",
+        27.0,
+        "4-bit quantized",
+        "open",
+        "model.safetensors",
+    ),
+    _quantized_model(
+        "Qwen 2.5 7B AWQ",
+        "Qwen/Qwen2.5-7B-Instruct-AWQ",
+        7.0,
+        "4-bit AWQ",
+        "open",
+        "index",
+    ),
+    _quantized_model(
+        "Qwen 2.5 7B GPTQ-Int4",
+        "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4",
+        7.0,
+        "4-bit GPTQ",
+        "open",
+        "index",
+    ),
+    _quantized_model(
+        "LatamGPT-70B-4bit",
+        "jairo/Llama-3.1-70B-LatamGPT-SFT-1.0-GGUF",
+        70.0,
+        "4-bit quantized",
+        "open",
+        "latamgpt-Q4_K_M.gguf",
+    ),
+)

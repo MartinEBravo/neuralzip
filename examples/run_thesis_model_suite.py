@@ -29,13 +29,13 @@ from neuralzip import Compressor
 from neuralzip.codec_protocol import measure_compressor_exponents
 from neuralzip.ablations import (
     delta_exponent_huffman_cost,
-    jensen_shannon,
     order1_huffman_cluster_cost,
     selected_turborc_range_cost,
     zipnn_exponent_stream,
 )
 from neuralzip.metrics import (
     conditional_entropy_from_counts as first_order_entropy_from_counts,
+    jensen_shannon_distance as jensen_shannon,
     shannon_entropy_from_counts as entropy_from_counts,
 )
 from neuralzip.zipnn_source import parse_zipnn_exponent_stream
@@ -426,9 +426,7 @@ def production_exponent_measure(
     measured = {
         **exponent_metrics,
         "encode_seconds": float(result["encode_seconds"]),
-        "precompute_seconds": float(
-            result.get("precompute_total_seconds") or 0.0
-        ),
+        "setup_seconds": float(result.get("setup_seconds") or 0.0),
         "clusters": int((result.get("header") or {}).get("clusters") or 0),
         "selected_modes": result.get("selected_modes") or {},
         "roundtrip_ok": bool(result["roundtrip_ok"]),

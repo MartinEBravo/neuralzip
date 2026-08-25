@@ -27,9 +27,17 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from neuralzip import Compressor
+from neuralzip.codec_protocol import (
+    decode_tensor_batch,
+    encode_tensor_batch,
+    measure_exponent_streams,
+    prepare_neuralzip_codec,
+)
 from neuralzip.experiment_io import atomic_write_json
 from neuralzip.hashing import sha256_bytes, sha256_file
 from neuralzip.system import cpu_affinity, parse_cpu_set
+from neuralzip.tensors import bitwise_equal
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -46,13 +54,10 @@ from examples.run_general_codec_rerun import (
     utc_now,
     zipnn_src_pass,
 )
-from examples.run_precompute_family_transfer import (
-    compress_with_codec,
-    setup_neuralzip,
-)
-
-
 DEFAULT_THREADS = 12
+SHARED_MODES = {"shared_huff0", "packed_huff0"}
+PACKED_MODES = {"packed_huff0"}
+LOCAL_MODES = {"local_huff0"}
 
 
 @dataclass(frozen=True)
@@ -250,10 +255,7 @@ def runner_sha256() -> str:
 
 
 def dependency_sha256() -> dict[str, str]:
-    paths = (
-        REPOSITORY_ROOT / "examples" / "run_general_codec_rerun.py",
-        REPOSITORY_ROOT / "examples" / "run_precompute_family_transfer.py",
-    )
+    paths = (REPOSITORY_ROOT / "examples" / "run_general_codec_rerun.py",)
     return {
         str(path.relative_to(REPOSITORY_ROOT)): sha256_file(path)
         for path in paths
@@ -358,12 +360,90 @@ def named_tensors(
     return tensors
 
 
-def _mode_map_signature(codec, mapping) -> tuple[object, ...]:
+def exponent_metrics(payloads, codebooks=()):
+    payloads = tuple(payloads)
+    sizes = measure_exponent_streams(payloads, tuple(codebooks))
+    mode_symbols: dict[str, int] = {}
+    mode_chunks: dict[str, int] = {}
+    for payload in payloads:
+        if not payload.groups:
+            continue
+        group = payload.groups[int(payload.element_size) - 1]
+        for chunk in group.chunks:
+            mode = str(chunk.mode)
+            mode_symbols[mode] = mode_symbols.get(mode, 0) + int(chunk.symbol_count)
+            mode_chunks[mode] = mode_chunks.get(mode, 0) + 1
+
+    def symbol_pct(modes):
+        symbols = sum(mode_symbols.get(mode, 0) for mode in modes)
+        return 100.0 * symbols / sizes.raw_bytes if sizes.raw_bytes else 0.0
+
+    return {
+        "raw_exponents": sizes.raw_bytes,
+        "compressed_exponent_bytes": sizes.compressed_bytes,
+        "compressed_exponent_group_bytes": sizes.group_bytes,
+        "exponent_codebook_metadata_bytes": sizes.codebook_bytes,
+        "exponent_pct": sizes.ratio_pct,
+        "shared_exponent_pct": symbol_pct(SHARED_MODES),
+        "packed_exponent_pct": symbol_pct(PACKED_MODES),
+        "local_exponent_pct": symbol_pct(LOCAL_MODES),
+        "raw_exponent_pct": symbol_pct({"raw"}),
+        "mode_symbols": mode_symbols,
+        "mode_chunks": mode_chunks,
+        "referenced_codebooks": sizes.referenced_codebooks,
+    }
+
+
+def compress_with_codec(codec, named_tensors, *, verify=False):
+    named_tensors = list(named_tensors)
+    encoded = encode_tensor_batch(codec, named_tensors)
+    roundtrip_ok = None
+    if verify:
+        decoded, _ = decode_tensor_batch(codec, encoded.payloads)
+        roundtrip_ok = all(
+            name in decoded and bitwise_equal(tensor, decoded[name])
+            for name, tensor in named_tensors
+        )
+    return {
+        "encode_seconds": encoded.encode_seconds,
+        "roundtrip_ok": roundtrip_ok,
+        **exponent_metrics(
+            encoded.payloads,
+            codec.export_codebooks() if hasattr(codec, "export_codebooks") else (),
+        ),
+    }
+
+
+def setup_neuralzip(named_tensors, *, threads):
+    codec = Compressor(
+        "neuralzip",
+        verify=False,
+        compression_threshold=DEFAULT_COMPRESSION_THRESHOLD,
+        threads=threads,
+    ).codec
+    report = prepare_neuralzip_codec(codec, named_tensors)
+    return codec, {
+        "clustering_seconds": report.clustering_seconds,
+        "codebook_seconds": report.codebook_setup_seconds,
+        "setup_seconds": report.setup_seconds,
+        "clusters": int(codec.cluster_count),
+        "codebooks": len(codec.export_codebooks()),
+        "selected_modes": dict(codec.selected_modes),
+    }
+
+
+def _mode_map_signature(mapping) -> tuple[object, ...]:
     return tuple(
         sorted(
             (
                 repr(key),
-                codec._prepacked_mode_signature(mode),
+                (
+                    str(mode.get("kind")),
+                    int(mode.get("ngram_n", 1)),
+                    bytes(getattr(mode.get("codebook"), "codebook", b"")),
+                    bytes(mode.get("vocab", b"")),
+                    bool(mode.get("frame_4x", False)),
+                ),
                 mode.get("codebook_id"),
             )
             for key, mode in mapping.items()
@@ -376,8 +456,8 @@ def frozen_plan_fingerprint(codec) -> tuple[object, ...]:
 
     return (
         codec.export_codebooks(),
-        _mode_map_signature(codec, codec._mode_by_key),
-        _mode_map_signature(codec, codec._mode_by_tensor_stream),
+        _mode_map_signature(codec._mode_by_key),
+        _mode_map_signature(codec._mode_by_tensor_stream),
         tuple(sorted(codec.cluster_map.items())),
         tuple(sorted(codec._computed_cluster_map.items())),
     )
@@ -441,8 +521,6 @@ def benchmark_target(
     ):
         if mapping.get(flag) is not False:
             raise RuntimeError(f"Direct transfer unexpectedly enabled {flag}.")
-    source_codec.clear_prepacked_cache()
-    source_codec.enable_prepacked_cache = False
     assert_frozen_plan(source_codec, plan_fingerprint)
 
     print(f"[{family.key}] transferred warm-up {spec.label}", flush=True)
@@ -450,14 +528,10 @@ def benchmark_target(
     if transfer_warmup["roundtrip_ok"] is not True:
         raise RuntimeError(f"Transferred round-trip failed for {spec.label}.")
     transferred = compress_with_codec(source_codec, tensors)
-    if source_codec.prepacked_cache_bytes != 0:
-        raise RuntimeError("Transferred encoding populated an exact-target cache.")
     assert_frozen_plan(source_codec, plan_fingerprint)
 
     print(f"[{family.key}] target-specific control {spec.label}", flush=True)
     native_codec, native_setup = setup_neuralzip(tensors, threads=threads)
-    native_codec.clear_prepacked_cache()
-    native_codec.enable_prepacked_cache = False
     native_warmup = compress_with_codec(native_codec, tensors, verify=True)
     if native_warmup["roundtrip_ok"] is not True:
         raise RuntimeError(f"Target-specific round-trip failed for {spec.label}.")
@@ -484,18 +558,15 @@ def benchmark_target(
         "neuralzip_transferred_direct": {
             **transferred,
             "roundtrip_ok": True,
-            "roundtrip_verified_on": "uncached warm-up",
         },
         "neuralzip_target_specific_direct": {
             **native,
             "roundtrip_ok": True,
-            "roundtrip_verified_on": "uncached warm-up",
             "setup": native_setup,
         },
         "zipnn_source": {
             **zipnn,
             "roundtrip_ok": True,
-            "roundtrip_verified_on": "uncached warm-up",
         },
         "verification": {
             "neuralzip_transferred_direct": True,
@@ -552,8 +623,6 @@ def run_family(
 
     print(f"[{family.key}] building one frozen source plan", flush=True)
     source_codec, source_setup = setup_neuralzip(source_tensors, threads=threads)
-    source_codec.clear_prepacked_cache()
-    source_codec.enable_prepacked_cache = False
     plan_fingerprint = frozen_plan_fingerprint(source_codec)
     source_provenance = source.provenance
     del source_tensors, source
@@ -592,7 +661,6 @@ def run_family(
         "target_histograms_computed": False,
         "target_js_matching": False,
         "target_mode_probing": False,
-        "exact_target_cache": False,
         "targets": [],
     }
     if progress_path is not None:

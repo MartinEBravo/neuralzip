@@ -42,19 +42,13 @@ def measured_compression(method, view, threads):
     ).compress(view)
     row = {
         "encode_seconds": float(result["encode_seconds"]),
-        "hot_encode_seconds": float(result["hot_encode_seconds"]),
         "clustering_seconds": float(result.get("clustering_seconds") or 0.0),
         "codebook_setup_seconds": float(
             result.get("codebook_setup_seconds") or 0.0
         ),
-        "prepack_seconds": float(result.get("prepack_seconds") or 0.0),
-        "precompute_total_seconds": float(
-            result.get("precompute_total_seconds") or 0.0
-        ),
-        "precompute_memory_bytes": int(
-            result.get("precompute_memory_bytes") or 0
-        ),
-        "prepacked_cache_bytes": int(result.get("prepacked_cache_bytes") or 0),
+        "setup_seconds": float(result.get("setup_seconds") or 0.0),
+        "total_seconds": float(result["total_seconds"]),
+        "setup_memory_bytes": int(result.get("setup_memory_bytes") or 0),
         "full_ratio_pct": 100.0 * float(result["compression_ratio"]),
         "exponent": exponent_metrics(result),
         "selected_modes": result.get("selected_modes") or {},

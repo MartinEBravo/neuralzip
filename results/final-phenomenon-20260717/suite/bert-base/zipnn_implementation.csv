@@ -1,3 +1,0 @@
-model,method,encode_seconds,codec_encode_seconds,input_copy_seconds,raw_bytes,compressed_bytes,compressed_pct,full_raw_bytes,full_compressed_bytes,roundtrip_ok
-BERT Base,zipnn-local,0.09395996015518904,0.09395996015518904,0.0,109482240,35701873,32.60973925999322,218964480,145177834,True
-BERT Base,zipnn-src,0.24955823365598917,0.2326237866654992,0.01693444699048996,109482240,35686980,32.596136140437025,218964480,145128443,True

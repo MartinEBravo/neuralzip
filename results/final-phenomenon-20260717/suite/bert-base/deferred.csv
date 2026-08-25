@@ -1,7 +1,0 @@
-model,method,encode_seconds,compressed_pct,raw_bytes,compressed_bytes,tensor_names,tensor_shapes,rows,cols
-BERT Base,ZipNN,0.1019626185297966,32.60973925999322,109482240,35701873,,,,
-BERT Base,NeuralZip,0.04696553759276867,32.60918574556019,109482240,35701267,,,,
-BERT Base,MM-RePair,1.7584,39.63837093777127,4718592,1870373,"['encoder.layer.0.intermediate.dense.weight', 'encoder.layer.1.intermediate.dense.weight']","[[3072, 768], [3072, 768]]",6144.0,768.0
-BERT Base,Delta exponent Huffman,0.28015700727701187,40.68471196789543,109482240,44542534,,,,
-BERT Base,Order-1 clustered Huffman,1.8433636240661144,32.90873752674406,109482240,36029223,,,,
-BERT Base,Arithmetic coding,1.61195395514369,32.40470600528451,109482240,35477398,,,,

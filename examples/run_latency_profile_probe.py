@@ -9,9 +9,9 @@ The probe loads one checkpoint at a time and compares four production paths:
 * the complete NeuralZip selector.
 
 Each NeuralZip setup is built once.  A verified warm-up is followed by
-interleaved measured encodes that reuse the frozen setup but never retain an
-exact-target packed cache.  ZipNN's required defensive input copy remains in
-its reported encoding time, matching the thesis protocol.
+interleaved measured encodes that reuse the frozen setup. ZipNN's required
+defensive input copy remains in its reported encoding time, matching the
+thesis protocol.
 """
 
 from __future__ import annotations
@@ -34,15 +34,26 @@ from neuralzip.codec_protocol import measure_exponent_streams
 from neuralzip.experiment_io import atomic_write_json
 from neuralzip.tensors import bitwise_equal
 
-from examples.run_general_codec_rerun import (
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_COMPRESSION_THRESHOLD,
-    SPECS_BY_KEY,
-    iter_float_tensors,
-    load_model,
-    parse_cpu_set,
-    zipnn_src_pass,
-)
+try:
+    from .run_general_codec_rerun import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        SPECS_BY_KEY,
+        iter_float_tensors,
+        load_model,
+        parse_cpu_set,
+        zipnn_src_pass,
+    )
+except ImportError:  # Direct execution from the examples directory.
+    from run_general_codec_rerun import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        SPECS_BY_KEY,
+        iter_float_tensors,
+        load_model,
+        parse_cpu_set,
+        zipnn_src_pass,
+    )
 
 
 PROFILE_OPTIONS = {
@@ -157,7 +168,6 @@ def prepare_profile(
         threads=threads,
         chunk_size=DEFAULT_CHUNK_SIZE,
         compression_threshold=DEFAULT_COMPRESSION_THRESHOLD,
-        enable_prepacked_cache=False,
         **PROFILE_OPTIONS[name],
     )
     codec = compressor.codec
@@ -446,7 +456,6 @@ def main() -> int:
         "compression_threshold": DEFAULT_COMPRESSION_THRESHOLD,
         "warmup_runs": 1,
         "measured_runs": args.repetitions,
-        "enable_prepacked_cache": False,
         "profile_warmups_verified": not args.skip_profile_verification,
         "setups": [],
         "samples": [],

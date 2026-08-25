@@ -1,7 +1,7 @@
 import unittest
 
 from examples.run_latency_profile_probe import exponent_metrics as latency_metrics
-from examples.run_precompute_family_transfer import (
+from examples.run_precompute_family_suite import (
     exponent_metrics as family_metrics,
 )
 from neuralzip.archive import serialized_codebooks_size

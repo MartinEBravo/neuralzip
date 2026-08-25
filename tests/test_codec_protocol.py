@@ -48,7 +48,6 @@ class _BatchCodec:
         self.batch_calls = 0
         self.tensor_calls = 0
         self.prepared = []
-        self.enable_prepacked_cache = True
 
     def compress_tensors(self, named_tensors):
         self.batch_calls += 1
@@ -63,10 +62,6 @@ class _BatchCodec:
 
     def build_codebooks_and_select_modes(self, named_tensors):
         self.prepared.append(("codebooks", tuple(name for name, _ in named_tensors)))
-
-    def materialize_precompute(self, named_tensors):
-        self.prepared.append(("materialize", tuple(name for name, _ in named_tensors)))
-
 
 class _SequentialCodec:
     def __init__(self):
@@ -90,9 +85,6 @@ class CodecProtocolTests(unittest.TestCase):
 
         self.assertTrue(result.used_batch)
         self.assertEqual(result.encoder_path, "compress_tensors")
-        self.assertFalse(result.materialization_active)
-        self.assertEqual(result.materialization_bytes, 0)
-        self.assertEqual(result.materialization_hits, 0)
         self.assertEqual(codec.batch_calls, 1)
         self.assertEqual(codec.tensor_calls, 0)
         self.assertEqual(
@@ -206,25 +198,11 @@ class CodecProtocolTests(unittest.TestCase):
                 ("codebooks", tuple(self.tensors)),
             ],
         )
-        self.assertGreaterEqual(report.precompute_seconds, 0.0)
+        self.assertGreaterEqual(report.clustering_seconds, 0.0)
         self.assertGreaterEqual(report.codebook_setup_seconds, 0.0)
-        self.assertEqual(report.precompute_seconds, report.clustering_seconds)
-        self.assertEqual(report.prepack_seconds, 0.0)
         self.assertEqual(
-            report.total_setup_seconds,
-            report.precompute_seconds + report.codebook_setup_seconds,
-        )
-
-        materialized = prepare_neuralzip_codec(
-            codec,
-            self.tensors,
-            materialize=True,
-        )
-        self.assertEqual(codec.prepared[-1], ("materialize", tuple(self.tensors)))
-        self.assertGreaterEqual(materialized.prepack_seconds, 0.0)
-        self.assertEqual(
-            materialized.precompute_seconds,
-            materialized.clustering_seconds + materialized.prepack_seconds,
+            report.setup_seconds,
+            report.clustering_seconds + report.codebook_setup_seconds,
         )
 
     def test_roundtrip_comparison_is_bitwise(self):

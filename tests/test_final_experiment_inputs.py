@@ -10,13 +10,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
 import examples.run_precompute_family_suite as family_suite
 from examples.run_general_codec_rerun import MODEL_SPECS, MappingModel
-from examples.run_precompute_family_transfer import (
-    floating_parameters,
-    select_snapshot_weights,
-)
+from examples.model_catalog import QUANTIZED_MODEL_SPECS
 from examples.run_precompute_family_suite import (
     FAMILY_SPECS,
     FamilySpec,
@@ -69,7 +65,8 @@ def test_family_transfer_uses_complete_floating_state_once():
         torch.nn.BatchNorm2d(4),
     )
 
-    state = floating_parameters(model)
+    view = MappingModel("test", dict(model.state_dict(keep_vars=True)), {})
+    state = family_suite.named_tensors(view, "resnet18")
     names = [name for name, _ in state]
 
     assert len(names) == len(set(names))
@@ -178,10 +175,7 @@ def test_run_family_builds_one_source_plan_for_multiple_targets(
     )
 
     class FakeCodec:
-        enable_prepacked_cache = True
-
-        def clear_prepacked_cache(self):
-            return None
+        pass
 
     codec = FakeCodec()
     setup_calls = []
@@ -191,7 +185,7 @@ def test_run_family_builds_one_source_plan_for_multiple_targets(
 
     def fake_setup(tensors, *, threads):
         setup_calls.append((list(tensors), threads))
-        return codec, {"total_seconds": 1.0}
+        return codec, {"setup_seconds": 1.0}
 
     def fake_target(_family, received_codec, _source_names, target_key, **kwargs):
         target_calls.append((target_key, received_codec, kwargs["plan_fingerprint"]))
@@ -221,47 +215,6 @@ def test_run_family_builds_one_source_plan_for_multiple_targets(
     assert result["target_histograms_computed"] is False
     assert result["target_js_matching"] is False
     assert result["target_mode_probing"] is False
-    assert result["exact_target_cache"] is False
-
-
-def test_family_snapshot_rejects_an_index_with_a_missing_shard(tmp_path):
-    (tmp_path / "config.json").write_text("{}")
-    index = {
-        "weight_map": {
-            "a.weight": "model-00001-of-00002.safetensors",
-            "b.weight": "model-00002-of-00002.safetensors",
-        }
-    }
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
-    (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"first")
-
-    with pytest.raises(FileNotFoundError, match="missing shard"):
-        select_snapshot_weights(tmp_path)
-
-
-def test_family_snapshot_uses_only_shards_declared_by_the_index(tmp_path):
-    (tmp_path / "config.json").write_text("{}")
-    index = {
-        "weight_map": {
-            "a.weight": "model-00001-of-00002.safetensors",
-            "b.weight": "model-00002-of-00002.safetensors",
-        }
-    }
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
-    for name in (
-        "model-00001-of-00002.safetensors",
-        "model-00002-of-00002.safetensors",
-        "alternate.safetensors",
-    ):
-        (tmp_path / name).write_bytes(name.encode())
-
-    selection = select_snapshot_weights(tmp_path)
-
-    assert [path.name for path in selection.files] == [
-        "model-00001-of-00002.safetensors",
-        "model-00002-of-00002.safetensors",
-    ]
-    assert selection.expected_keys == frozenset({"a.weight", "b.weight"})
 
 
 def test_quantized_nibble_backends_roundtrip_exactly():
@@ -420,11 +373,7 @@ def test_quantized_index_rejects_an_empty_remote_shard():
 
 
 def test_every_quantized_model_has_an_explicit_artifact_selector():
-    quantized = [
-        spec
-        for spec in LOSSY_LOSSLESS_MODEL_SUITE
-        if spec.get("category") == "quantized"
-    ]
+    quantized = QUANTIZED_MODEL_SPECS
     assert quantized
     assert all(spec.get("artifact_selector") for spec in quantized)
     latam = next(spec for spec in quantized if "LatamGPT" in spec["name"])
@@ -435,16 +384,8 @@ def test_every_quantized_model_has_an_explicit_artifact_selector():
 
 
 def test_lossy_lossless_suite_has_final_format_and_distillation_coverage():
-    quantized = [
-        spec
-        for spec in LOSSY_LOSSLESS_MODEL_SUITE
-        if spec.get("category") == "quantized"
-    ]
-    distilled = [
-        spec
-        for spec in LOSSY_LOSSLESS_MODEL_SUITE
-        if spec.get("category") == "distilled"
-    ]
+    quantized = QUANTIZED_MODEL_SPECS
+    distilled = [spec for spec in MODEL_SPECS if "distilled" in spec.suites]
 
     assert len(quantized) == 6
     assert {spec["representation"] for spec in quantized} >= {
@@ -456,12 +397,5 @@ def test_lossy_lossless_suite_has_final_format_and_distillation_coverage():
     assert {
         "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-    } <= {spec["model_id"] for spec in distilled}
-    assert not any("adapter" in spec["model_id"].lower() for spec in distilled)
-
-    runner_distilled = [
-        spec for spec in MODEL_SPECS if "distilled" in spec.suites
-    ]
-    assert {spec.source for spec in runner_distilled} == {
-        spec["model_id"] for spec in distilled
-    }
+    } <= {spec.source for spec in distilled}
+    assert not any("adapter" in spec.source.lower() for spec in distilled)

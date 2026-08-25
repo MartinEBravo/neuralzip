@@ -132,7 +132,6 @@ class Compressor:
         clustering="js-distance",
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
-        max_tensor_probe_bytes=256 << 10,
         ngram_values=(2, 3, 4),
         top_k=254,
         exponent_layout="original",
@@ -140,7 +139,6 @@ class Compressor:
         packed_time_budget_ratio=1.0,
         speed_ratio_tolerance=0.03,
         enable_shared_codebooks=True,
-        enable_prepacked_cache=False,
         direct_batch_bytes=128 << 20,
     ):
         self.method = _normalize_method(method)
@@ -163,7 +161,6 @@ class Compressor:
             codec_kwargs["clustering"] = clustering
             codec_kwargs["cluster_js_threshold"] = cluster_js_threshold
             codec_kwargs["max_codebook_sample_bytes"] = max_codebook_sample_bytes
-            codec_kwargs["max_tensor_probe_bytes"] = max_tensor_probe_bytes
             codec_kwargs["ngram_values"] = ngram_values
             codec_kwargs["top_k"] = top_k
             codec_kwargs["exponent_layout"] = exponent_layout
@@ -173,7 +170,6 @@ class Compressor:
             codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
             codec_kwargs["speed_ratio_tolerance"] = speed_ratio_tolerance
             codec_kwargs["enable_shared_codebooks"] = enable_shared_codebooks
-            codec_kwargs["enable_prepacked_cache"] = enable_prepacked_cache
             codec_kwargs["direct_batch_bytes"] = direct_batch_bytes
         self.codec = codec_cls(**codec_kwargs)
 
@@ -230,142 +226,25 @@ class Compressor:
     def decompress_file(self, path):
         return self.decompress(self.load(path))
 
-    def compress_delta(self, base_model, target_model):
-        base_tensors = dict(_model_parameters(base_model))
-        target_tensors = dict(_model_parameters(target_model))
-
-        tensor_results = []
-        total_raw_bytes = 0
-        total_compressed_bytes = 0
-        total_payload_bytes = 0
-        total_metadata_bytes = 0
-        total_encode_seconds = 0.0
-        total_decode_seconds = 0.0
-        total_huffman_chunks = 0
-        total_raw_chunks = 0
-        total_zero_chunks = 0
-        roundtrip_ok = True if self.verify else None
-
-        for name, target in target_tensors.items():
-            base = base_tensors.get(name)
-            if base is None:
-                continue
-            if not torch.is_tensor(target) or not target.is_floating_point():
-                continue
-            if base.shape != target.shape or base.dtype != target.dtype:
-                continue
-
-            raw_bytes = _raw_tensor_bytes(target)
-            total_raw_bytes += raw_bytes
-
-            start = time.perf_counter()
-            compressed = self.codec.compress_delta_tensor(name, base, target)
-            encode_seconds = time.perf_counter() - start
-
-            compressed_bytes = compressed.compressed_bytes
-            total_compressed_bytes += compressed_bytes
-            total_payload_bytes += compressed.payload_bytes
-            total_metadata_bytes += compressed_bytes - compressed.payload_bytes
-            total_encode_seconds += encode_seconds
-            total_huffman_chunks += compressed.huffman_chunks
-            total_raw_chunks += compressed.raw_chunks
-            total_zero_chunks += compressed.zero_chunks
-
-            tensor_roundtrip_ok = None
-            decode_seconds = None
-            if self.verify:
-                start = time.perf_counter()
-                restored = self.codec.decompress_delta_tensor(compressed, base)
-                decode_seconds = time.perf_counter() - start
-                tensor_roundtrip_ok = bitwise_equal(target, restored)
-                roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
-                total_decode_seconds += decode_seconds
-
-            result = {
-                "name": name,
-                "shape": compressed.shape,
-                "dtype": compressed.dtype,
-                "numel": compressed.numel,
-                "raw_bytes": raw_bytes,
-                "strategy": compressed.strategy,
-                "payload_bytes": compressed.payload_bytes,
-                "metadata_bytes": compressed_bytes - compressed.payload_bytes,
-                "compressed_bytes": compressed_bytes,
-                "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
-                "huffman_chunks": compressed.huffman_chunks,
-                "raw_chunks": compressed.raw_chunks,
-                "zero_chunks": compressed.zero_chunks,
-                "encode_seconds": encode_seconds,
-            }
-            if self.verify:
-                result["decode_seconds"] = decode_seconds
-                result["roundtrip_ok"] = tensor_roundtrip_ok
-            if self.keep_payloads:
-                result["payload"] = compressed
-            tensor_results.append(result)
-
-        compression = (
-            total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
-        )
-        return {
-            "method": f"{self.method}_delta",
-            "zipnn_method": "xor-delta-byte-huffman",
-            "num_tensors": len(tensor_results),
-            "raw_bytes": total_raw_bytes,
-            "payload_bytes": total_payload_bytes,
-            "metadata_bytes": total_metadata_bytes,
-            "compressed_bytes": total_compressed_bytes,
-            "compression_ratio": compression,
-            "space_saving": 1.0 - compression if total_raw_bytes else 0.0,
-            "huffman_chunks": total_huffman_chunks,
-            "raw_chunks": total_raw_chunks,
-            "zero_chunks": total_zero_chunks,
-            "encode_seconds": total_encode_seconds,
-            "decode_seconds": total_decode_seconds if self.verify else None,
-            "roundtrip_ok": roundtrip_ok,
-            "tensor_results": tensor_results,
-        }
-
-    def decompress_delta(self, compressed_delta, base_model):
-        base_tensors = dict(_model_parameters(base_model))
-        tensors = {}
-        for tensor_result in compressed_delta.get("tensor_results", []):
-            payload = tensor_result.get("payload")
-            if payload is None:
-                raise ValueError(
-                    "Cannot decompress this delta because tensor payloads were not "
-                    "kept. Run Compressor(..., keep_payloads=True)."
-                )
-            base = base_tensors[payload.name]
-            tensors[payload.name] = self.codec.decompress_delta_tensor(payload, base)
-        return tensors
-
     def _codec_compression(self, model: "HFModel", *, method_name, method_detail):
         tensor_results = []
         total_raw_bytes = 0
         total_payload_bytes = 0
-        total_numel = 0
         total_encode_seconds = 0.0
         total_decode_seconds = 0.0
-        total_huffman_groups = 0
-        total_raw_groups = 0
-        total_zero_groups = 0
         total_huffman_chunks = 0
         total_raw_chunks = 0
         total_zero_chunks = 0
-        total_shared_codebook_defs = 0
         total_shared_codebook_refs = 0
         total_local_huff0_chunks = 0
         total_packed_ngram_chunks = 0
         total_ngram_hits = 0
         total_ngram_escapes = 0
         clustering_seconds = 0.0
-        prepack_seconds = 0.0
         codebook_setup_seconds = 0.0
         codebook_metadata_bytes = 0
         codebooks = ()
         compressed_payloads = []
-        strategy_counts = {}
         roundtrip_ok = True if self.verify else None
 
         parameters = [
@@ -385,15 +264,12 @@ class Compressor:
             setup_report = prepare_neuralzip_codec(
                 self.codec,
                 parameters,
-                materialize=True,
             )
             clustering_seconds = setup_report.clustering_seconds
-            prepack_seconds = setup_report.prepack_seconds
             codebook_setup_seconds = setup_report.codebook_setup_seconds
             codebooks = self.codec.export_codebooks()
             codebook_metadata_bytes = serialized_codebooks_size(codebooks)
-            total_shared_codebook_defs += len(codebooks)
-        precompute_seconds = clustering_seconds + prepack_seconds
+        setup_seconds = clustering_seconds + codebook_setup_seconds
 
         encoded_batch = encode_tensor_batch(self.codec, parameters)
         compressed_payloads = list(encoded_batch.payloads)
@@ -402,16 +278,12 @@ class Compressor:
         for tensor_index, (name, parameter) in enumerate(parameters):
             raw_bytes = _raw_tensor_bytes(parameter)
             total_raw_bytes += raw_bytes
-            total_numel += int(parameter.numel())
 
             compressed = encoded_batch.payloads[tensor_index]
             encode_seconds = encoded_batch.tensor_encode_seconds[tensor_index]
 
             compressed_bytes = serialized_tensor_size(compressed)
             total_payload_bytes += compressed.payload_bytes
-            total_huffman_groups += compressed.huffman_groups
-            total_raw_groups += compressed.raw_groups
-            total_zero_groups += compressed.zero_groups
             total_huffman_chunks += compressed.huffman_chunks
             total_raw_chunks += compressed.raw_chunks
             total_zero_chunks += compressed.zero_chunks
@@ -424,10 +296,6 @@ class Compressor:
             )
             total_ngram_hits += getattr(compressed, "ngram_hits", 0)
             total_ngram_escapes += getattr(compressed, "ngram_escapes", 0)
-            strategy_counts[compressed.strategy] = (
-                strategy_counts.get(compressed.strategy, 0) + 1
-            )
-
             tensor_roundtrip_ok = None
             decode_seconds = None
             if self.verify:
@@ -443,16 +311,12 @@ class Compressor:
                 "name": name,
                 "shape": compressed.shape,
                 "dtype": compressed.dtype,
-                "numel": compressed.numel,
                 "raw_bytes": raw_bytes,
                 "strategy": compressed.strategy,
                 "payload_bytes": compressed.payload_bytes,
                 "metadata_bytes": compressed_bytes - compressed.payload_bytes,
                 "compressed_bytes": compressed_bytes,
                 "compression_ratio": compressed_bytes / raw_bytes if raw_bytes else 0.0,
-                "huffman_groups": compressed.huffman_groups,
-                "raw_groups": compressed.raw_groups,
-                "zero_groups": compressed.zero_groups,
                 "huffman_chunks": compressed.huffman_chunks,
                 "raw_chunks": compressed.raw_chunks,
                 "zero_chunks": compressed.zero_chunks,
@@ -487,27 +351,16 @@ class Compressor:
         return {
             "method": method_name,
             "zipnn_method": method_detail,
-            "input_format": "torch",
-            "model_id": getattr(model, "model_name", None),
             "num_tensors": len(tensor_results),
-            "numel": total_numel,
             "raw_bytes": total_raw_bytes,
             "payload_bytes": total_payload_bytes,
             "metadata_bytes": total_metadata_bytes,
             "codebook_metadata_bytes": codebook_metadata_bytes,
             "compressed_bytes": total_compressed_bytes,
             "compression_ratio": model_compression_ratio,
-            "space_saving": (
-                1.0 - model_compression_ratio if total_raw_bytes else 0.0
-            ),
-            "strategy_counts": strategy_counts,
-            "huffman_groups": total_huffman_groups,
-            "raw_groups": total_raw_groups,
-            "zero_groups": total_zero_groups,
             "huffman_chunks": total_huffman_chunks,
             "raw_chunks": total_raw_chunks,
             "zero_chunks": total_zero_chunks,
-            "shared_codebook_defs": total_shared_codebook_defs,
             "shared_codebook_refs": total_shared_codebook_refs,
             "shared_huff0_chunks": sum(
                 getattr(payload, "shared_huff0_chunks", 0)
@@ -517,12 +370,6 @@ class Compressor:
             "packed_ngram_chunks": total_packed_ngram_chunks,
             "ngram_hits": total_ngram_hits,
             "ngram_escapes": total_ngram_escapes,
-            "ngram_hit_rate": (
-                total_ngram_hits / (total_ngram_hits + total_ngram_escapes)
-                if total_ngram_hits + total_ngram_escapes
-                else 0.0
-            ),
-            "raw_codebook_keys": getattr(self.codec, "raw_codebook_keys", 0),
             "clusters": getattr(self.codec, "cluster_count", 0),
             "selected_modes": getattr(self.codec, "selected_modes", {}),
             "selection_stats": getattr(self.codec, "selection_stats", {}),
@@ -531,43 +378,16 @@ class Compressor:
                 "selection_diagnostics",
                 (),
             ),
-            "precompute_seconds": precompute_seconds,
-            "precompute_total_seconds": (
-                clustering_seconds + codebook_setup_seconds + prepack_seconds
-            ),
             "clustering_seconds": clustering_seconds,
-            "prepack_seconds": prepack_seconds,
-            "prepacked_cache_bytes": getattr(
-                self.codec,
-                "prepacked_cache_bytes",
-                0,
-            ),
-            "prepacked_cache_stats": getattr(
-                self.codec,
-                "prepacked_cache_stats",
-                {},
-            ),
-            "precomputed_codebook_memory_bytes": getattr(
-                self.codec,
-                "precomputed_codebook_memory_bytes",
-                0,
-            ),
-            "precompute_memory_bytes": getattr(
-                self.codec,
-                "precompute_memory_bytes",
-                0,
-            ),
             "codebook_setup_seconds": codebook_setup_seconds,
+            "setup_seconds": setup_seconds,
+            "setup_memory_bytes": getattr(
+                self.codec,
+                "setup_memory_bytes",
+                0,
+            ),
             "encode_seconds": total_encode_seconds,
-            "direct_encode_seconds": total_encode_seconds,
-            "hot_encode_seconds": total_encode_seconds,
-            "compression_seconds": codebook_setup_seconds + total_encode_seconds,
-            "total_compression_seconds": (
-                precompute_seconds + codebook_setup_seconds + total_encode_seconds
-            ),
-            "cold_encode_seconds": (
-                precompute_seconds + codebook_setup_seconds + total_encode_seconds
-            ),
+            "total_seconds": setup_seconds + total_encode_seconds,
             "decode_seconds": total_decode_seconds if self.verify else None,
             "roundtrip_ok": roundtrip_ok,
             "header": {
@@ -597,7 +417,6 @@ class Compressor:
         tensor_results = []
         total_raw_bytes = 0
         total_compressed_bytes = 0
-        total_numel = 0
         total_encode_seconds = 0.0
         total_codec_encode_seconds = 0.0
         total_input_copy_seconds = 0.0
@@ -617,7 +436,6 @@ class Compressor:
             original = parameter.detach().cpu().contiguous()
             raw_bytes = _raw_tensor_bytes(original)
             total_raw_bytes += raw_bytes
-            total_numel += int(original.numel())
 
             encoded = codec.encode_tensor(original, verify=self.verify)
             payload = encoded.payload
@@ -641,7 +459,6 @@ class Compressor:
                 "name": name,
                 "shape": tuple(int(dim) for dim in original.shape),
                 "dtype": dtype_name(original.dtype),
-                "numel": int(original.numel()),
                 "raw_bytes": raw_bytes,
                 "strategy": "zipnn-src",
                 "payload_bytes": compressed_bytes,
@@ -665,26 +482,18 @@ class Compressor:
         return {
             "method": "zipnn-src",
             "zipnn_method": self.zipnn_method,
-            "input_format": "torch",
-            "model_id": getattr(model, "model_name", None),
             "num_tensors": len(tensor_results),
-            "numel": total_numel,
             "raw_bytes": total_raw_bytes,
             "payload_bytes": total_compressed_bytes,
             "metadata_bytes": 0,
             "compressed_bytes": total_compressed_bytes,
             "compression_ratio": model_compression_ratio,
-            "space_saving": (
-                1.0 - model_compression_ratio if total_raw_bytes else 0.0
-            ),
-            "strategy_counts": {"zipnn-src": len(tensor_results)},
-            "huffman_groups": None,
-            "raw_groups": None,
-            "zero_groups": None,
             "huffman_chunks": None,
             "raw_chunks": None,
             "zero_chunks": None,
+            "setup_seconds": 0.0,
             "encode_seconds": total_encode_seconds,
+            "total_seconds": total_encode_seconds,
             "codec_encode_seconds": total_codec_encode_seconds,
             "input_copy_seconds": total_input_copy_seconds,
             "decode_seconds": total_decode_seconds if self.verify else None,

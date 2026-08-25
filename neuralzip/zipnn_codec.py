@@ -144,63 +144,7 @@ class ZipNNCodec:
 
         if compressed.strategy in {"zipnn", "byte_groups"}:
             return self._decompress_zipnn(compressed)
-        if compressed.strategy == "delta":
-            raise ValueError("Delta payloads require decompress_delta_tensor().")
         raise ValueError(f"Unsupported ZipNN strategy: {compressed.strategy!r}")
-
-    def compress_delta_tensor(self, name, base_tensor, target_tensor):
-        if not torch.is_tensor(base_tensor) or not torch.is_tensor(target_tensor):
-            raise TypeError("Delta compression expects torch tensors.")
-        if (
-            base_tensor.shape != target_tensor.shape
-            or base_tensor.dtype != target_tensor.dtype
-        ):
-            raise ValueError("Delta tensors must have matching shape and dtype.")
-        if not target_tensor.is_floating_point():
-            raise TypeError("ZipNN delta compression only supports floating tensors.")
-
-        base = base_tensor.detach().cpu().contiguous()
-        target = target_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        target_bytes = np.frombuffer(_tensor_raw_bytes(target), dtype=np.uint8)
-        delta = np.bitwise_xor(base_bytes, target_bytes).tobytes()
-        group = self._compress_stream(delta, "delta")
-
-        return TensorPayload(
-            name=name,
-            shape=tuple(int(dim) for dim in target.shape),
-            dtype=dtype_name(target.dtype),
-            element_size=int(target.element_size()),
-            numel=int(target.numel()),
-            strategy="delta",
-            groups=(group,),
-        )
-
-    def decompress_delta_tensor(self, compressed, base_tensor):
-        if compressed.strategy != "delta":
-            raise ValueError("Expected a delta payload.")
-        if len(compressed.groups) != 1:
-            raise ValueError("Delta payload must contain exactly one stream.")
-        if not torch.is_tensor(base_tensor):
-            raise TypeError("base_tensor must be a torch tensor.")
-        if tuple(int(dim) for dim in base_tensor.shape) != compressed.shape:
-            raise ValueError("Base tensor shape does not match delta payload.")
-
-        dtype = DTYPE_BY_NAME[compressed.dtype]
-        if base_tensor.dtype != dtype:
-            raise ValueError("Base tensor dtype does not match delta payload.")
-
-        delta = self._decompress_stream(compressed.groups[0])
-        if len(delta) != compressed.raw_bytes:
-            raise ValueError(
-                f"Delta stream has {len(delta)} bytes; expected {compressed.raw_bytes}."
-            )
-
-        base = base_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        delta_bytes = np.frombuffer(delta, dtype=np.uint8)
-        target_bytes = np.bitwise_xor(base_bytes, delta_bytes).tobytes()
-        return _tensor_from_raw_bytes(target_bytes, dtype, compressed.shape)
 
     def _stream_chunk_size(self, element_size):
         return max(1, self.chunk_size // int(element_size))

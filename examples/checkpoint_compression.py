@@ -35,9 +35,6 @@ BASE_RESULT_FIELDS = (
     "compressor",
     "codec_protocol_version",
     "encoder_path",
-    "materialization_active",
-    "materialization_bytes",
-    "materialization_hits",
     "checkpoint_path",
     "checkpoint_source",
     "dtype",
@@ -186,16 +183,15 @@ def setup_neuralzip(
         named_tensors,
         threads=threads,
         compression_threshold=0.95,
-        enable_prepacked_cache=False,
     )
     report = plan.setup_report
     if report is None:
         raise RuntimeError("Fitted NeuralZip plan did not report setup timing.")
     codebooks = plan.codebooks
     return plan, {
-        "clustering_seconds": report.precompute_seconds,
+        "clustering_seconds": report.clustering_seconds,
         "codebook_seconds": report.codebook_setup_seconds,
-        "total_seconds": report.total_setup_seconds,
+        "setup_seconds": report.setup_seconds,
         "clusters": int(plan.codec.cluster_count),
         "codebooks": len(codebooks),
         "codebook_digest": plan.digest,
@@ -207,11 +203,7 @@ def setup_neuralzip(
 
 def _encode_batch(plan, named_tensors):
     plan = _as_plan(plan)
-    plan.codec.clear_prepacked_cache()
-    encoded = encode_tensor_batch(plan.codec, tuple(named_tensors))
-    if plan.codec.prepacked_cache_bytes != 0:
-        raise RuntimeError("NeuralZip unexpectedly retained an exact-target cache.")
-    return encoded
+    return encode_tensor_batch(plan.codec, tuple(named_tensors))
 
 
 def verify_neuralzip(plan, named_tensors, payloads) -> bool:
@@ -267,9 +259,6 @@ def benchmark_neuralzip(
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
         "encoder_path": encoded.encoder_path,
-        "materialization_active": encoded.materialization_active,
-        "materialization_bytes": encoded.materialization_bytes,
-        "materialization_hits": encoded.materialization_hits,
         "raw_bytes": encoded.raw_bytes,
         "compressed_bytes": compressed_bytes,
         "full_ratio_pct": (
@@ -280,7 +269,7 @@ def benchmark_neuralzip(
         "encode_seconds": encoded.encode_seconds,
         "codec_encode_seconds": encoded.encode_seconds,
         "input_copy_seconds": 0.0,
-        "setup_seconds_once": float(setup["total_seconds"]),
+        "setup_seconds_once": float(setup["setup_seconds"]),
         "mapping_seconds": mapping_seconds,
         "mapped_tensors": int(transfer["matched_tensors"]),
         "roundtrip_exact": roundtrip,
@@ -342,9 +331,6 @@ def benchmark_zipnn_src(
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
         "encoder_path": "zipnn-src",
-        "materialization_active": False,
-        "materialization_bytes": 0,
-        "materialization_hits": 0,
         "raw_bytes": int(result["raw_bytes"]),
         "compressed_bytes": int(result["compressed_bytes"]),
         "full_ratio_pct": 100.0 * float(result["compression_ratio"]),

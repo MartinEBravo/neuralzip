@@ -9,7 +9,13 @@ import pandas as pd
 import torch
 
 from . import huffman, turborc
+from .metrics import (
+    jensen_shannon_distance as jensen_shannon,
+    shannon_entropy_from_counts as _entropy_from_counts,
+)
 from .neuralzip_codec import NeuralZipCodec
+from .packed_exponents import transpose_2d_stream
+from .payloads import RAW_CHUNK_METADATA_BYTES
 from .utils import split_fields
 from .zipnn_codec import ZipNNCodec, _zipnn_dtype_config, _zipnn_reordered_bytes
 
@@ -49,23 +55,14 @@ def zipnn_exponent_stream(tensor, *, layout="original"):
     element_size = int(config["element_size"])
     stream = reordered[element_size - 1 :: element_size]
     if layout == "transpose2d":
-        return _transpose_2d_stream(tensor, stream)
+        stream, _ = transpose_2d_stream(
+            stream,
+            tuple(int(dimension) for dimension in tensor.shape),
+        )
+        return stream
     if layout != "original":
         raise ValueError("layout must be 'original' or 'transpose2d'.")
     return stream
-
-
-def _transpose_2d_stream(tensor, stream):
-    if tensor.ndim != 2 or tensor.numel() != len(stream):
-        return stream
-    array = (
-        torch.frombuffer(bytearray(stream), dtype=torch.uint8)
-        .reshape(tuple(tensor.shape))
-        .t()
-        .contiguous()
-        .reshape(-1)
-    )
-    return array.numpy().tobytes()
 
 
 def zero_order_entropy(values):
@@ -143,18 +140,6 @@ def exponent_order_entropies(model):
         "entropy_reduction_bits_per_exponent": h0 - h1,
         "entropy_reduction_pct": 100.0 * (h0 - h1) / h0 if h0 else 0.0,
     }
-
-
-def jensen_shannon(left, right):
-    left = np.asarray(left, dtype=np.float64)
-    right = np.asarray(right, dtype=np.float64)
-    middle = 0.5 * (left + right)
-    mask_left = left > 0
-    mask_right = right > 0
-    divergence = 0.0
-    divergence += 0.5 * np.sum(left[mask_left] * np.log2(left[mask_left] / middle[mask_left]))
-    divergence += 0.5 * np.sum(right[mask_right] * np.log2(right[mask_right] / middle[mask_right]))
-    return float(np.sqrt(divergence))
 
 
 def _module_type_lookup(model):
@@ -730,15 +715,6 @@ def _delta_stream(stream):
     return delta.tobytes()
 
 
-def _entropy_from_counts(counts):
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    if total == 0.0:
-        return 0.0
-    probabilities = counts[counts > 0] / total
-    return float(-(probabilities * np.log2(probabilities)).sum())
-
-
 def delta_exponent_diagnostics(
     model,
     *,
@@ -970,7 +946,7 @@ def order1_huffman_cluster_cost(
             if values.size == 0:
                 continue
             first_symbol_bytes += 1
-            stream_headers += 1 + 8 + 8
+            stream_headers += RAW_CHUNK_METADATA_BYTES
             if values.size > 1:
                 np.add.at(counts, (values[:-1], values[1:]), 1)
 
@@ -1153,7 +1129,7 @@ def selected_ngram_codebook_cost(
                         min_saving_bytes=0,
                     )
                     if encoded is None:
-                        payload_cost += 1 + 8 + 8 + len(stream)
+                        payload_cost += RAW_CHUNK_METADATA_BYTES + len(stream)
                         continue
                     payload_cost += (
                         1
@@ -1494,7 +1470,7 @@ def selected_turborc_range_cost(
     rows = []
     method = turborc._normalize_method(method)
     method_label = f"turborc-{method}"
-    chunk_header_bytes = 1 + 8 + 8
+    chunk_header_bytes = RAW_CHUNK_METADATA_BYTES
     codec_header_bytes = 8 + len(method_label.encode("utf-8")) + 8 + len(layout)
 
     for threshold in cluster_js_thresholds:

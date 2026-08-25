@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
-import importlib
 import json
 import os
 import platform
@@ -33,10 +32,10 @@ from typing import Iterable
 import torch
 
 from neuralzip import Compressor
-from neuralzip.checkpoint_loading import resolve_weight_map
+from neuralzip.checkpoint_loading import select_indexed_weights
 from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
 from neuralzip.hashing import canonical_digest, sha256_bytes, sha256_file
-from neuralzip.system import host_facts, package_version, parse_cpu_set
+from neuralzip.system import host_facts, module_path, package_versions, parse_cpu_set
 from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
 
@@ -157,12 +156,9 @@ def code_provenance() -> dict[str, object]:
 
     roots: dict[str, Path] = {"runner": Path(__file__).resolve()}
     for module_name in ("neuralzip", "zipnn", "zipnn_core"):
-        module = importlib.import_module(module_name)
-        module_path = Path(str(module.__file__)).resolve()
+        path = module_path(module_name)
         roots[module_name] = (
-            module_path.parent
-            if module_path.name.startswith("__init__.")
-            else module_path
+            path.parent if path.name.startswith("__init__.") else path
         )
 
     artifacts = []
@@ -182,10 +178,7 @@ def code_provenance() -> dict[str, object]:
                     "sha256": sha256_file(path),
                 }
             )
-    versions = {
-        name: package_version(name)
-        for name in ("torch", "torchvision", "neuralzip", "zipnn")
-    }
+    versions = package_versions("torch", "torchvision", "neuralzip", "zipnn")
     _CODE_PROVENANCE = {
         "digest": canonical_digest({"artifacts": artifacts, "versions": versions}),
         "artifacts": artifacts,
@@ -526,52 +519,14 @@ def snapshot_weight_files(
             revision=snapshot.name,
         )
 
-    # An index is authoritative.  It prevents similarly named alternate or
-    # quantized checkpoint files from being counted as additional tensors.
-    index_paths = sorted(root.glob("*.safetensors.index.json"))
-    if not index_paths:
-        index_paths = sorted(root.glob("*.bin.index.json"))
-    if index_paths:
-        canonical_indexes = [
-            path
-            for path in index_paths
-            if path.name
-            in {"model.safetensors.index.json", "pytorch_model.bin.index.json"}
-        ]
-        if len(canonical_indexes) == 1:
-            preferred_index = canonical_indexes[0]
-        elif len(index_paths) == 1:
-            preferred_index = index_paths[0]
-        else:
-            raise ValueError(
-                "Checkpoint contains ambiguous shard indexes: "
-                + ", ".join(path.name for path in index_paths)
-            )
-        index = json.loads(preferred_index.read_text())
-        allowed_suffixes = (
-            (".safetensors",)
-            if preferred_index.name.endswith(".safetensors.index.json")
-            else (".bin",)
-        )
-        available_files = {
-            path.relative_to(preferred_index.parent).as_posix(): int(
-                path.stat().st_size
-            )
-            for path in preferred_index.parent.rglob("*")
-            if path.is_file()
-        }
-        resolved = resolve_weight_map(
-            index.get("weight_map"),
-            available_files=available_files,
-            allowed_suffixes=allowed_suffixes,
-        )
-        files = [preferred_index.parent / name for name in resolved.files]
+    indexed = select_indexed_weights(root, allow_bin=True)
+    if indexed is not None:
         return CheckpointSelection(
-            files=tuple(files),
+            files=indexed.files,
             snapshot=snapshot,
             revision=snapshot.name,
-            index_path=preferred_index,
-            expected_keys=resolved.expected_keys,
+            index_path=indexed.index_path,
+            expected_keys=indexed.expected_keys,
         )
 
     preferred_files = (

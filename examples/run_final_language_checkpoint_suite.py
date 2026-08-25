@@ -29,16 +29,17 @@ if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
 from examples.checkpoint_common import (  # noqa: E402
+    add_checkpoint_run_arguments,
     atomic_torch_save,
     checkpoint_files,
-    find_complete_local_checkpoint_dir,
-    find_external_checkpoint_dir,
+    initialize_checkpoint_run,
     limited,
     load_or_fit_frozen_codec,
-    read_csv,
+    missing_checkpoint_slugs,
     render_checkpoint_figure,
     restore_rng_state,
     rng_state,
+    run_checkpoint_models,
     run_checkpoint_trajectory,
     set_seed,
     upsert_model_epoch_row,
@@ -49,15 +50,11 @@ from neuralzip.experiment_io import atomic_write_json  # noqa: E402
 from examples.checkpoint_compression import (  # noqa: E402
     BASE_RESULT_FIELDS,
     CODEC_PROTOCOL_VERSION,
-    benchmark_neuralzip,
-    benchmark_zipnn_src,
     benchmark_checkpoint_codecs,
     completed_checkpoint_methods,
+    floating_state,
     is_current_codec_result,
-    load_codec_plan,
     nonfloating_state,
-    save_codec_plan,
-    setup_neuralzip,
     tensor_digest,
 )
 
@@ -145,23 +142,13 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(MODEL_SPECS),
         default=list(DEFAULT_MODELS),
     )
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        help="Override the per-model defaults (GPT-2=8, BERT Base=16).",
-    )
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--threads", type=int, default=12)
-    parser.add_argument(
-        "--device",
-        default="cuda:0" if torch.cuda.is_available() else "cpu",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=ROOT / "examples" / "outputs" / "datasets" / "wikitext",
+    add_checkpoint_run_arguments(
+        parser,
+        epochs=20,
+        batch_size=None,
+        batch_size_help="Override the per-model defaults (GPT-2=8, BERT Base=16).",
+        data_dir=ROOT / "examples" / "outputs" / "datasets" / "wikitext",
+        output_dir=ROOT / "results" / "final-language-checkpoints-wikitext2",
     )
     parser.add_argument(
         "--download",
@@ -171,28 +158,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--train-block-limit", type=int)
     parser.add_argument("--validation-block-limit", type=int)
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=ROOT / "results" / "final-language-checkpoints-wikitext2",
-    )
-    parser.add_argument(
-        "--existing-checkpoint-root",
-        type=Path,
-        help=(
-            "Optional root containing <model>/checkpoints. Complete trajectories "
-            "are recompressed without retraining."
-        ),
-    )
-    parser.add_argument(
-        "--train-missing",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    parser.add_argument("--train-only", action="store_true")
-    parser.add_argument("--compression-only", action="store_true")
-    parser.add_argument("--render-only", action="store_true")
-    parser.add_argument("--no-amp", action="store_true")
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -1062,27 +1027,6 @@ def train_model(
     return checkpoint_dir
 
 
-def completed_methods(
-    result_path: Path,
-    slug: str,
-    epoch: int,
-    *,
-    checkpoint_tensor_digest: str,
-    epoch0_plan_digest: str,
-    compression_protocol_digest: str,
-) -> set[str]:
-    return completed_checkpoint_methods(
-        result_path,
-        slug,
-        epoch,
-        identities={
-            "checkpoint_tensor_digest": checkpoint_tensor_digest,
-            "epoch0_plan_digest": epoch0_plan_digest,
-            "compression_protocol_digest": compression_protocol_digest,
-        },
-    )
-
-
 def add_alias_manifest_to_metrics(metrics: Mapping, aliases: Mapping[str, str]) -> dict:
     """Count the common alias manifest needed by either lossless codec."""
 
@@ -1123,26 +1067,20 @@ def benchmark_checkpoint(
         checkpoint,
         require_alias_manifest=True,
     )
-    floating = {
-        name: tensor
-        for name, tensor in canonical.items()
-        if tensor.is_floating_point() and tensor.numel() > 0
-    }
-    invalid = {name: tensor.dtype for name, tensor in floating.items() if tensor.dtype != torch.float32}
-    if invalid:
-        preview = ", ".join(f"{name}={dtype}" for name, dtype in list(invalid.items())[:8])
-        raise TypeError(f"Language checkpoints require exact FP32 tensors; got {preview}.")
+    floating = floating_state(canonical, error_prefix="Language checkpoints")
     nonfloating = nonfloating_state(canonical)
     named_tensors = list(floating.items())
     checkpoint_tensor_digest = tensor_digest(named_tensors)
     compression = compression_protocol(args)
-    done = completed_methods(
+    done = completed_checkpoint_methods(
         result_path,
         spec.slug,
         epoch,
-        checkpoint_tensor_digest=checkpoint_tensor_digest,
-        epoch0_plan_digest=str(setup["codebook_digest"]),
-        compression_protocol_digest=str(compression["digest"]),
+        identities={
+            "checkpoint_tensor_digest": checkpoint_tensor_digest,
+            "epoch0_plan_digest": setup["codebook_digest"],
+            "compression_protocol_digest": compression["digest"],
+        },
     )
     if done == {"NeuralZip", "ZipNN src"}:
         print(f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True)
@@ -1208,11 +1146,7 @@ def frozen_codec_for_trajectory(
             checkpoint,
             require_alias_manifest=True,
         )
-        floating = {
-            name: tensor
-            for name, tensor in canonical.items()
-            if tensor.is_floating_point() and tensor.numel() > 0
-        }
+        floating = floating_state(canonical, error_prefix="Language checkpoints")
         return (
             list(floating.items()),
             {
@@ -1264,22 +1198,6 @@ def process_trajectory(
         benchmark_checkpoint=benchmark_checkpoint,
         after_epoch=update_compression_progress,
     )
-
-
-def external_checkpoint_dir(
-    root: Path | None,
-    spec: LanguageModelSpec,
-    epochs: int,
-) -> Path | None:
-    return find_external_checkpoint_dir(root, spec.slug, epochs)
-
-
-def complete_local_checkpoint_dir(
-    output_dir: Path,
-    spec: LanguageModelSpec,
-    epochs: int,
-) -> Path | None:
-    return find_complete_local_checkpoint_dir(output_dir, spec.slug, epochs)
 
 
 def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | None:
@@ -1385,57 +1303,25 @@ def datasets_for_model(
 
 def main() -> None:
     args = parse_args()
-    exclusive_modes = sum(
-        bool(value)
-        for value in (args.train_only, args.compression_only, args.render_only)
-    )
-    if exclusive_modes > 1:
-        raise ValueError(
-            "--train-only, --compression-only, and --render-only are mutually exclusive."
-        )
     if args.smoke:
         args.epochs = min(int(args.epochs), 1)
         args.batch_size = min(int(args.batch_size or 2), 2)
         args.num_workers = 0
         args.device = "cpu"
         args.output_dir = args.output_dir / "smoke"
-    args.output_dir = args.output_dir.resolve()
-    args.data_dir = args.data_dir.resolve()
-    if args.existing_checkpoint_root is not None:
-        args.existing_checkpoint_root = args.existing_checkpoint_root.resolve()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    torch.set_num_threads(max(1, int(args.threads)))
-    try:
-        torch.set_num_interop_threads(1)
-    except RuntimeError:
-        pass
-
-    result_path = args.output_dir / "checkpoint_results.csv"
+    result_path = initialize_checkpoint_run(args)
     if args.render_only:
         validate_complete_results(result_path, models=args.models, epochs=args.epochs)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"rendered={rendered}", flush=True)
+        print(f"rendered={render_figure(result_path, args.output_dir)}", flush=True)
         return
 
-    need_training = False
-    if not args.compression_only:
-        need_training = any(
-            external_checkpoint_dir(
-                args.existing_checkpoint_root,
-                MODEL_SPECS[slug],
-                args.epochs,
-            )
-            is None
-            and complete_local_checkpoint_dir(
-                args.output_dir,
-                MODEL_SPECS[slug],
-                args.epochs,
-            )
-            is None
-            for slug in args.models
-        )
     parquet_paths = None
-    if need_training and not args.smoke:
+    if not args.compression_only and missing_checkpoint_slugs(
+        slugs=args.models,
+        external_root=args.existing_checkpoint_root,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+    ) and not args.smoke:
         if not args.train_missing:
             raise FileNotFoundError(
                 "Requested language checkpoints are missing and --no-train-missing was set."
@@ -1451,61 +1337,36 @@ def main() -> None:
     )
     write_metadata(args, dataset_name)
 
-    for slug in args.models:
-        spec = MODEL_SPECS[slug]
-        external = external_checkpoint_dir(
-            args.existing_checkpoint_root,
+    def train_trajectory(spec: LanguageModelSpec) -> Path:
+        train_data, validation_data, model_dataset_name = datasets_for_model(
             spec,
-            args.epochs,
+            args,
+            parquet_paths,
         )
-        if external is not None:
-            checkpoint_dir = external
-            source = "external-existing"
-            print(f"[{slug}] reuse checkpoints from {checkpoint_dir}", flush=True)
-        else:
-            local = complete_local_checkpoint_dir(args.output_dir, spec, args.epochs)
-            if local is not None:
-                checkpoint_dir = local
-                source = "trained-by-language-runner"
-                print(f"[{slug}] reuse locally trained checkpoints from {checkpoint_dir}", flush=True)
-            else:
-                if args.compression_only or not args.train_missing:
-                    raise FileNotFoundError(
-                        f"No complete epoch 0..{args.epochs} trajectory for {slug}."
-                    )
-                train_data, validation_data, model_dataset_name = datasets_for_model(
-                    spec,
-                    args,
-                    parquet_paths,
-                )
-                train_data = limited(train_data, args.train_block_limit)
-                validation_data = limited(
-                    validation_data,
-                    args.validation_block_limit,
-                )
-                checkpoint_dir = train_model(
-                    spec,
-                    train_data,
-                    validation_data,
-                    model_dataset_name,
-                    args,
-                    args.output_dir / slug,
-                )
-                del train_data, validation_data
-                gc.collect()
-                source = "trained-by-language-runner"
-        if args.train_only:
-            print(f"[{slug}] train-only complete: {checkpoint_dir}", flush=True)
-            continue
-        process_trajectory(spec, checkpoint_dir, source, args, result_path)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"[{slug}] rendered={rendered}", flush=True)
+        train_data = limited(train_data, args.train_block_limit)
+        validation_data = limited(validation_data, args.validation_block_limit)
+        checkpoint_dir = train_model(
+            spec,
+            train_data,
+            validation_data,
+            model_dataset_name,
+            args,
+            args.output_dir / spec.slug,
+        )
+        del train_data, validation_data
+        gc.collect()
+        return checkpoint_dir
 
-    if not args.train_only:
-        validate_complete_results(result_path, models=args.models, epochs=args.epochs)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"final_rendered={rendered}", flush=True)
-    print(f"results={result_path}", flush=True)
+    run_checkpoint_models(
+        args=args,
+        specs=MODEL_SPECS,
+        result_path=result_path,
+        local_source="trained-by-language-runner",
+        train_trajectory=train_trajectory,
+        process_trajectory=process_trajectory,
+        render_figure=render_figure,
+        validate_results=validate_complete_results,
+    )
 
 
 if __name__ == "__main__":

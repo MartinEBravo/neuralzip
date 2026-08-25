@@ -5,7 +5,7 @@ import weakref
 import numpy as np
 import torch
 
-from . import huff0, huffman
+from . import huff0
 from .dtypes import dtype_name
 from .packed_exponents import (
     restore_2d_stream,
@@ -165,16 +165,11 @@ class NeuralZipCodec(ZipNNCodec):
         self._decode_codebooks = {}
         for codebook in codebooks or ():
             codebook_id = int(codebook.codebook_id)
-            if codebook.codec == "huff0":
-                self._decode_codebooks[codebook_id] = huff0.build_decodebook(
-                    codebook.codebook
-                )
-            elif codebook.codec == "canonical-huffman":
-                self._decode_codebooks[codebook_id] = huffman.build_decodebook(
-                    codebook.code_lengths
-                )
-            else:
+            if codebook.codec != "huff0":
                 raise ValueError(f"Unsupported codebook codec {codebook.codec!r}.")
+            self._decode_codebooks[codebook_id] = huff0.build_decodebook(
+                codebook.codebook
+            )
 
     def codebook_metadata_bytes(self):
         return sum(codebook.metadata_bytes for codebook in self._codebook_payloads)
@@ -689,7 +684,6 @@ class NeuralZipCodec(ZipNNCodec):
     def _candidate_payload(self, key, mode, codebook_id=-1):
         cluster_id, dtype, stream_id = key
         codec = "huff0"
-        code_lengths = b""
         codebook = mode["codebook"].codebook
         return CodebookPayload(
             codebook_id=int(codebook_id),
@@ -702,7 +696,6 @@ class NeuralZipCodec(ZipNNCodec):
                 if mode.get("frame_4x", False)
                 else mode["kind"]
             ),
-            code_lengths=code_lengths,
             codebook=codebook,
             ngram_n=int(mode.get("ngram_n", 1)),
             vocab=bytes(mode.get("vocab", b"")),
@@ -1978,17 +1971,13 @@ class NeuralZipCodec(ZipNNCodec):
         self._transfer_active = True
         return self.transfer_stats
 
-    def build_codebooks_and_select_modes(self, named_tensors):
-        if not self._clusters_prepared:
-            raise RuntimeError(
-                "Clusters must be prepared before building NeuralZip codebooks."
-            )
-        named_tensors = list(named_tensors)
+    def _collect_codebook_samples(self, named_tensors):
+        """Collect the bounded, reordered streams used to fit codebooks."""
+
         sample_parts = {}
         sample_sizes = {}
         total_sizes = {}
         stream_info = {}
-
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 continue
@@ -2011,6 +2000,17 @@ class NeuralZipCodec(ZipNNCodec):
                 sample_parts.setdefault(key, []).append(bytes(part))
                 sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
                 stream_info[key] = (element_size, is_exponent)
+        return sample_parts, total_sizes, stream_info
+
+    def build_codebooks_and_select_modes(self, named_tensors):
+        if not self._clusters_prepared:
+            raise RuntimeError(
+                "Clusters must be prepared before building NeuralZip codebooks."
+            )
+        named_tensors = list(named_tensors)
+        sample_parts, total_sizes, stream_info = self._collect_codebook_samples(
+            named_tensors
+        )
 
         evaluations = []
         for key in sorted(sample_parts):
@@ -2970,29 +2970,8 @@ class NeuralZipCodec(ZipNNCodec):
                 decoded = chunk.payload
             elif chunk.mode == "zero":
                 decoded = b"\x00" * chunk.symbol_count
-            elif chunk.mode == "huffman":
-                decoded = huffman.decompress(
-                    huffman.HuffmanPayload(
-                        payload=chunk.payload,
-                        code_lengths=chunk.code_lengths,
-                        symbol_count=chunk.symbol_count,
-                    )
-                )
             elif chunk.mode == "local_huff0":
                 decoded = huff0.decompress_block(chunk.payload, chunk.symbol_count)
-            elif chunk.mode == "shared_huffman":
-                codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
-                decodebook = self._decode_codebooks.get(chunk.codebook_id)
-                if codebook is None or decodebook is None:
-                    raise ValueError(f"Missing shared codebook {chunk.codebook_id}.")
-                decoded = huffman.decompress_with_decodebook(
-                    huffman.HuffmanPayload(
-                        payload=chunk.payload,
-                        code_lengths=codebook.code_lengths,
-                        symbol_count=chunk.symbol_count,
-                    ),
-                    decodebook,
-                )
             elif chunk.mode in {"shared_huff0", "packed_huff0"}:
                 codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
                 decodebook = self._decode_codebooks.get(chunk.codebook_id)

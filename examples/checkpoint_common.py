@@ -10,6 +10,7 @@ from __future__ import annotations
 import gc
 import json
 import random
+from argparse import BooleanOptionalAction, Namespace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -38,6 +39,70 @@ def limited(dataset: Dataset, limit: int | None) -> Dataset:
     if limit is None or int(limit) >= len(dataset):
         return dataset
     return Subset(dataset, range(max(0, int(limit))))
+
+
+def add_checkpoint_run_arguments(
+    parser,
+    *,
+    epochs: int,
+    batch_size: int | None,
+    batch_size_help: str | None = None,
+    data_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Add execution options shared by vision and language trajectories."""
+
+    parser.add_argument("--epochs", type=int, default=epochs)
+    parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=batch_size,
+        help=batch_size_help,
+    )
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--threads", type=int, default=12)
+    parser.add_argument(
+        "--device",
+        default="cuda:0" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument("--data-dir", type=Path, default=data_dir)
+    parser.add_argument("--output-dir", type=Path, default=output_dir)
+    parser.add_argument(
+        "--existing-checkpoint-root",
+        type=Path,
+        help="Optional root containing complete <model>/checkpoints trajectories.",
+    )
+    parser.add_argument(
+        "--train-missing",
+        action=BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--train-only", action="store_true")
+    parser.add_argument("--compression-only", action="store_true")
+    parser.add_argument("--render-only", action="store_true")
+    parser.add_argument("--no-amp", action="store_true")
+
+
+def initialize_checkpoint_run(args: Namespace) -> Path:
+    """Validate common modes and initialize paths and CPU timing controls."""
+
+    modes = (args.train_only, args.compression_only, args.render_only)
+    if sum(map(bool, modes)) > 1:
+        raise ValueError(
+            "--train-only, --compression-only, and --render-only are mutually exclusive."
+        )
+    args.output_dir = args.output_dir.resolve()
+    args.data_dir = args.data_dir.resolve()
+    if args.existing_checkpoint_root is not None:
+        args.existing_checkpoint_root = args.existing_checkpoint_root.resolve()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    torch.set_num_threads(max(1, int(args.threads)))
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+    return args.output_dir / "checkpoint_results.csv"
 
 
 def atomic_torch_save(path: Path, value) -> None:
@@ -161,6 +226,79 @@ def find_complete_local_checkpoint_dir(
     return None
 
 
+def missing_checkpoint_slugs(
+    *,
+    slugs: Iterable[str],
+    external_root: Path | None,
+    output_dir: Path,
+    epochs: int,
+) -> list[str]:
+    """Return models without a complete external or local trajectory."""
+
+    return [
+        slug
+        for slug in slugs
+        if find_external_checkpoint_dir(external_root, slug, epochs) is None
+        and find_complete_local_checkpoint_dir(output_dir, slug, epochs) is None
+    ]
+
+
+def run_checkpoint_models(
+    *,
+    args: Namespace,
+    specs: Mapping,
+    result_path: Path,
+    local_source: str,
+    train_trajectory: Callable,
+    process_trajectory: Callable,
+    render_figure: Callable,
+    validate_results: Callable,
+) -> None:
+    """Reuse, train, and compress each requested checkpoint trajectory."""
+
+    for slug in args.models:
+        spec = specs[slug]
+        checkpoint_dir = find_external_checkpoint_dir(
+            args.existing_checkpoint_root,
+            slug,
+            args.epochs,
+        )
+        if checkpoint_dir is not None:
+            source = "external-existing"
+            print(f"[{slug}] reuse checkpoints from {checkpoint_dir}", flush=True)
+        else:
+            checkpoint_dir = find_complete_local_checkpoint_dir(
+                args.output_dir,
+                slug,
+                args.epochs,
+            )
+            if checkpoint_dir is not None:
+                source = local_source
+                print(
+                    f"[{slug}] reuse locally trained checkpoints from {checkpoint_dir}",
+                    flush=True,
+                )
+            else:
+                if args.compression_only or not args.train_missing:
+                    raise FileNotFoundError(
+                        f"No complete epoch 0..{args.epochs} trajectory for {slug}."
+                    )
+                checkpoint_dir = train_trajectory(spec)
+                source = local_source
+        if args.train_only:
+            print(f"[{slug}] train-only complete: {checkpoint_dir}", flush=True)
+            continue
+        process_trajectory(spec, checkpoint_dir, source, args, result_path)
+        rendered = render_figure(result_path, args.output_dir)
+        print(f"[{slug}] rendered={rendered}", flush=True)
+
+    if not args.train_only:
+        validate_results(result_path, models=args.models, epochs=args.epochs)
+        rendered = render_figure(result_path, args.output_dir)
+        print(f"final_rendered={rendered}", flush=True)
+    print(f"results={result_path}", flush=True)
+
+
 def load_or_fit_frozen_codec(
     *,
     slug: str,
@@ -177,11 +315,8 @@ def load_or_fit_frozen_codec(
     is recorded only to describe a newly fitted plan.
     """
 
-    from examples.checkpoint_compression import (
-        load_codec_plan,
-        save_codec_plan,
-        setup_neuralzip,
-    )
+    from examples.checkpoint_compression import setup_neuralzip
+    from neuralzip import NeuralZipPlan
 
     files = checkpoint_files(checkpoint_dir, epochs)
     if 0 not in files:
@@ -205,7 +340,7 @@ def load_or_fit_frozen_codec(
                 f"Frozen plan in {plan_path} used threads={setup.get('threads')}, "
                 f"not {threads}; use a fresh output directory."
             )
-        plan = load_codec_plan(plan_path)
+        plan = NeuralZipPlan.load(plan_path)
         if plan.digest != setup["codebook_digest"]:
             raise RuntimeError(f"Frozen NeuralZip plan is corrupt: {plan_path}.")
         print(f"[{slug}] loaded frozen epoch-0 NeuralZip plan", flush=True)
@@ -221,7 +356,7 @@ def load_or_fit_frozen_codec(
             "enable_prepacked_cache": False,
             **dict(metadata),
         }
-        save_codec_plan(plan_path, plan, named_tensors)
+        plan.save(plan_path, named_tensors)
         atomic_write_json(setup_path, setup)
 
     print(

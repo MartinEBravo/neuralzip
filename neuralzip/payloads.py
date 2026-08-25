@@ -34,7 +34,6 @@ class StreamChunk:
     mode: str
     symbol_count: int
     payload: bytes = b""
-    code_lengths: bytes = b""
     codebook_id: int | None = None
     token_count: int | None = None
     escape_payload: bytes = b""
@@ -49,7 +48,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        return stream_chunk_metadata_bytes(self.mode, len(self.code_lengths))
+        return stream_chunk_metadata_bytes(self.mode)
 
     @property
     def compressed_bytes(self):
@@ -76,18 +75,8 @@ class ByteGroupPayload:
 
     @property
     def huffman_chunks(self):
-        modes = {
-            "huffman",
-            "local_huff0",
-            "shared_huffman",
-            "shared_huff0",
-            "packed_huff0",
-        }
+        modes = {"local_huff0", "shared_huff0", "packed_huff0"}
         return sum(chunk.mode in modes for chunk in self.chunks)
-
-    @property
-    def local_huffman_chunks(self):
-        return sum(chunk.mode in {"huffman", "local_huff0"} for chunk in self.chunks)
 
     @property
     def local_huff0_chunks(self):
@@ -106,17 +95,9 @@ class ByteGroupPayload:
         return sum(chunk.mode == "zero" for chunk in self.chunks)
 
     @property
-    def shared_codebook_defs(self):
-        return sum(
-            chunk.mode == "shared_huffman" and bool(chunk.code_lengths)
-            for chunk in self.chunks
-        )
-
-    @property
     def shared_codebook_refs(self):
         return sum(
-            (chunk.mode == "shared_huffman" and not chunk.code_lengths)
-            or chunk.mode in {"shared_huff0", "packed_huff0"}
+            chunk.mode in {"shared_huff0", "packed_huff0"}
             for chunk in self.chunks
         )
 
@@ -190,16 +171,8 @@ class TensorPayload:
         return sum(group.zero_chunks for group in self.groups)
 
     @property
-    def shared_codebook_defs(self):
-        return sum(getattr(group, "shared_codebook_defs", 0) for group in self.groups)
-
-    @property
     def shared_codebook_refs(self):
         return sum(getattr(group, "shared_codebook_refs", 0) for group in self.groups)
-
-    @property
-    def local_huffman_chunks(self):
-        return sum(getattr(group, "local_huffman_chunks", 0) for group in self.groups)
 
     @property
     def local_huff0_chunks(self):

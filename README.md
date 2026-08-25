@@ -20,7 +20,7 @@ the local ZipNN-compatible implementation.
 For each supported floating-point tensor, the codec applies the same high-level
 strategy as ZipNN: dtype-aware bit/byte reordering, byte-position grouping,
 chunked Huffman compression, and raw fallback when a chunk does not pass the
-compression threshold. Huffman is implemented in the compiled C++ extension
+compression threshold. Huff0 is implemented in the compiled C++ extension
 `neuralzip._huff0_cpp`.
 
 `Compressor("zipnn-src")` calls the official `zipnn` package from the
@@ -34,8 +34,7 @@ For each cluster and byte stream, a bounded sample evaluates raw storage, local
 Huff0, a shared Huff0 codebook, and packed-exponent Huff0 with `n` in
 `{2, 3, 4}`. Packed modes use a Top-K vocabulary, an escape symbol for unseen
 n-grams, and a raw tail, so reconstruction remains bitwise exact. New shared
-and packed payloads use explicit four-stream Huff0 frames; legacy one-stream
-archives remain decodable.
+and packed payloads use explicit four-stream Huff0 frames.
 
 The JS threshold is controlled by `cluster_js_threshold`; sample size by
 `max_codebook_sample_bytes`; and the packed candidates by `ngram_values` and

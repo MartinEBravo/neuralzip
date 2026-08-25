@@ -19,16 +19,16 @@ if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
 from examples.checkpoint_common import (  # noqa: E402
+    add_checkpoint_run_arguments,
     atomic_torch_save,
-    checkpoint_files,
-    find_complete_local_checkpoint_dir,
-    find_external_checkpoint_dir,
+    initialize_checkpoint_run,
     limited,
     load_or_fit_frozen_codec,
-    read_csv,
+    missing_checkpoint_slugs,
     render_checkpoint_figure,
     restore_rng_state,
     rng_state,
+    run_checkpoint_models,
     run_checkpoint_trajectory,
     set_seed,
     upsert_model_epoch_row,
@@ -40,15 +40,11 @@ from examples.checkpoint_compression import (  # noqa: E402
     BASE_RESULT_FIELDS,
     CODEC_PROTOCOL_VERSION,
     ENCODER_PATHS,
-    benchmark_neuralzip,
-    benchmark_zipnn_src,
     benchmark_checkpoint_codecs,
     completed_checkpoint_methods,
+    floating_state,
     is_current_codec_result,
-    load_codec_plan,
     nonfloating_state,
-    save_codec_plan,
-    setup_neuralzip,
     tensor_digest,
 )
 
@@ -104,13 +100,13 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--models", nargs="+", choices=tuple(MODEL_SPECS), default=list(DEFAULT_MODELS))
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--threads", type=int, default=12)
-    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "examples" / "outputs" / "datasets" / "cifar100_hf")
+    add_checkpoint_run_arguments(
+        parser,
+        epochs=50,
+        batch_size=128,
+        data_dir=ROOT / "examples" / "outputs" / "datasets" / "cifar100_hf",
+        output_dir=ROOT / "results" / "final-checkpoints-cifar100",
+    )
     parser.add_argument(
         "--dataset-source",
         choices=("auto", "hf-parquet", "torchvision"),
@@ -119,33 +115,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--test-limit", type=int)
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=ROOT / "results" / "final-checkpoints-cifar100",
-    )
-    parser.add_argument(
-        "--existing-checkpoint-root",
-        type=Path,
-        help=(
-            "Optional root containing <model>/checkpoints. Complete external "
-            "trajectories are recompressed without retraining."
-        ),
-    )
-    parser.add_argument(
-        "--train-missing",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Train models whose requested checkpoints are not available externally.",
-    )
-    parser.add_argument(
-        "--train-only",
-        action="store_true",
-        help="Train and save exact checkpoints without running either compressor.",
-    )
-    parser.add_argument("--compression-only", action="store_true")
-    parser.add_argument("--render-only", action="store_true")
-    parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="Tiny synthetic code-path check; never thesis data.")
     return parser.parse_args()
 
@@ -308,19 +277,6 @@ def checkpoint_state(checkpoint: Mapping) -> Mapping[str, torch.Tensor]:
     return state
 
 
-def floating_state(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    tensors = {
-        str(name): tensor.detach().cpu().contiguous()
-        for name, tensor in state.items()
-        if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.numel() > 0
-    }
-    invalid = {name: tensor.dtype for name, tensor in tensors.items() if tensor.dtype != torch.float32}
-    if invalid:
-        preview = ", ".join(f"{name}={dtype}" for name, dtype in list(invalid.items())[:8])
-        raise TypeError(f"Final checkpoint suite requires exact FP32 tensors; got {preview}.")
-    return tensors
-
-
 def model_checkpoint_path(checkpoint_dir: Path, slug: str, epoch: int) -> Path:
     return checkpoint_dir / f"{slug}_cifar100_epoch_{int(epoch):03d}.pt"
 
@@ -330,12 +286,8 @@ def cpu_model_state(model: nn.Module) -> dict[str, torch.Tensor]:
         name: tensor.detach().cpu().contiguous().clone()
         for name, tensor in model.state_dict().items()
     }
-    floating_state(state)
+    floating_state(state, error_prefix="Final checkpoint suite")
     return state
-
-
-def completed_methods(result_path: Path, slug: str, epoch: int) -> set[str]:
-    return completed_checkpoint_methods(result_path, slug, epoch)
 
 
 def benchmark_checkpoint(
@@ -349,14 +301,14 @@ def benchmark_checkpoint(
     args: argparse.Namespace,
     result_path: Path,
 ) -> None:
-    done = completed_methods(result_path, spec.slug, epoch)
+    done = completed_checkpoint_methods(result_path, spec.slug, epoch)
     if done == {"NeuralZip", "ZipNN src"}:
         print(f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True)
         return
 
     checkpoint = load_torch_checkpoint(path)
     state = checkpoint_state(checkpoint)
-    tensors = floating_state(state)
+    tensors = floating_state(state, error_prefix="Final checkpoint suite")
     nonfloating = nonfloating_state(state)
     print(
         f"[{spec.slug}] epoch={epoch:03d} tensors={len(tensors)} "
@@ -628,14 +580,6 @@ def train_model(
     return checkpoint_dir
 
 
-def external_checkpoint_dir(root: Path | None, spec: ModelSpec, epochs: int) -> Path | None:
-    return find_external_checkpoint_dir(root, spec.slug, epochs)
-
-
-def complete_local_checkpoint_dir(output_dir: Path, spec: ModelSpec, epochs: int) -> Path | None:
-    return find_complete_local_checkpoint_dir(output_dir, spec.slug, epochs)
-
-
 def frozen_codec_for_trajectory(
     spec: ModelSpec,
     checkpoint_dir: Path,
@@ -643,7 +587,10 @@ def frozen_codec_for_trajectory(
     args: argparse.Namespace,
 ):
     def prepare(checkpoint):
-        tensors = floating_state(checkpoint_state(checkpoint))
+        tensors = floating_state(
+            checkpoint_state(checkpoint),
+            error_prefix="Final checkpoint suite",
+        )
         return (
             list(tensors.items()),
             {"epoch0_tensor_digest": tensor_digest(tensors.items())},
@@ -749,9 +696,6 @@ def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:
 
 def main() -> None:
     args = parse_args()
-    exclusive_modes = sum(bool(value) for value in (args.train_only, args.compression_only, args.render_only))
-    if exclusive_modes > 1:
-        raise ValueError("--train-only, --compression-only, and --render-only are mutually exclusive.")
     if args.smoke:
         args.models = [args.models[0]]
         args.epochs = 1
@@ -759,96 +703,60 @@ def main() -> None:
         args.num_workers = 0
         args.device = "cpu"
         args.output_dir = args.output_dir / "smoke"
-    args.output_dir = args.output_dir.resolve()
-    args.data_dir = args.data_dir.resolve()
-    if args.existing_checkpoint_root is not None:
-        args.existing_checkpoint_root = args.existing_checkpoint_root.resolve()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    torch.set_num_threads(max(1, int(args.threads)))
-    try:
-        torch.set_num_interop_threads(1)
-    except RuntimeError:
-        pass
+    result_path = initialize_checkpoint_run(args)
     if args.render_only:
         validate_complete_results(
-            args.output_dir / "checkpoint_results.csv",
+            result_path,
             models=args.models,
             epochs=args.epochs,
         )
-        rendered = render_figure(args.output_dir / "checkpoint_results.csv", args.output_dir)
-        print(f"rendered={rendered}", flush=True)
+        print(f"rendered={render_figure(result_path, args.output_dir)}", flush=True)
         return
 
-    result_path = args.output_dir / "checkpoint_results.csv"
     train_data = test_data = None
     dataset_name = (
         "uoft-cs/cifar100-parquet"
         if not args.smoke and find_hf_parquet(args.data_dir) is not None
         else None
     )
-    if not args.compression_only:
-        need_training = any(
-            external_checkpoint_dir(args.existing_checkpoint_root, MODEL_SPECS[slug], args.epochs)
-            is None
-            and complete_local_checkpoint_dir(args.output_dir, MODEL_SPECS[slug], args.epochs)
-            is None
-            for slug in args.models
-        )
-        if need_training:
-            if not args.train_missing:
-                raise FileNotFoundError("Requested checkpoints are missing and --no-train-missing was set.")
-            train_data, test_data, dataset_name = load_cifar100(args)
-            train_data = limited(train_data, args.train_limit)
-            test_data = limited(test_data, args.test_limit)
+    if not args.compression_only and missing_checkpoint_slugs(
+        slugs=args.models,
+        external_root=args.existing_checkpoint_root,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+    ):
+        if not args.train_missing:
+            raise FileNotFoundError(
+                "Requested checkpoints are missing and --no-train-missing was set."
+            )
+        train_data, test_data, dataset_name = load_cifar100(args)
+        train_data = limited(train_data, args.train_limit)
+        test_data = limited(test_data, args.test_limit)
     write_metadata(args, dataset_name or "CIFAR-100 checkpoint trajectories")
 
-    for slug in args.models:
-        spec = MODEL_SPECS[slug]
-        external = external_checkpoint_dir(args.existing_checkpoint_root, spec, args.epochs)
-        if external is not None:
-            checkpoint_dir = external
-            source = "external-existing"
-            print(f"[{slug}] reuse checkpoints from {checkpoint_dir}", flush=True)
-        else:
-            local = complete_local_checkpoint_dir(args.output_dir, spec, args.epochs)
-            if local is not None:
-                checkpoint_dir = local
-                source = "trained-by-final-runner"
-                print(f"[{slug}] reuse locally trained checkpoints from {checkpoint_dir}", flush=True)
-            else:
-                if args.compression_only or not args.train_missing:
-                    raise FileNotFoundError(
-                        f"No complete epoch 0..{args.epochs} trajectory for {slug}."
-                    )
-                if train_data is None or test_data is None or dataset_name is None:
-                    raise RuntimeError("Training data were not initialized.")
-                checkpoint_dir = train_model(
-                    spec,
-                    train_data,
-                    test_data,
-                    dataset_name,
-                    args,
-                    args.output_dir / slug,
-                    args.output_dir / slug / "training_metrics.csv",
-                )
-                source = "trained-by-final-runner"
-        if args.train_only:
-            print(f"[{slug}] train-only complete: {checkpoint_dir}", flush=True)
-            continue
-        process_trajectory(spec, checkpoint_dir, source, args, result_path)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"[{slug}] rendered={rendered}", flush=True)
-
-    if not args.train_only:
-        validate_complete_results(
-            result_path,
-            models=args.models,
-            epochs=args.epochs,
+    def train_trajectory(spec: ModelSpec) -> Path:
+        if train_data is None or test_data is None or dataset_name is None:
+            raise RuntimeError("Training data were not initialized.")
+        return train_model(
+            spec,
+            train_data,
+            test_data,
+            dataset_name,
+            args,
+            args.output_dir / spec.slug,
+            args.output_dir / spec.slug / "training_metrics.csv",
         )
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"final_rendered={rendered}", flush=True)
 
-    print(f"results={result_path}", flush=True)
+    run_checkpoint_models(
+        args=args,
+        specs=MODEL_SPECS,
+        result_path=result_path,
+        local_source="trained-by-final-runner",
+        train_trajectory=train_trajectory,
+        process_trajectory=process_trajectory,
+        render_figure=render_figure,
+        validate_results=validate_complete_results,
+    )
     print(f"figure={args.output_dir / 'figures' / 'checkpoint_training.pdf'}", flush=True)
 
 

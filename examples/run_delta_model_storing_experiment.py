@@ -21,7 +21,8 @@ from neuralzip.checkpoint_loading import (
     iter_safetensors_shards,
 )
 from neuralzip.ablations import _delta_stream, zipnn_exponent_stream
-from neuralzip.model_experiments import _load_vision_diffusion_mapping, _normalise_dtype
+from neuralzip.dtypes import resolve_torch_dtype
+from neuralzip.model_loading import load_vision_model
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -48,7 +49,7 @@ TARGET_LANGUAGE_MODELS = {
 
 
 def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):
-    target_dtype = _normalise_dtype(dtype)
+    target_dtype = resolve_torch_dtype(dtype)
     if target_dtype == "auto":
         target_dtype = None
 
@@ -226,7 +227,7 @@ def _language_model_metrics(spec, *, dtype, chunk_size, layout, local_files_only
 
 def _vision_model_metrics(spec, *, dtype, chunk_size, layout, local_files_only):
     start = time.perf_counter()
-    tensors, metadata = _load_vision_diffusion_mapping(
+    tensors, metadata = load_vision_model(
         spec,
         dtype=dtype,
         local_files_only=local_files_only,

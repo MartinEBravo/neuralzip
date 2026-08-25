@@ -1,6 +1,5 @@
 import unittest
 from dataclasses import replace
-from unittest import mock
 
 import torch
 
@@ -10,18 +9,12 @@ from neuralzip.archive import (
     serialized_tensor_size,
 )
 from neuralzip.codec_protocol import (
-    CODEC_PROTOCOL_VERSION,
     assert_tensor_roundtrip,
     encode_tensor_batch,
     measure_compressor_exponents,
     measure_exponent_streams,
     payload_exponent_sizes,
     prepare_neuralzip_codec,
-)
-from neuralzip.experiment_scenarios import (
-    _compress_mapping,
-    _model_methods_completed,
-    _upsert_model_compressor_row,
 )
 from neuralzip.payloads import (
     ByteGroupPayload,
@@ -250,99 +243,6 @@ class CodecProtocolTests(unittest.TestCase):
                 method="test",
                 checkpoint="checkpoint",
             )
-
-    def test_mapping_preserves_codec_timing_fields(self):
-        result = {
-            "method": "neuralzip",
-            "raw_bytes": 100,
-            "compressed_bytes": 50,
-            "compression_ratio": 0.5,
-            "encode_seconds": 1.0,
-            "compression_seconds": 2.0,
-            "total_compression_seconds": 3.0,
-            "cold_encode_seconds": 4.0,
-            "precompute_seconds": 0.5,
-            "codebook_setup_seconds": 0.5,
-            "tensor_results": (),
-        }
-        compressor = mock.Mock()
-        compressor.compress.return_value = result
-        with mock.patch(
-            "neuralzip.model_experiments.Compressor",
-            return_value=compressor,
-        ):
-            rows = _compress_mapping(
-                "model",
-                {"weight": torch.ones(1)},
-                methods=(("NeuralZip", "neuralzip"),),
-            )
-
-        self.assertEqual(rows[0]["compression_seconds"], 2.0)
-        self.assertEqual(rows[0]["total_compression_seconds"], 3.0)
-        self.assertEqual(rows[0]["cold_encode_seconds"], 4.0)
-
-    def test_mapping_cascades_missing_timing_fields_from_encode(self):
-        result = {
-            "method": "zipnn-src",
-            "raw_bytes": 100,
-            "compressed_bytes": 50,
-            "compression_ratio": 0.5,
-            "encode_seconds": 1.25,
-            "tensor_results": (),
-        }
-        compressor = mock.Mock()
-        compressor.compress.return_value = result
-        with mock.patch(
-            "neuralzip.model_experiments.Compressor",
-            return_value=compressor,
-        ):
-            row = _compress_mapping(
-                "model",
-                {"weight": torch.ones(1)},
-                methods=(("ZipNN", "zipnn-src"),),
-            )[0]
-
-        self.assertEqual(row["compression_seconds"], 1.25)
-        self.assertEqual(row["total_compression_seconds"], 1.25)
-        self.assertEqual(row["cold_encode_seconds"], 1.25)
-
-    def test_model_resume_rejects_rows_without_current_encoder_protocol(self):
-        methods = (("NeuralZip", "neuralzip"),)
-        legacy = {
-            "model_name": "model",
-            "compressor": "NeuralZip",
-            "method": "neuralzip",
-            "status": "ok",
-        }
-        self.assertFalse(_model_methods_completed([legacy], "model", methods))
-
-        current = {
-            **legacy,
-            "codec_protocol_version": float(CODEC_PROTOCOL_VERSION),
-            "encoder_path": "compress_tensors",
-        }
-        self.assertTrue(_model_methods_completed([current], "model", methods))
-        current["codec_protocol_version"] = CODEC_PROTOCOL_VERSION + 0.5
-        self.assertFalse(_model_methods_completed([current], "model", methods))
-
-    def test_model_result_upsert_replaces_legacy_compressor_row(self):
-        rows = [
-            {
-                "model_name": "model",
-                "compressor": "NeuralZip",
-                "codec_protocol_version": None,
-            }
-        ]
-        current = {
-            "model_name": "model",
-            "compressor": "NeuralZip",
-            "codec_protocol_version": CODEC_PROTOCOL_VERSION,
-        }
-
-        _upsert_model_compressor_row(rows, current)
-
-        self.assertEqual(rows, [current])
-
 
 if __name__ == "__main__":
     unittest.main()

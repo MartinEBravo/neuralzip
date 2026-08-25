@@ -48,10 +48,8 @@ EXPECTED_FAMILY_ORDER = {
 EXPECTED_SNAPSHOTS = {
     "MODEL_SPECS": (51, "2e1c215e1de86d7c100c3fc74dae6b6f782871f6732525c14bcdb73ef0d34ca5"),
     "MODEL_SUITE": (22, "25fd794519b7bafefedcf1eab3d8931f8c2e382069b0a7c1fb7f90dbb7fb4930"),
-    "MOE_MODEL_SUITE": (10, "7e99d81d1f89cd884a1ff8804f549d4a6e075e2b6a8855808b791408627f568a"),
     "LOSSY_LOSSLESS_MODEL_SUITE": (10, "a2fa96dfad5ef681cbf42fe8c27a8eeeb2da8d14a4329f5d13764f9e0dd59733"),
     "VISION_DIFFUSION_MODEL_SUITE": (6, "1bc11c6068c9cafd4c87eaeb7c425e556a335c1dab3f8b70a5ee8d3e587bfeb4"),
-    "COMPRESSOR_SUITE": (1, "be9ed20b1151ffd3caca4f6e6d4512c56ced54aa0f40d079d318f10c8ef7c976"),
 }
 
 
@@ -111,9 +109,6 @@ class ModelCatalogTests(unittest.TestCase):
             for spec in model_catalog.MODEL_SPECS
             if "model-storing" in spec.suites and "vision" not in spec.suites
         )
-        moe_specs = tuple(
-            spec for spec in model_catalog.MODEL_SPECS if "moe" in spec.suites
-        )
         distilled_specs = tuple(
             spec
             for spec in model_catalog.MODEL_SPECS
@@ -122,7 +117,6 @@ class ModelCatalogTests(unittest.TestCase):
 
         for specs, entries in (
             (model_specs, config.MODEL_SUITE),
-            (moe_specs, config.MOE_MODEL_SUITE),
             (distilled_specs, config.LOSSY_LOSSLESS_MODEL_SUITE[-4:]),
         ):
             self.assertEqual(
@@ -156,10 +150,6 @@ class ModelCatalogTests(unittest.TestCase):
                 "model-storing",
                 None,
             ),
-        )
-        self.assertEqual(
-            tuple(entry["category"] for entry in config.MOE_MODEL_SUITE),
-            ("moe",) * 10,
         )
         self.assertEqual(
             tuple(entry["category"] for entry in config.LOSSY_LOSSLESS_MODEL_SUITE),

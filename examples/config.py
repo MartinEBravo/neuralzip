@@ -66,46 +66,6 @@ MODEL_SUITE = [
     if "model-storing" in spec.suites and "vision" not in spec.suites
 ]
 
-COMPRESSOR_SUITE = [
-    {
-        "name": "NeuralZip",
-        "method": "neuralzip",
-        "verify": False,
-        "description": (
-            "the unified codec: Jensen-Shannon tensor clusters, shared Huff0 "
-            "codebooks, and packed exponent n-grams selected per cluster/stream."
-        ),
-    },
-]
-
-_MOE_ACCESS_BY_KEY = {
-    "zaya1-8b": "open",
-    "lfm25-8b-a1b": "open",
-    "jetmoe-8b": "open",
-    "olmoe-1b-7b-0125": "open",
-    "qwen15-moe-a27b": "open",
-    "qwen3-30b-a3b": "open",
-    "qwen35-35b-a3b": "open",
-    "deepseek-moe-16b": "open",
-    "mixtral-8x7b": "open",
-    "gemma4-26b-a4b": "gated-or-token",
-}
-
-
-MOE_MODEL_SUITE = [
-    _catalog_entry(
-        spec,
-        {
-            "default_dtype": "bf16",
-            "category": "moe",
-            "access": _MOE_ACCESS_BY_KEY[spec.key],
-        },
-    )
-    for spec in MODEL_SPECS
-    if "moe" in spec.suites
-]
-
-
 _DISTILLED_ACCESS_BY_KEY = {
     "deepseek-r1-distill-llama-8b": "open",
     "deepseek-r1-distill-qwen-7b": "open",

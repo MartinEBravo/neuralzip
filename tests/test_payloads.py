@@ -22,24 +22,6 @@ class StreamChunkMetadataTests(unittest.TestCase):
             ),
             (
                 StreamChunk(
-                    "huffman",
-                    3,
-                    b"bits",
-                    code_lengths=b"lengths",
-                ),
-                SHARED_CHUNK_METADATA_BYTES + len(b"lengths"),
-            ),
-            (
-                StreamChunk(
-                    "shared_huffman",
-                    3,
-                    b"bits",
-                    codebook_id=7,
-                ),
-                SHARED_CHUNK_METADATA_BYTES,
-            ),
-            (
-                StreamChunk(
                     "shared_huff0",
                     3,
                     b"bits",
@@ -66,10 +48,7 @@ class StreamChunkMetadataTests(unittest.TestCase):
             with self.subTest(mode=chunk.mode):
                 self.assertEqual(chunk.metadata_bytes, expected_metadata_bytes)
                 self.assertEqual(
-                    stream_chunk_metadata_bytes(
-                        chunk.mode,
-                        len(chunk.code_lengths),
-                    ),
+                    stream_chunk_metadata_bytes(chunk.mode),
                     expected_metadata_bytes,
                 )
                 group = ByteGroupPayload("stream", chunk.symbol_count, (chunk,))

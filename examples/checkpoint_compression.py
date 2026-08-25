@@ -119,6 +119,29 @@ def nonfloating_state(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tens
     }
 
 
+def floating_state(
+    state: Mapping[str, torch.Tensor],
+    *,
+    error_prefix: str,
+) -> dict[str, torch.Tensor]:
+    tensors = {
+        str(name): tensor.detach().cpu().contiguous()
+        for name, tensor in state.items()
+        if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.numel()
+    }
+    invalid = {
+        name: tensor.dtype
+        for name, tensor in tensors.items()
+        if tensor.dtype != torch.float32
+    }
+    if invalid:
+        preview = ", ".join(
+            f"{name}={dtype}" for name, dtype in list(invalid.items())[:8]
+        )
+        raise TypeError(f"{error_prefix} require exact FP32 tensors; got {preview}.")
+    return tensors
+
+
 def exponent_metrics(payloads, codebooks=()) -> dict[str, int | float]:
     report = measure_exponent_streams(payloads, codebooks)
     return {
@@ -180,18 +203,6 @@ def setup_neuralzip(
         "epoch": 0,
         "scope": "one frozen plan per training trajectory",
     }
-
-
-def save_codec_plan(
-    path: Path,
-    plan,
-    named_tensors: Iterable[tuple[str, torch.Tensor]],
-) -> None:
-    _as_plan(plan).save(path, named_tensors)
-
-
-def load_codec_plan(path: Path) -> NeuralZipPlan:
-    return NeuralZipPlan.load(path)
 
 
 def _encode_batch(plan, named_tensors):

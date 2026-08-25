@@ -16,7 +16,7 @@ from .serialization import (
 
 MAGIC = b"NZP1"
 VERSION = 2
-SUPPORTED_VERSIONS = {1, VERSION}
+
 
 def _write_struct(handle, fmt, *values):
     handle.write(struct.pack("<" + fmt, *values))
@@ -60,9 +60,7 @@ def _write_chunk(handle, chunk):
         raise ValueError(f"Unsupported archive chunk mode {chunk.mode!r}.")
     _write_struct(handle, "BQ", CHUNK_MODE_IDS[chunk.mode], int(chunk.symbol_count))
     _write_bytes(handle, chunk.payload)
-    if chunk.mode == "huffman":
-        _write_bytes(handle, chunk.code_lengths)
-    elif chunk.mode in {"shared_huffman", "shared_huff0"}:
+    if chunk.mode == "shared_huff0":
         if chunk.codebook_id is None:
             raise ValueError(f"{chunk.mode} chunk is missing its codebook id.")
         _write_struct(handle, "q", int(chunk.codebook_id))
@@ -213,9 +211,7 @@ def _read_chunk(reader):
         "symbol_count": symbol_count,
         "payload": reader.bytes(),
     }
-    if mode == "huffman":
-        values["code_lengths"] = reader.bytes()
-    elif mode in {"shared_huffman", "shared_huff0"}:
+    if mode == "shared_huff0":
         values["codebook_id"] = reader.unpack("q")[0]
     elif mode == "packed_huff0":
         codebook_id, token_count, ngram_n = reader.unpack("qQB")
@@ -280,7 +276,7 @@ def load(source):
         if reader.read_exact(len(MAGIC)) != MAGIC:
             raise ValueError("Not a NeuralZip archive.")
         (version,) = reader.unpack("H")
-        if version not in SUPPORTED_VERSIONS:
+        if version != VERSION:
             raise ValueError(f"Unsupported NeuralZip archive version {version}.")
         method = reader.text()
         (codebook_count,) = reader.unpack("Q")

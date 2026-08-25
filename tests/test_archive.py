@@ -68,9 +68,6 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(decoded["codebooks"], (codebook,))
         self.assertEqual(decoded["tensor_results"][0]["payload"], tensor)
 
-        version_one = encoded[:4] + b"\x01\x00" + encoded[6:]
-        self.assertEqual(loads(version_one)["tensor_results"][0]["payload"], tensor)
-
     def test_local_huff0_chunk_roundtrip(self):
         chunk = StreamChunk(
             mode="local_huff0",

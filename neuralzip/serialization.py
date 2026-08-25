@@ -11,8 +11,6 @@ import struct
 CHUNK_MODE_IDS = {
     "raw": 0,
     "zero": 1,
-    "huffman": 2,
-    "shared_huffman": 3,
     "shared_huff0": 4,
     "packed_huff0": 5,
     "local_huff0": 6,
@@ -45,16 +43,12 @@ PACKED_CHUNK_METADATA_BYTES = (
 )
 
 
-def stream_chunk_metadata_bytes(mode, code_lengths_bytes=0):
+def stream_chunk_metadata_bytes(mode):
     """Return archive metadata overhead for one encoded stream chunk."""
 
     if mode not in CHUNK_MODE_IDS:
         raise ValueError(f"Unsupported archive chunk mode {mode!r}.")
-    if mode == "huffman":
-        return RAW_CHUNK_METADATA_BYTES + _struct_size("Q") + int(
-            code_lengths_bytes
-        )
-    if mode in {"shared_huffman", "shared_huff0"}:
+    if mode == "shared_huff0":
         return SHARED_CHUNK_METADATA_BYTES
     if mode == "packed_huff0":
         return PACKED_CHUNK_METADATA_BYTES
@@ -62,10 +56,12 @@ def stream_chunk_metadata_bytes(mode, code_lengths_bytes=0):
 
 
 def serialized_chunk_size(chunk):
-    return stream_chunk_metadata_bytes(
-        chunk.mode,
-        len(chunk.code_lengths),
-    ) + len(chunk.payload) + len(chunk.escape_payload) + len(chunk.tail_payload)
+    return (
+        stream_chunk_metadata_bytes(chunk.mode)
+        + len(chunk.payload)
+        + len(chunk.escape_payload)
+        + len(chunk.tail_payload)
+    )
 
 
 def serialized_group_size(group):

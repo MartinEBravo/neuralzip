@@ -13,12 +13,6 @@ huff0_link_args = [] if os.name == "nt" else ["-pthread"]
 setup(
     ext_modules=[
         Extension(
-            "neuralzip._huffman_cpp",
-            sources=["neuralzip/_huffman_cpp.cpp"],
-            language="c++",
-            extra_compile_args=compile_args,
-        ),
-        Extension(
             "neuralzip._huff0_cpp",
             sources=[
                 "neuralzip/_huff0_cpp.cpp",
@@ -43,12 +37,6 @@ setup(
             language="c++",
             extra_compile_args=huff0_compile_args,
             extra_link_args=huff0_link_args,
-        ),
-        Extension(
-            "neuralzip._arithmetic_cpp",
-            sources=["neuralzip/_arithmetic_cpp.cpp"],
-            language="c++",
-            extra_compile_args=compile_args,
         ),
     ]
 )

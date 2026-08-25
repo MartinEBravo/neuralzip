@@ -12,7 +12,6 @@ from neuralzip.checkpoint_loading import (
     resolve_weight_map,
     select_safetensors_weights,
 )
-from neuralzip.model_experiments import _load_safetensors_mapping
 
 
 def _indexed_snapshot(path: Path) -> None:
@@ -133,24 +132,6 @@ def test_snapshot_download_uses_one_strict_selector(tmp_path, monkeypatch):
             "revision": "a" * 40,
         }
     ]
-
-
-def test_model_mapping_loader_uses_authoritative_selection(tmp_path, monkeypatch):
-    _indexed_snapshot(tmp_path)
-    save_file({"alternate": torch.ones(1)}, tmp_path / "alternate.safetensors")
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
-        lambda **_kwargs: str(tmp_path),
-    )
-
-    tensors = _load_safetensors_mapping(
-        "owner/model",
-        dtype=torch.bfloat16,
-        local_files_only=True,
-    )
-
-    assert set(tensors) == {"a.weight", "b.weight"}
-    assert all(tensor.dtype == torch.bfloat16 for tensor in tensors.values())
 
 
 def test_torch_checkpoint_loader_rejects_non_mapping_payload(tmp_path):

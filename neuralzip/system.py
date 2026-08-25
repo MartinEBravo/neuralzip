@@ -1,5 +1,6 @@
 """Stable host and CPU metadata shared by experiment runners."""
 
+import importlib
 import importlib.metadata
 import os
 from pathlib import Path
@@ -15,6 +16,16 @@ def package_version(name):
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def package_versions(*names):
+    """Return installed versions for each distribution name."""
+    return {name: package_version(name) for name in names}
+
+
+def module_path(name):
+    """Return the resolved file backing an imported module."""
+    return Path(str(importlib.import_module(name).__file__)).resolve()
 
 
 def cpu_affinity():

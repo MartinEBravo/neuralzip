@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from . import huff0, huffman
+from . import huff0
 from .dtypes import FLOAT_DTYPES_BY_NAME, dtype_name
 from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
@@ -28,11 +28,6 @@ ZIPNN_DTYPE_CONFIG = {
         "bit_reorder": 0,
     },
 }
-
-
-# Compatibility alias for callers that historically imported this private
-# helper from ``zipnn_codec``.
-_dtype_name = dtype_name
 
 
 def _tensor_raw_bytes(tensor):
@@ -286,16 +281,6 @@ class ZipNNCodec:
                 output.extend(b"\x00" * chunk.symbol_count)
             elif chunk.mode == "raw":
                 output.extend(chunk.payload)
-            elif chunk.mode == "huffman":
-                output.extend(
-                    huffman.decompress(
-                        huffman.HuffmanPayload(
-                            payload=chunk.payload,
-                            code_lengths=chunk.code_lengths,
-                            symbol_count=chunk.symbol_count,
-                        )
-                    )
-                )
             elif chunk.mode == "local_huff0":
                 output.extend(huff0.decompress_block(chunk.payload, chunk.symbol_count))
             else:

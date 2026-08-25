@@ -125,9 +125,9 @@ PAIR_SPECS = {
     )
 }
 
-SHARED_MODES = {"shared_huffman", "shared_huff0", "packed_huff0"}
+SHARED_MODES = {"shared_huff0", "packed_huff0"}
 PACKED_MODES = {"packed_huff0"}
-LOCAL_MODES = {"huffman", "local_huff0"}
+LOCAL_MODES = {"local_huff0"}
 
 
 def parse_args():

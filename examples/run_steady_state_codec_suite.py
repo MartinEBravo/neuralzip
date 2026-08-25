@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
-import importlib
 import json
 import os
 import platform
@@ -30,7 +29,7 @@ import torch
 
 from neuralzip.hashing import canonical_digest, sha256_file
 from neuralzip.experiment_io import atomic_write_text as atomic_text
-from neuralzip.system import package_version
+from neuralzip.system import module_path, package_versions
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -132,22 +131,18 @@ def code_provenance() -> dict[str, object]:
         if path.is_file()
     }
     for module_name in ("zipnn", "zipnn_core"):
-        module = importlib.import_module(module_name)
-        module_path = Path(str(module.__file__)).resolve()
+        path = module_path(module_name)
         module_paths = (
-            [module_path]
-            if module_path.is_file() and module_path.suffix != ".py"
-            else sorted(module_path.parent.glob("*.py"))
+            [path]
+            if path.is_file() and path.suffix != ".py"
+            else sorted(path.parent.glob("*.py"))
         )
         for path in module_paths:
             if path.is_file():
                 files[f"external/{module_name}/{path.name}"] = sha256_file(path)
     value = {
         "files": files,
-        "packages": {
-            name: package_version(name)
-            for name in ("torch", "torchvision", "neuralzip", "zipnn")
-        },
+        "packages": package_versions("torch", "torchvision", "neuralzip", "zipnn"),
         "runtime_versions": {
             "python": platform.python_version(),
             "torch": str(torch.__version__),

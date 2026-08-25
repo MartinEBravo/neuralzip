@@ -456,7 +456,6 @@ class Compressor:
                 "huffman_chunks": compressed.huffman_chunks,
                 "raw_chunks": compressed.raw_chunks,
                 "zero_chunks": compressed.zero_chunks,
-                "shared_codebook_defs": getattr(compressed, "shared_codebook_defs", 0),
                 "shared_codebook_refs": getattr(compressed, "shared_codebook_refs", 0),
                 "local_huff0_chunks": getattr(
                     compressed, "local_huff0_chunks", 0

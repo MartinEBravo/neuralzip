@@ -20,7 +20,6 @@ import examples.checkpoint_common as checkpoint_common
 import examples.checkpoint_compression as checkpoint_compression
 import examples.run_final_checkpoint_suite as vision_runner
 import examples.run_final_language_checkpoint_suite as language_runner
-from neuralzip import experiment_io
 
 
 class _TiedToyModel(torch.nn.Module):
@@ -30,49 +29,6 @@ class _TiedToyModel(torch.nn.Module):
         self.output = torch.nn.Linear(8, 16, bias=False)
         self.output.weight = self.embedding.weight
         self.register_buffer("counter", torch.tensor(0, dtype=torch.int64))
-
-
-def test_checkpoint_runners_share_task_agnostic_infrastructure():
-    shared_names = (
-        "atomic_torch_save",
-        "checkpoint_files",
-        "limited",
-        "load_or_fit_frozen_codec",
-        "read_csv",
-        "render_checkpoint_figure",
-        "restore_rng_state",
-        "rng_state",
-        "run_checkpoint_trajectory",
-        "set_seed",
-        "validate_checkpoint_results",
-    )
-
-    for name in shared_names:
-        common_function = getattr(checkpoint_common, name)
-        assert getattr(vision_runner, name) is common_function
-        assert getattr(language_runner, name) is common_function
-    assert vision_runner.atomic_write_json is experiment_io.atomic_write_json
-    assert language_runner.atomic_write_json is experiment_io.atomic_write_json
-
-
-def test_checkpoint_runners_share_one_compression_protocol():
-    shared_names = (
-        "benchmark_checkpoint_codecs",
-        "benchmark_neuralzip",
-        "benchmark_zipnn_src",
-        "completed_checkpoint_methods",
-        "load_codec_plan",
-        "nonfloating_state",
-        "save_codec_plan",
-        "setup_neuralzip",
-        "tensor_digest",
-    )
-
-    for name in shared_names:
-        common_function = getattr(checkpoint_compression, name)
-        assert getattr(vision_runner, name) is common_function
-        assert getattr(language_runner, name) is common_function
-    assert vision_runner.RESULT_FIELDS is checkpoint_compression.BASE_RESULT_FIELDS
 
 
 def test_checkpoint_runner_upserts_preserve_schemas_keys_and_csv_dialects(tmp_path):
@@ -143,7 +99,9 @@ def test_vision_checkpoint_resume_rejects_legacy_encoder_rows(tmp_path):
         "input_unchanged": True,
     }
     vision_runner.upsert_result(result_path, base)
-    assert vision_runner.completed_methods(result_path, "resnet18", 0) == set()
+    assert checkpoint_compression.completed_checkpoint_methods(
+        result_path, "resnet18", 0
+    ) == set()
     assert not checkpoint_compression.is_current_codec_result(
         checkpoint_common.read_csv(result_path)[0]
     )
@@ -156,9 +114,9 @@ def test_vision_checkpoint_resume_rejects_legacy_encoder_rows(tmp_path):
             "encoder_path": "compress_tensors",
         },
     )
-    assert vision_runner.completed_methods(result_path, "resnet18", 0) == {
-        "NeuralZip"
-    }
+    assert checkpoint_compression.completed_checkpoint_methods(
+        result_path, "resnet18", 0
+    ) == {"NeuralZip"}
     assert checkpoint_compression.is_current_codec_result(
         checkpoint_common.read_csv(result_path)[0]
     )

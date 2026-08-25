@@ -115,6 +115,62 @@ def _local_file_sizes(root: Path) -> dict[str, int]:
     }
 
 
+def select_indexed_weights(
+    path: Path,
+    *,
+    allow_bin: bool = False,
+) -> SnapshotSelection | None:
+    """Select and validate an authoritative sharded checkpoint index.
+
+    Safetensors is preferred when both formats are present.  ``None`` means
+    that no supported index exists; malformed or incomplete indexes raise.
+    """
+
+    path = Path(path)
+    formats = [
+        (
+            "*.safetensors.index.json",
+            "model.safetensors.index.json",
+            (".safetensors",),
+        ),
+    ]
+    if allow_bin:
+        formats.append(
+            ("*.bin.index.json", "pytorch_model.bin.index.json", (".bin",))
+        )
+
+    for pattern, canonical_name, suffixes in formats:
+        indexes = sorted(path.glob(pattern))
+        if not indexes:
+            continue
+        canonical = [index for index in indexes if index.name == canonical_name]
+        if len(canonical) == 1:
+            index_path = canonical[0]
+        elif len(indexes) == 1:
+            index_path = indexes[0]
+        else:
+            raise ValueError(
+                "Checkpoint contains ambiguous shard indexes: "
+                + ", ".join(index.name for index in indexes)
+            )
+
+        index = json.loads(index_path.read_text())
+        try:
+            resolved = resolve_weight_map(
+                index.get("weight_map"),
+                available_files=_local_file_sizes(index_path.parent),
+                allowed_suffixes=suffixes,
+            )
+        except (FileNotFoundError, ValueError) as error:
+            raise type(error)(f"{error} ({index_path})") from error
+        return SnapshotSelection(
+            files=tuple(index_path.parent / name for name in resolved.files),
+            index_path=index_path,
+            expected_keys=resolved.expected_keys,
+        )
+    return None
+
+
 def select_safetensors_weights(
     path: Path,
     *,
@@ -131,37 +187,9 @@ def select_safetensors_weights(
     if require_config and not (path / "config.json").is_file():
         raise FileNotFoundError(f"Snapshot has no config.json: {path}")
 
-    indexes = sorted(path.glob("*.safetensors.index.json"))
-    if indexes:
-        canonical = [
-            index for index in indexes if index.name == "model.safetensors.index.json"
-        ]
-        if len(canonical) == 1:
-            index_path = canonical[0]
-        elif len(indexes) == 1:
-            index_path = indexes[0]
-        else:
-            raise ValueError(
-                "Snapshot contains ambiguous safetensors indexes: "
-                + ", ".join(index.name for index in indexes)
-            )
-
-        index = json.loads(index_path.read_text())
-        try:
-            resolved = resolve_weight_map(
-                index.get("weight_map"),
-                available_files=_local_file_sizes(index_path.parent),
-                allowed_suffixes=(".safetensors",),
-            )
-        except (FileNotFoundError, ValueError) as error:
-            error_type = type(error)
-            raise error_type(f"{error} ({index_path})") from error
-        files = tuple(index_path.parent / name for name in resolved.files)
-        return SnapshotSelection(
-            files=files,
-            index_path=index_path,
-            expected_keys=resolved.expected_keys,
-        )
+    indexed = select_indexed_weights(path)
+    if indexed is not None:
+        return indexed
 
     canonical = path / "model.safetensors"
     if canonical.is_file() and canonical.stat().st_size > 0:

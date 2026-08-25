@@ -1,9 +1,14 @@
-"""Parser for the stream-size metadata emitted by official ZipNN archives."""
+"""Non-destructive adapter for the official ZipNN package and its archives."""
 
 from dataclasses import dataclass
 import math
 import struct
 import sys
+import time
+
+import torch
+
+from .tensors import bitwise_equal
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,104 @@ class ZipNNArchiveLayout:
     @property
     def exponent_stream(self):
         return self.streams[self.element_size - 1]
+
+
+@dataclass(frozen=True)
+class ZipNNEncodedTensor:
+    """One official ZipNN result with a consistent encoding time boundary."""
+
+    payload: bytes
+    raw_bytes: int
+    element_size: int
+    encode_seconds: float
+    codec_encode_seconds: float
+    input_copy_seconds: float
+    decode_seconds: float | None = None
+    roundtrip_ok: bool | None = None
+
+    @property
+    def archive_bytes(self):
+        return len(self.payload)
+
+    @property
+    def layout(self):
+        return parse_zipnn_streams(
+            self.payload,
+            element_size=self.element_size,
+            expected_raw_bytes=self.raw_bytes,
+        )
+
+
+class ZipNNSourceCodec:
+    """Shared adapter around ZipNN's mutating tensor API.
+
+    Official ZipNN reorders tensor storage in place while encoding.  Every
+    frontend therefore has to clone its input and include that required copy
+    in the encode measurement.  Keeping the operation here gives model,
+    checkpoint, and federated experiments the same safety and timing rules.
+    """
+
+    def __init__(
+        self,
+        *,
+        threads,
+        chunk_size,
+        compression_threshold,
+        method="HUFFMAN",
+    ):
+        try:
+            from zipnn import ZipNN
+        except ImportError as error:
+            raise ImportError(
+                "The official zipnn package is required: pip install zipnn."
+            ) from error
+
+        self.settings = {
+            "method": str(method).upper(),
+            "input_format": "torch",
+            "threads": int(threads),
+            "compression_threshold": float(compression_threshold),
+            "compression_chunk": int(chunk_size),
+        }
+        self._encoder = ZipNN(**self.settings)
+        self._decoder = ZipNN(**self.settings)
+
+    def encode_tensor(self, tensor, *, verify=False):
+        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+            raise TypeError("ZipNN source only compresses floating tensors.")
+
+        original = tensor.detach().cpu().contiguous()
+        copy_started = time.perf_counter()
+        compressor_input = original.clone()
+        copy_seconds = time.perf_counter() - copy_started
+        if original.numel() and compressor_input.data_ptr() == original.data_ptr():
+            raise AssertionError("ZipNN source input clone aliases the source tensor.")
+
+        codec_started = time.perf_counter()
+        payload = self._encoder.compress(compressor_input)
+        codec_seconds = time.perf_counter() - codec_started
+
+        decode_seconds = None
+        roundtrip_ok = None
+        if verify:
+            decode_started = time.perf_counter()
+            restored = self._decoder.decompress(payload)
+            decode_seconds = time.perf_counter() - decode_started
+            roundtrip_ok = bitwise_equal(original, restored)
+
+        return ZipNNEncodedTensor(
+            payload=payload,
+            raw_bytes=int(original.numel()) * int(original.element_size()),
+            element_size=int(original.element_size()),
+            encode_seconds=copy_seconds + codec_seconds,
+            codec_encode_seconds=codec_seconds,
+            input_copy_seconds=copy_seconds,
+            decode_seconds=decode_seconds,
+            roundtrip_ok=roundtrip_ok,
+        )
+
+    def decode(self, payload):
+        return self._decoder.decompress(payload).detach().cpu().contiguous()
 
 
 def _shape_header_end(payload):

@@ -37,7 +37,7 @@ import torch
 from neuralzip import Compressor
 from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
 from neuralzip.hashing import canonical_digest, sha256_file
-from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.zipnn_source import ZipNNSourceCodec
 
 
 METHODS = ("zipnn-src", "neuralzip")
@@ -815,35 +815,12 @@ def resolve_weight_provenance(
     raise ValueError(f"Unsupported backend {spec.backend!r}.")
 
 
-def parse_zipnn_bf16_exponent(payload: bytes, parser) -> tuple[int, int, int]:
-    """Return exponent payload, exponent-group metadata, and chunk count."""
-
-    parser_header_bytes = int(parser._retrieve_header(payload))
-    layout = parse_zipnn_streams(
-        payload,
-        element_size=2,
-        expected_raw_bytes=int(parser.original_len),
-    )
-    if (
-        layout.header_bytes != parser_header_bytes
-        or layout.chunk_bytes != int(parser.compression_chunk)
-    ):
-        raise ValueError("ZipNN parser disagrees with the archive layout.")
-    if layout.byte_reorder != 10 or layout.bit_reorder != 1:
-        raise ValueError("Expected a BF16 ZipNN byte-reordered archive.")
-
-    exponent = layout.exponent_stream
-    return exponent.payload_bytes, exponent.metadata_bytes, layout.chunk_count
-
-
 def zipnn_src_pass(
     model: MappingModel,
     *,
     threads: int,
     verify: bool,
 ) -> dict[str, object]:
-    from zipnn import ZipNN
-
     total_encode = 0.0
     total_codec = 0.0
     total_copy = 0.0
@@ -853,64 +830,36 @@ def zipnn_src_pass(
     tensors = 0
     chunks = 0
     roundtrip_ok = True
-    parser = ZipNN(
+    codec = ZipNNSourceCodec(
         method="HUFFMAN",
-        input_format="torch",
         threads=threads,
         compression_threshold=DEFAULT_COMPRESSION_THRESHOLD,
-        compression_chunk=DEFAULT_CHUNK_SIZE,
+        chunk_size=DEFAULT_CHUNK_SIZE,
     )
-    decompressor = None
-    if verify:
-        decompressor = ZipNN(
-            method="HUFFMAN",
-            input_format="torch",
-            threads=threads,
-            compression_threshold=DEFAULT_COMPRESSION_THRESHOLD,
-            compression_chunk=DEFAULT_CHUNK_SIZE,
-        )
 
     for name, tensor in iter_float_tensors(model):
         original = tensor.detach().cpu().contiguous()
         if original.dtype != torch.bfloat16:
             raise TypeError(f"{name} is {original.dtype}; expected BF16.")
-        compressor = ZipNN(
-            method="HUFFMAN",
-            input_format="torch",
-            threads=threads,
-            compression_threshold=DEFAULT_COMPRESSION_THRESHOLD,
-            compression_chunk=DEFAULT_CHUNK_SIZE,
-        )
+        encoded = codec.encode_tensor(original, verify=verify)
+        layout = encoded.layout
+        if layout.byte_reorder != 10 or layout.bit_reorder != 1:
+            raise ValueError("Expected a BF16 ZipNN byte-reordered archive.")
 
-        copy_start = time.perf_counter()
-        compressor_input = original.clone()
-        copy_seconds = time.perf_counter() - copy_start
-        codec_start = time.perf_counter()
-        payload = compressor.compress(compressor_input)
-        codec_seconds = time.perf_counter() - codec_start
-        total_copy += copy_seconds
-        total_codec += codec_seconds
-        total_encode += copy_seconds + codec_seconds
-
-        stream_bytes, metadata_bytes, tensor_chunks = parse_zipnn_bf16_exponent(
-            payload, parser
-        )
+        total_copy += encoded.input_copy_seconds
+        total_codec += encoded.codec_encode_seconds
+        total_encode += encoded.encode_seconds
+        exponent = layout.exponent_stream
         exponent_raw += int(original.numel())
-        exponent_data += stream_bytes
-        exponent_metadata += metadata_bytes
-        chunks += tensor_chunks
+        exponent_data += exponent.payload_bytes
+        exponent_metadata += exponent.metadata_bytes
+        chunks += layout.chunk_count
         tensors += 1
 
-        if verify:
-            restored = decompressor.decompress(payload)
-            same = torch.equal(
-                restored.detach().cpu().contiguous().view(torch.uint8),
-                original.view(torch.uint8),
-            )
-            roundtrip_ok = bool(roundtrip_ok and same)
-            if not same:
+        if verify and not encoded.roundtrip_ok:
+            roundtrip_ok = False
+            if encoded.roundtrip_ok is False:
                 raise RuntimeError(f"ZipNN src round-trip failed for tensor {name}.")
-        del compressor_input, payload
 
     exponent_compressed = exponent_data + exponent_metadata
     return {

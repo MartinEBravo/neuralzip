@@ -3,7 +3,7 @@ import struct
 import sys
 import unittest
 
-from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_streams
 
 
 def _frame(*, element_size, original_bytes, chunk_exponent, totals):
@@ -33,6 +33,30 @@ def _frame(*, element_size, original_bytes, chunk_exponent, totals):
 
 
 class ZipNNSourceParserTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
+    def test_shared_adapter_is_non_destructive_and_reports_one_time_boundary(self):
+        import torch
+
+        source = torch.arange(4096, dtype=torch.bfloat16)
+        reference = source.clone()
+        codec = ZipNNSourceCodec(
+            threads=2,
+            chunk_size=256 << 10,
+            compression_threshold=0.95,
+        )
+
+        encoded = codec.encode_tensor(source, verify=True)
+
+        self.assertTrue(torch.equal(source.view(torch.uint8), reference.view(torch.uint8)))
+        self.assertTrue(encoded.roundtrip_ok)
+        self.assertGreaterEqual(encoded.input_copy_seconds, 0.0)
+        self.assertGreaterEqual(encoded.codec_encode_seconds, 0.0)
+        self.assertAlmostEqual(
+            encoded.encode_seconds,
+            encoded.input_copy_seconds + encoded.codec_encode_seconds,
+        )
+        self.assertEqual(encoded.layout.exponent_stream.raw_bytes, source.numel())
+
     def test_official_empty_tensor_golden_frames(self):
         frames = (
             (

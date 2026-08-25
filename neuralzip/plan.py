@@ -1,7 +1,6 @@
 """Public facade for fitting, transferring, encoding, and persisting setup."""
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 import pickle
 
@@ -15,6 +14,7 @@ from .codec_protocol import (
     named_tensor_items,
     prepare_neuralzip_codec,
 )
+from .hashing import sha256_bytes
 from .neuralzip_codec import NeuralZipCodec
 from .packed_exponents import tokenize_ngrams
 from .zipnn_codec import _zipnn_dtype_config, _zipnn_reordered_bytes
@@ -26,9 +26,7 @@ PLAN_MARKER = "frozen-huff0-codebook-v1"
 def codebook_digest(codebooks):
     """Return the stable digest historically used by experiment runners."""
 
-    return hashlib.sha256(
-        pickle.dumps(tuple(codebooks), protocol=5)
-    ).hexdigest()
+    return sha256_bytes(pickle.dumps(tuple(codebooks), protocol=5))
 
 
 def _source_samples(codec, named_tensors):

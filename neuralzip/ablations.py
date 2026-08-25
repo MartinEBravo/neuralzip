@@ -69,8 +69,7 @@ def zero_order_entropy(values):
     if len(values) == 0:
         return 0.0
     _, counts = np.unique(values, return_counts=True)
-    probabilities = counts.astype(np.float64) / float(counts.sum())
-    return float(-(probabilities * np.log2(probabilities)).sum())
+    return _entropy_from_counts(counts)
 
 
 def _first_order_entropy_from_counts(transition_counts):
@@ -84,10 +83,7 @@ def _first_order_entropy_from_counts(transition_counts):
         row_total = float(row.sum())
         if row_total == 0.0:
             continue
-        probabilities = row[row > 0] / row_total
-        conditional_entropy = float(
-            -(probabilities * np.log2(probabilities)).sum()
-        )
+        conditional_entropy = _entropy_from_counts(row)
         entropy += (row_total / total) * conditional_entropy
     return entropy
 
@@ -127,9 +123,7 @@ def exponent_order_entropies(model):
             pair_ids.astype(np.int64), minlength=256 * 256
         ).reshape(256, 256)
 
-    probabilities = symbol_counts[symbol_counts > 0].astype(np.float64)
-    probabilities /= float(symbol_counts.sum()) if symbol_counts.sum() else 1.0
-    h0 = float(-(probabilities * np.log2(probabilities)).sum())
+    h0 = _entropy_from_counts(symbol_counts)
     h1 = _first_order_entropy_from_counts(transition_counts)
     return {
         "tensors": tensor_count,
@@ -198,12 +192,8 @@ def _partition_alignment_metrics(assignments):
         np.sum((counts[nonzero] / total) * np.log2(counts[nonzero] / expected[nonzero]))
     )
 
-    def entropy(values):
-        probabilities = values[values > 0] / total
-        return float(-(probabilities * np.log2(probabilities)).sum())
-
-    row_entropy = entropy(row_totals)
-    column_entropy = entropy(column_totals)
+    row_entropy = _entropy_from_counts(row_totals)
+    column_entropy = _entropy_from_counts(column_totals)
     nmi_denominator = math.sqrt(row_entropy * column_entropy)
     if nmi_denominator:
         normalized_mutual_information = mutual_information / nmi_denominator
@@ -991,8 +981,7 @@ def _ngram_counts_and_codebook(data, n):
     values = np.frombuffer(data[:complete_length], dtype=np.dtype(f"V{n}"))
     symbols, counts = np.unique(values, return_counts=True)
     token_count = int(counts.sum())
-    probabilities = counts.astype(np.float64) / token_count
-    entropy = float(-(probabilities * np.log2(probabilities)).sum())
+    entropy = _entropy_from_counts(counts)
     codebook = bytearray()
     codebook.append(n)
     codebook.extend(int(len(symbols)).to_bytes(4, "little"))

@@ -5,6 +5,12 @@ import json
 from pathlib import Path
 
 
+def sha256_bytes(value):
+    """Return the hexadecimal SHA-256 digest of a bytes-like value."""
+
+    return hashlib.sha256(value).hexdigest()
+
+
 def canonical_json_bytes(value, *, stringify_unknown=True, ensure_ascii=True):
     options = {
         "sort_keys": True,
@@ -17,13 +23,13 @@ def canonical_json_bytes(value, *, stringify_unknown=True, ensure_ascii=True):
 
 
 def canonical_digest(value, *, stringify_unknown=True, ensure_ascii=True):
-    return hashlib.sha256(
+    return sha256_bytes(
         canonical_json_bytes(
             value,
             stringify_unknown=stringify_unknown,
             ensure_ascii=ensure_ascii,
         )
-    ).hexdigest()
+    )
 
 
 def sha256_file(path, *, block_bytes=8 << 20):

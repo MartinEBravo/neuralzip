@@ -3,7 +3,12 @@ import json
 
 import pytest
 
-from neuralzip.hashing import canonical_digest, canonical_json_bytes, sha256_file
+from neuralzip.hashing import (
+    canonical_digest,
+    canonical_json_bytes,
+    sha256_bytes,
+    sha256_file,
+)
 
 
 def test_canonical_json_matches_legacy_serialization_and_is_order_independent():
@@ -18,6 +23,7 @@ def test_canonical_json_matches_legacy_serialization_and_is_order_independent():
 
     assert canonical_json_bytes(left) == expected
     assert canonical_json_bytes(right) == expected
+    assert sha256_bytes(expected) == hashlib.sha256(expected).hexdigest()
     assert canonical_digest(left) == hashlib.sha256(expected).hexdigest()
 
 

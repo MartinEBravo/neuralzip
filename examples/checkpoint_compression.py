@@ -24,7 +24,7 @@ from neuralzip.codec_protocol import (
     measure_exponent_streams,
 )
 from neuralzip.tensors import bitwise_equal
-from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.zipnn_source import parse_zipnn_exponent_stream
 from neuralzip.experiment_io import read_csv
 
 
@@ -139,16 +139,14 @@ def zipnn_src_exponent_size(
 
     if tensor.dtype != torch.float32:
         raise TypeError(f"Expected FP32 ZipNN payload, got {tensor.dtype}.")
-    layout = parse_zipnn_streams(
+    _, exponent = parse_zipnn_exponent_stream(
         payload,
         element_size=tensor.element_size(),
         expected_raw_bytes=tensor.numel() * tensor.element_size(),
+        expected_byte_reorder=220,
+        expected_bit_reorder=1,
+        expected_chunk_size=chunk_size,
     )
-    if layout.chunk_bytes != int(chunk_size):
-        raise ValueError(
-            f"ZipNN chunk size mismatch: {layout.chunk_bytes} != {int(chunk_size)}."
-        )
-    exponent = layout.exponent_stream
     return int(exponent.raw_bytes), int(exponent.compressed_bytes)
 
 

@@ -23,7 +23,7 @@ from neuralzip.experiment_io import (
     read_csv,
 )
 
-from examples.checkpoint_loading import load_torch_checkpoint
+from neuralzip.checkpoint_loading import load_torch_checkpoint
 
 
 def set_seed(seed: int) -> None:

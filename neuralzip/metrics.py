@@ -38,3 +38,19 @@ def shannon_entropy_from_counts(counts):
         return 0.0
     probabilities = counts[counts > 0] / total
     return float(-(probabilities * np.log2(probabilities)).sum())
+
+
+def conditional_entropy_from_counts(transition_counts):
+    """Return first-order entropy from a matrix of transition counts."""
+
+    transition_counts = np.asarray(transition_counts, dtype=np.float64)
+    total = float(transition_counts.sum())
+    if total == 0.0:
+        return 0.0
+    return float(
+        sum(
+            (float(row.sum()) / total) * shannon_entropy_from_counts(row)
+            for row in transition_counts
+            if row.sum() > 0
+        )
+    )

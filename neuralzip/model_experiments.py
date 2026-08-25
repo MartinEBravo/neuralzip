@@ -15,6 +15,10 @@ from .codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     is_current_codec_protocol,
 )
+from .checkpoint_loading import (
+    download_safetensors_snapshot,
+    iter_safetensors_shards,
+)
 from .compressor import Compressor
 
 
@@ -107,37 +111,24 @@ def _load_safetensors_mapping(
     dtype=torch.bfloat16,
     local_files_only=True,
 ):
-    from huggingface_hub import snapshot_download
-    from safetensors.torch import load_file
-
-    snapshot_path = Path(
-        snapshot_download(
-            model_id,
-            local_files_only=bool(local_files_only),
-            allow_patterns=("*.safetensors", "*.safetensors.index.json"),
-        )
+    _, selection = download_safetensors_snapshot(
+        model_id,
+        local_files_only=local_files_only,
     )
-    files = sorted(snapshot_path.glob("*.safetensors"))
-    if not files:
-        raise ValueError(f"No safetensors files found for {model_id}.")
 
     target_dtype = _normalise_dtype(dtype)
     if target_dtype == "auto":
         target_dtype = None
 
     tensors = {}
-    for file_path in files:
-        state = load_file(str(file_path), device="cpu")
+    for _, state in iter_safetensors_shards(selection):
         for name, tensor in state.items():
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 continue
             value = tensor.detach().cpu().contiguous()
             if target_dtype is not None:
                 value = value.to(dtype=target_dtype)
-            key = name if name not in tensors else f"{file_path.stem}.{name}"
-            tensors[key] = value
-        del state
-        gc.collect()
+            tensors[name] = value
 
     if not tensors:
         raise ValueError(f"No floating-point tensors found in safetensors for {model_id}.")

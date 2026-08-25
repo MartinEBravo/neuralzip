@@ -1,6 +1,5 @@
 import argparse
 import csv
-import hashlib
 import json
 import re
 import statistics
@@ -14,6 +13,7 @@ import torch
 from transformers import AutoModel
 
 from neuralzip.ablations import zipnn_exponent_stream
+from neuralzip.hashing import sha256_bytes as _sha256
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -37,10 +37,6 @@ PAIR_SPECS = {
         "encoder.layer.7.intermediate.dense.weight",
     ),
 }
-
-
-def _sha256(data):
-    return hashlib.sha256(data).hexdigest()
 
 
 def _load_resnet_tensors(checkpoint_path):

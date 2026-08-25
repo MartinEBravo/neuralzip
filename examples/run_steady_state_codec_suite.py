@@ -14,7 +14,6 @@ import argparse
 import csv
 import gc
 import importlib
-import importlib.metadata
 import json
 import os
 import platform
@@ -31,6 +30,7 @@ import torch
 
 from neuralzip.hashing import canonical_digest, sha256_file
 from neuralzip.experiment_io import atomic_write_text as atomic_text
+from neuralzip.system import package_version
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -111,13 +111,6 @@ MODEL_ORDER = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def package_version(name: str) -> str | None:
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        return None
 
 
 def code_provenance() -> dict[str, object]:

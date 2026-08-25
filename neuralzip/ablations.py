@@ -10,6 +10,7 @@ import torch
 
 from . import huffman, turborc
 from .metrics import (
+    conditional_entropy_from_counts as _first_order_entropy_from_counts,
     jensen_shannon_distance as jensen_shannon,
     shannon_entropy_from_counts as _entropy_from_counts,
 )
@@ -70,22 +71,6 @@ def zero_order_entropy(values):
         return 0.0
     _, counts = np.unique(values, return_counts=True)
     return _entropy_from_counts(counts)
-
-
-def _first_order_entropy_from_counts(transition_counts):
-    transition_counts = np.asarray(transition_counts, dtype=np.float64)
-    total = float(transition_counts.sum())
-    if total == 0.0:
-        return 0.0
-
-    entropy = 0.0
-    for row in transition_counts:
-        row_total = float(row.sum())
-        if row_total == 0.0:
-            continue
-        conditional_entropy = _entropy_from_counts(row)
-        entropy += (row_total / total) * conditional_entropy
-    return entropy
 
 
 def first_order_entropy(values):

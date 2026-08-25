@@ -8,14 +8,17 @@ timing boundaries around the federated protocol remain owned by each runner.
 from __future__ import annotations
 
 import gc
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, MutableMapping, Sequence
 
 import torch
 
-from neuralzip.archive import serialized_tensor_size
+from neuralzip.codec_protocol import (
+    encode_tensor_batch,
+    payload_exponent_sizes,
+    prepare_neuralzip_codec,
+)
 from neuralzip.experiment_io import atomic_write_csv, atomic_write_json
 from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.tensors import bitwise_equal
@@ -141,10 +144,8 @@ class NeuralZipStateCodec:
 
     def prepare_once(self, tensors: Mapping[str, torch.Tensor]) -> None:
         named_tensors = list(tensors.items())
-        started = time.perf_counter()
-        self.codec.prepare_clusters(named_tensors)
-        self.codec.build_codebooks_and_select_modes(named_tensors)
-        self.setup_seconds = time.perf_counter() - started
+        report = prepare_neuralzip_codec(self.codec, named_tensors)
+        self.setup_seconds = report.total_setup_seconds
         self.setup_bytes = int(self.codec.codebook_metadata_bytes())
 
     def encode(self, tensors: Mapping[str, torch.Tensor]) -> EncodedState:
@@ -153,31 +154,23 @@ class NeuralZipStateCodec:
                 raise TypeError(f"{name} is {tensor.dtype}; FP32 is required.")
 
         with SuspendAutomaticGC():
-            started = time.perf_counter()
-            payload_list = self.codec.compress_tensors(list(tensors.items()))
-            encode_seconds = time.perf_counter() - started
-        payloads = {payload.name: payload for payload in payload_list}
-        if payloads.keys() != tensors.keys():
-            raise RuntimeError("NeuralZip changed the floating-state tensor names.")
+            encoded = encode_tensor_batch(self.codec, tensors)
+        payloads = {payload.name: payload for payload in encoded.payloads}
 
         exponent_raw_bytes = 0
         exponent_compressed_bytes = 0
-        archive_bytes = 0
-        raw_floating_bytes = 0
-        for payload in payload_list:
-            exponent_group = payload.groups[int(payload.element_size) - 1]
-            exponent_raw_bytes += int(exponent_group.symbol_count)
-            exponent_compressed_bytes += int(exponent_group.compressed_bytes)
-            archive_bytes += int(serialized_tensor_size(payload))
-            raw_floating_bytes += int(payload.raw_bytes)
+        for payload in encoded.payloads:
+            raw_bytes, compressed_bytes = payload_exponent_sizes(payload)
+            exponent_raw_bytes += raw_bytes
+            exponent_compressed_bytes += compressed_bytes
 
         return EncodedState(
             payloads=payloads,
-            encode_seconds=encode_seconds,
+            encode_seconds=encoded.encode_seconds,
             exponent_raw_bytes=exponent_raw_bytes,
             exponent_compressed_bytes=exponent_compressed_bytes,
-            archive_bytes=archive_bytes,
-            raw_floating_bytes=raw_floating_bytes,
+            archive_bytes=encoded.compressed_bytes,
+            raw_floating_bytes=encoded.raw_bytes,
         )
 
     def decode(self, encoded: EncodedState) -> dict[str, torch.Tensor]:

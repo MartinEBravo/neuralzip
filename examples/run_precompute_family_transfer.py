@@ -38,9 +38,15 @@ from transformers import (
 )
 
 from neuralzip import Compressor
-from neuralzip.codec_protocol import measure_exponent_streams
+from neuralzip.codec_protocol import (
+    decode_tensor_batch,
+    encode_tensor_batch,
+    measure_exponent_streams,
+    prepare_neuralzip_codec,
+)
+from neuralzip.tensors import bitwise_equal
 from neuralzip.zipnn_codec import ZipNNCodec
-from examples.checkpoint_loading import (
+from neuralzip.checkpoint_loading import (
     SnapshotSelection,
     download_safetensors_snapshot,
     select_safetensors_weights as _select_safetensors_weights,
@@ -473,28 +479,19 @@ def exponent_metrics(payloads, codebooks=()):
 
 def compress_with_codec(codec, named_tensors, *, verify=False):
     named_tensors = list(named_tensors)
-    started = time.perf_counter()
-    if hasattr(codec, "compress_tensors"):
-        payloads = codec.compress_tensors(named_tensors)
-    else:
-        payloads = [
-            codec.compress_tensor(name, tensor) for name, tensor in named_tensors
-        ]
-    encode_seconds = time.perf_counter() - started
+    encoded = encode_tensor_batch(codec, named_tensors)
     roundtrip_ok = None
     if verify:
+        decoded, _ = decode_tensor_batch(codec, encoded.payloads)
         roundtrip_ok = all(
-            torch.equal(
-                codec.decompress_tensor(payload).contiguous().view(torch.uint8),
-                tensor.detach().cpu().contiguous().view(torch.uint8),
-            )
-            for (_, tensor), payload in zip(named_tensors, payloads, strict=True)
+            name in decoded and bitwise_equal(tensor, decoded[name])
+            for name, tensor in named_tensors
         )
     return {
-        "encode_seconds": encode_seconds,
+        "encode_seconds": encoded.encode_seconds,
         "roundtrip_ok": roundtrip_ok,
         **exponent_metrics(
-            payloads,
+            encoded.payloads,
             codec.export_codebooks() if hasattr(codec, "export_codebooks") else (),
         ),
     }
@@ -510,16 +507,11 @@ def setup_neuralzip(named_tensors, *, threads):
         # boundary. No target transformation is moved into setup.
         enable_prepacked_cache=False,
     ).codec
-    started = time.perf_counter()
-    codec.prepare_clusters(named_tensors)
-    clustering_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    codec.build_codebooks_and_select_modes(named_tensors)
-    codebook_seconds = time.perf_counter() - started
+    report = prepare_neuralzip_codec(codec, named_tensors)
     return codec, {
-        "clustering_seconds": clustering_seconds,
-        "codebook_seconds": codebook_seconds,
-        "total_seconds": clustering_seconds + codebook_seconds,
+        "clustering_seconds": report.clustering_seconds,
+        "codebook_seconds": report.codebook_setup_seconds,
+        "total_seconds": report.total_setup_seconds,
         "clusters": int(codec.cluster_count),
         "codebooks": len(codec.export_codebooks()),
         "selected_modes": dict(codec.selected_modes),

@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 from neuralzip.metrics import shannon_entropy_from_counts as _entropy_from_counts
 from config import MODEL_SUITE, VISION_DIFFUSION_MODEL_SUITE
-from examples.checkpoint_loading import (
+from neuralzip.checkpoint_loading import (
     download_safetensors_snapshot,
     iter_safetensors_shards,
 )

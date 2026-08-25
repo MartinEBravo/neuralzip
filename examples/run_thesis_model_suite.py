@@ -5,10 +5,8 @@ import gc
 import hashlib
 import importlib.metadata
 import json
-import math
 import platform
 import re
-import struct
 import subprocess
 import sys
 import time
@@ -36,7 +34,11 @@ from neuralzip.ablations import (
     selected_turborc_range_cost,
     zipnn_exponent_stream,
 )
-from neuralzip.metrics import shannon_entropy_from_counts as entropy_from_counts
+from neuralzip.metrics import (
+    conditional_entropy_from_counts as first_order_entropy_from_counts,
+    shannon_entropy_from_counts as entropy_from_counts,
+)
+from neuralzip.zipnn_source import parse_zipnn_exponent_stream
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,23 +135,6 @@ def floating_parameters(view: ModelView):
         for name, parameter in view.model.named_parameters()
         if parameter.is_floating_point()
     ]
-
-
-def first_order_entropy_from_counts(counts) -> float:
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    if total == 0.0:
-        return 0.0
-    entropy = 0.0
-    for row in counts:
-        row_total = float(row.sum())
-        if row_total == 0.0:
-            continue
-        probabilities = row[row > 0] / row_total
-        entropy -= (row_total / total) * float(
-            (probabilities * np.log2(probabilities)).sum()
-        )
-    return entropy
 
 
 def bf16_fields(parameter: torch.Tensor, start: int, stop: int):
@@ -691,41 +676,19 @@ def zipnn_exponent_metrics(result, method: str, threads: int):
     if method != "zipnn-src":
         raise ValueError(method)
 
-    from zipnn import ZipNN
-
-    parser = ZipNN(
-        method="HUFFMAN",
-        input_format="torch",
-        threads=int(threads),
-        compression_threshold=0.95,
-        compression_chunk=256 << 10,
-    )
+    del threads
     for tensor_result in result["tensor_results"]:
         payload = tensor_result["payload"]
-        header_bytes = int(parser._retrieve_header(payload))
-        original_bytes = int(parser.original_len)
-        chunk_bytes = int(parser.compression_chunk)
-        if original_bytes % 2:
-            raise ValueError("ZipNN source BF16 payload has an odd byte length.")
-        chunk_count = math.ceil(original_bytes / chunk_bytes)
-        entry_count = 2 * chunk_count
-        offsets_start = header_bytes + entry_count
-        payload_start = offsets_start + struct.calcsize("P") * entry_count
-        if payload_start > len(payload):
-            raise ValueError("ZipNN source payload has truncated group metadata.")
-        offsets = struct.unpack_from(
-            f"<{entry_count}Q",
+        _, exponent = parse_zipnn_exponent_stream(
             payload,
-            offsets_start,
+            element_size=2,
+            expected_raw_bytes=tensor_result["raw_bytes"],
+            expected_byte_reorder=10,
+            expected_bit_reorder=1,
+            expected_chunk_size=256 << 10,
         )
-        low_payload_bytes = int(offsets[chunk_count - 1]) if chunk_count else 0
-        exponent_payload_bytes = int(offsets[-1]) if chunk_count else 0
-        if low_payload_bytes + exponent_payload_bytes != len(payload) - payload_start:
-            raise ValueError("ZipNN source group sizes do not match its payload.")
-        raw_bytes += original_bytes // 2
-        compressed_bytes += exponent_payload_bytes + chunk_count * (
-            1 + struct.calcsize("P")
-        )
+        raw_bytes += exponent.raw_bytes
+        compressed_bytes += exponent.compressed_bytes
     return raw_bytes, compressed_bytes
 
 

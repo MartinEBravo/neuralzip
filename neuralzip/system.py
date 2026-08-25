@@ -1,9 +1,20 @@
 """Stable host and CPU metadata shared by experiment runners."""
 
-import hashlib
+import importlib.metadata
 import os
 from pathlib import Path
 import platform
+
+from .hashing import sha256_file
+
+
+def package_version(name):
+    """Return an installed distribution version, or ``None`` when absent."""
+
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def cpu_affinity():
@@ -21,12 +32,19 @@ def parse_cpu_set(value):
     for part in str(value).split(","):
         part = part.strip()
         if not part:
-            continue
+            raise ValueError("CPU set contains an empty segment.")
         if "-" in part:
             first, last = part.split("-", 1)
-            cpus.update(range(int(first), int(last) + 1))
+            first_cpu = int(first)
+            last_cpu = int(last)
+            if first_cpu < 0 or last_cpu < first_cpu:
+                raise ValueError(f"Invalid CPU range: {part!r}.")
+            cpus.update(range(first_cpu, last_cpu + 1))
         else:
-            cpus.add(int(part))
+            cpu = int(part)
+            if cpu < 0:
+                raise ValueError(f"CPU index cannot be negative: {cpu}.")
+            cpus.add(cpu)
     if not cpus:
         raise ValueError("CPU set cannot be empty.")
     return cpus
@@ -57,7 +75,7 @@ def host_facts(*, include_machine_id=False):
     if include_machine_id:
         machine_id = Path("/etc/machine-id")
         facts["machine_id_sha256"] = (
-            hashlib.sha256(machine_id.read_bytes()).hexdigest()
+            sha256_file(machine_id)
             if machine_id.is_file()
             else None
         )

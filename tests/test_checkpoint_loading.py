@@ -5,12 +5,13 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from examples.checkpoint_loading import (
+from neuralzip.checkpoint_loading import (
     download_safetensors_snapshot,
     iter_safetensors_shards,
     load_torch_checkpoint,
     select_safetensors_weights,
 )
+from neuralzip.model_experiments import _load_safetensors_mapping
 
 
 def _indexed_snapshot(path: Path) -> None:
@@ -22,11 +23,11 @@ def _indexed_snapshot(path: Path) -> None:
     }
     (path / "model.safetensors.index.json").write_text(json.dumps(index))
     save_file(
-        {"a.weight": torch.arange(3)},
+        {"a.weight": torch.arange(3, dtype=torch.float32)},
         path / "model-00001-of-00002.safetensors",
     )
     save_file(
-        {"b.weight": torch.arange(4)},
+        {"b.weight": torch.arange(4, dtype=torch.float32)},
         path / "model-00002-of-00002.safetensors",
     )
 
@@ -91,6 +92,24 @@ def test_snapshot_download_uses_one_strict_selector(tmp_path, monkeypatch):
             "revision": "a" * 40,
         }
     ]
+
+
+def test_model_mapping_loader_uses_authoritative_selection(tmp_path, monkeypatch):
+    _indexed_snapshot(tmp_path)
+    save_file({"alternate": torch.ones(1)}, tmp_path / "alternate.safetensors")
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **_kwargs: str(tmp_path),
+    )
+
+    tensors = _load_safetensors_mapping(
+        "owner/model",
+        dtype=torch.bfloat16,
+        local_files_only=True,
+    )
+
+    assert set(tensors) == {"a.weight", "b.weight"}
+    assert all(tensor.dtype == torch.bfloat16 for tensor in tensors.values())
 
 
 def test_torch_checkpoint_loader_rejects_non_mapping_payload(tmp_path):

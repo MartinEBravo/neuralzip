@@ -1,4 +1,4 @@
-"""Strict, reusable loaders for experiment checkpoint artifacts.
+"""Strict, reusable loaders for checkpoint artifacts.
 
 The experiment runners intentionally accept only authoritative checkpoint
 layouts.  In particular, a sharded safetensors checkpoint must be described by

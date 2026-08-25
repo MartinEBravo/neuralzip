@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import json
 import os
 import platform
@@ -29,6 +28,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from neuralzip.experiment_io import atomic_write_json
+from neuralzip.hashing import sha256_bytes, sha256_file
 from neuralzip.system import cpu_affinity, parse_cpu_set
 
 from examples.run_general_codec_rerun import (
@@ -246,7 +246,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def runner_sha256() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return sha256_file(__file__)
 
 
 def dependency_sha256() -> dict[str, str]:
@@ -255,9 +255,7 @@ def dependency_sha256() -> dict[str, str]:
         REPOSITORY_ROOT / "examples" / "run_precompute_family_transfer.py",
     )
     return {
-        str(path.relative_to(REPOSITORY_ROOT)): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+        str(path.relative_to(REPOSITORY_ROOT)): sha256_file(path)
         for path in paths
     }
 
@@ -386,7 +384,7 @@ def frozen_plan_fingerprint(codec) -> tuple[object, ...]:
 
 
 def frozen_plan_sha256(fingerprint) -> str:
-    return hashlib.sha256(repr(fingerprint).encode("utf-8")).hexdigest()
+    return sha256_bytes(repr(fingerprint).encode("utf-8"))
 
 
 def assert_frozen_plan(codec, fingerprint) -> None:

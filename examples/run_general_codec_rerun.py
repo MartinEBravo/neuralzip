@@ -16,9 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
-import hashlib
 import importlib
-import importlib.metadata
 import json
 import os
 import platform
@@ -36,8 +34,8 @@ import torch
 
 from neuralzip import Compressor
 from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
-from neuralzip.hashing import canonical_digest, sha256_file
-from neuralzip.system import host_facts, parse_cpu_set
+from neuralzip.hashing import canonical_digest, sha256_bytes, sha256_file
+from neuralzip.system import host_facts, package_version, parse_cpu_set
 from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
 
@@ -107,13 +105,6 @@ def default_hf_cache() -> Path:
     if home:
         return Path(home) / "hub"
     return Path.home() / ".cache" / "huggingface" / "hub"
-
-
-def package_version(name: str) -> str | None:
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        return None
 
 
 _ARTIFACT_CACHE: dict[tuple[str, int, int], dict[str, object]] = {}
@@ -712,7 +703,7 @@ def load_model(
 
 def tensor_content_digest(tensor: torch.Tensor) -> str:
     value = tensor.detach().cpu().contiguous().view(torch.uint8)
-    return hashlib.sha256(value.numpy().tobytes()).hexdigest()
+    return sha256_bytes(value.numpy().tobytes())
 
 
 def make_smoke_model() -> MappingModel:

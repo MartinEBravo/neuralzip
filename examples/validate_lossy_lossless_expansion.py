@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
+
+from neuralzip.hashing import sha256_file as sha256
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -45,14 +46,6 @@ QUANTIZED_REVISIONS = {
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(4 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def read_json(path: Path):

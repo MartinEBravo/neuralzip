@@ -54,6 +54,12 @@ from transformers import (
     GPT2LMHeadModel,
 )
 
+from neuralzip.hashing import sha256_file as _sha256_file
+from neuralzip.system import (
+    cpu_affinity as _cpu_affinity,
+    parse_cpu_set as _parse_cpu_set_value,
+)
+
 try:
     from examples.federated_common import (
         COMPRESSOR_NEURALZIP,
@@ -105,30 +111,12 @@ PROTOCOL_VERSION = 3
 def _parse_cpu_set(value: str) -> tuple[int, ...]:
     """Parse Linux CPU-list syntax such as ``0-3,8,10-11``."""
 
-    cpus: set[int] = set()
     try:
-        for item in str(value).split(","):
-            item = item.strip()
-            if not item:
-                raise ValueError
-            if "-" in item:
-                start_text, end_text = item.split("-", 1)
-                start = int(start_text)
-                end = int(end_text)
-                if start < 0 or end < start:
-                    raise ValueError
-                cpus.update(range(start, end + 1))
-            else:
-                cpu = int(item)
-                if cpu < 0:
-                    raise ValueError
-                cpus.add(cpu)
+        cpus = _parse_cpu_set_value(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError(
             f"Invalid CPU set {value!r}; expected for example 0-11 or 0-3,8-11."
         ) from error
-    if not cpus:
-        raise argparse.ArgumentTypeError("CPU set must not be empty.")
     return tuple(sorted(cpus))
 
 
@@ -167,11 +155,8 @@ class TimingIsolation:
             if background_cpus is not None
             else None
         )
-        self.initial_cpus = (
-            tuple(sorted(os.sched_getaffinity(0)))
-            if hasattr(os, "sched_getaffinity")
-            else None
-        )
+        affinity = _cpu_affinity()
+        self.initial_cpus = tuple(affinity) if affinity is not None else None
         self._handle = None
         if self.lock_path is not None:
             self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,14 +418,6 @@ def _merge_decoded_unique(
         source = decoded[name] if name in decoded else base[name]
         canonical[name] = source.detach().cpu().contiguous().clone()
     return _expand_canonical_state(canonical, layout)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _resolve_wikitext_parquet(data_dir: Path, *, offline: bool) -> Path:
@@ -1005,11 +982,7 @@ def _run_model(
     cpu_affinity = (
         list(args.timing_cpus)
         if args.timing_cpus is not None
-        else (
-            sorted(os.sched_getaffinity(0))
-            if hasattr(os, "sched_getaffinity")
-            else None
-        )
+        else _cpu_affinity()
     )
     device_name = (
         torch.cuda.get_device_name(device) if device.type == "cuda" else None

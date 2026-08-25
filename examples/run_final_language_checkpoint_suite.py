@@ -44,7 +44,7 @@ from examples.checkpoint_common import (  # noqa: E402
     upsert_model_epoch_row,
     validate_checkpoint_results,
 )
-from examples.checkpoint_loading import load_torch_checkpoint  # noqa: E402
+from neuralzip.checkpoint_loading import load_torch_checkpoint  # noqa: E402
 from neuralzip.experiment_io import atomic_write_json  # noqa: E402
 from examples.checkpoint_compression import (  # noqa: E402
     BASE_RESULT_FIELDS,

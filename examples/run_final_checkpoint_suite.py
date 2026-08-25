@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import gc
 import io
-import json
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -25,12 +24,17 @@ from examples.checkpoint_common import (  # noqa: E402
     find_complete_local_checkpoint_dir,
     find_external_checkpoint_dir,
     limited,
+    load_or_fit_frozen_codec,
     read_csv,
+    render_checkpoint_figure,
     restore_rng_state,
     rng_state,
+    run_checkpoint_trajectory,
     set_seed,
     upsert_model_epoch_row,
+    validate_checkpoint_results,
 )
+from examples.checkpoint_loading import load_torch_checkpoint  # noqa: E402
 from neuralzip.experiment_io import atomic_write_json  # noqa: E402
 from examples.checkpoint_compression import (  # noqa: E402
     BASE_RESULT_FIELDS,
@@ -38,6 +42,8 @@ from examples.checkpoint_compression import (  # noqa: E402
     ENCODER_PATHS,
     benchmark_neuralzip,
     benchmark_zipnn_src,
+    benchmark_checkpoint_codecs,
+    completed_checkpoint_methods,
     is_current_codec_result,
     load_codec_plan,
     nonfloating_state,
@@ -329,16 +335,7 @@ def cpu_model_state(model: nn.Module) -> dict[str, torch.Tensor]:
 
 
 def completed_methods(result_path: Path, slug: str, epoch: int) -> set[str]:
-    return {
-        str(row["compressor"])
-        for row in read_csv(result_path)
-        if row.get("model") == slug
-        and int(row.get("epoch", -1)) == int(epoch)
-        and row.get("status") == "ok"
-        and row.get("roundtrip_exact", "").lower() == "true"
-        and row.get("input_unchanged", "").lower() == "true"
-        and is_current_codec_result(row)
-    }
+    return completed_checkpoint_methods(result_path, slug, epoch)
 
 
 def benchmark_checkpoint(
@@ -357,11 +354,10 @@ def benchmark_checkpoint(
         print(f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True)
         return
 
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = load_torch_checkpoint(path)
     state = checkpoint_state(checkpoint)
     tensors = floating_state(state)
     nonfloating = nonfloating_state(state)
-    named_tensors = list(tensors.items())
     print(
         f"[{spec.slug}] epoch={epoch:03d} tensors={len(tensors)} "
         f"parameters={sum(t.numel() for t in tensors.values()):,}",
@@ -383,32 +379,18 @@ def benchmark_checkpoint(
         "ratio_scope": "exponent symbols + raw fallback + metadata",
         "status": "ok",
     }
-    if "NeuralZip" not in done:
-        metrics = benchmark_neuralzip(
-            plan,
-            named_tensors,
-            epoch=epoch,
-            setup=setup,
-        )
-        row = {**common, "compressor": "NeuralZip", **metrics}
-        upsert_result(result_path, row)
-        print(
-            f"[{spec.slug}] epoch={epoch:03d} NeuralZip "
-            f"ratio={metrics['exponent_ratio_pct']:.3f}% "
-            f"encode={metrics['encode_seconds']:.6f}s",
-            flush=True,
-        )
-    if "ZipNN src" not in done:
-        metrics = benchmark_zipnn_src(tensors, threads=args.threads)
-        row = {**common, "compressor": "ZipNN src", **metrics}
-        upsert_result(result_path, row)
-        print(
-            f"[{spec.slug}] epoch={epoch:03d} ZipNN src "
-            f"ratio={metrics['exponent_ratio_pct']:.3f}% "
-            f"encode={metrics['encode_seconds']:.6f}s",
-            flush=True,
-        )
-    del checkpoint, state, tensors, nonfloating, named_tensors
+    benchmark_checkpoint_codecs(
+        slug=spec.slug,
+        epoch=epoch,
+        plan=plan,
+        setup=setup,
+        tensors=tensors,
+        common_row=common,
+        completed=done,
+        threads=args.threads,
+        upsert_result=lambda row: upsert_result(result_path, row),
+    )
+    del checkpoint, state, tensors, nonfloating
     gc.collect()
 
 
@@ -660,51 +642,22 @@ def frozen_codec_for_trajectory(
     model_dir: Path,
     args: argparse.Namespace,
 ):
-    files = checkpoint_files(checkpoint_dir, args.epochs)
-    if 0 not in files:
-        raise FileNotFoundError(f"Missing epoch-0 checkpoint in {checkpoint_dir}.")
-    plan_path = model_dir / "neuralzip_epoch0_plan.pkl"
-    setup_path = model_dir / "neuralzip_epoch0_setup.json"
-    checkpoint = torch.load(files[0], map_location="cpu", weights_only=False)
-    tensors = floating_state(checkpoint_state(checkpoint))
-    epoch0_digest = tensor_digest(tensors.items())
+    def prepare(checkpoint):
+        tensors = floating_state(checkpoint_state(checkpoint))
+        return (
+            list(tensors.items()),
+            {"epoch0_tensor_digest": tensor_digest(tensors.items())},
+            {},
+        )
 
-    if plan_path.is_file() and setup_path.is_file():
-        setup = json.loads(setup_path.read_text())
-        if setup.get("epoch0_tensor_digest") != epoch0_digest:
-            raise RuntimeError(
-                f"Frozen plan in {plan_path} belongs to a different epoch-0 checkpoint."
-            )
-        if int(setup.get("threads", -1)) != int(args.threads):
-            raise RuntimeError(
-                f"Frozen plan in {plan_path} was built with "
-                f"threads={setup.get('threads')}, not {args.threads}. Use a fresh "
-                "output directory for a different timing configuration."
-            )
-        plan = load_codec_plan(plan_path)
-        if plan.digest != setup["codebook_digest"]:
-            raise RuntimeError(f"Frozen NeuralZip plan is corrupt: {plan_path}.")
-        print(f"[{spec.slug}] loaded frozen epoch-0 NeuralZip plan", flush=True)
-    else:
-        plan, setup = setup_neuralzip(list(tensors.items()), threads=args.threads)
-        setup = {
-            **setup,
-            "model": spec.slug,
-            "dtype": "float32",
-            "epoch0_checkpoint": str(files[0]),
-            "epoch0_tensor_digest": epoch0_digest,
-            "threads": args.threads,
-            "enable_prepacked_cache": False,
-        }
-        save_codec_plan(plan_path, plan, list(tensors.items()))
-        atomic_write_json(setup_path, setup)
-    print(
-        f"[{spec.slug}] epoch-0 NeuralZip setup={setup['total_seconds']:.3f}s",
-        flush=True,
+    return load_or_fit_frozen_codec(
+        slug=spec.slug,
+        checkpoint_dir=checkpoint_dir,
+        model_dir=model_dir,
+        epochs=args.epochs,
+        threads=args.threads,
+        prepare_epoch_zero=prepare,
     )
-    del checkpoint, tensors
-    gc.collect()
-    return plan, setup, files
 
 
 def process_trajectory(
@@ -714,98 +667,28 @@ def process_trajectory(
     args: argparse.Namespace,
     result_path: Path,
 ) -> None:
-    model_dir = args.output_dir / spec.slug
-    model_dir.mkdir(parents=True, exist_ok=True)
-    plan, setup, files = frozen_codec_for_trajectory(spec, checkpoint_dir, model_dir, args)
-    missing = [epoch for epoch in range(int(args.epochs) + 1) if epoch not in files]
-    if missing:
-        raise FileNotFoundError(
-            f"Missing checkpoints for {spec.slug}: {missing[:8]}"
-            + (f" (+{len(missing) - 8} more)" if len(missing) > 8 else "")
-        )
-    for epoch in range(int(args.epochs) + 1):
-        benchmark_checkpoint(
-            spec=spec,
-            epoch=epoch,
-            path=files[epoch],
-            checkpoint_source=checkpoint_source,
-            plan=plan,
-            setup=setup,
-            args=args,
-            result_path=result_path,
-        )
-    del plan
-    gc.collect()
+    run_checkpoint_trajectory(
+        spec=spec,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_source=checkpoint_source,
+        args=args,
+        result_path=result_path,
+        frozen_codec_for_trajectory=frozen_codec_for_trajectory,
+        benchmark_checkpoint=benchmark_checkpoint,
+    )
 
 
 def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | None:
-    if not result_path.is_file():
-        return None
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import pandas as pd
-
-    frame = pd.read_csv(result_path)
-    frame = frame[
-        frame["status"].eq("ok")
-        & frame["roundtrip_exact"].eq(True)  # noqa: E712
-        & frame["input_unchanged"].eq(True)  # noqa: E712
-        & frame.apply(is_current_codec_result, axis=1)
-    ].copy()
-    if frame.empty:
-        return None
-    colors = {"ZipNN src": "#4C78A8", "NeuralZip": "#E45756"}
-    markers = {"ZipNN src": "o", "NeuralZip": "s"}
-    fig, axes = plt.subplots(2, 4, figsize=(14.4, 6.2), sharex="col")
-    for column, slug in enumerate(DEFAULT_MODELS):
-        spec = MODEL_SPECS[slug]
-        subset = frame[frame["model"].eq(slug)].sort_values("epoch")
-        ratio_axis = axes[0, column]
-        time_axis = axes[1, column]
-        ratio_axis.set_title(spec.label, fontsize=11)
-        if subset.empty:
-            for axis in (ratio_axis, time_axis):
-                axis.text(0.5, 0.5, "Pending", ha="center", va="center", transform=axis.transAxes)
-        for method in ("ZipNN src", "NeuralZip"):
-            group = subset[subset["compressor"].eq(method)]
-            if group.empty:
-                continue
-            style = {
-                "color": colors[method],
-                "marker": markers[method],
-                "markersize": 2.8,
-                "markevery": max(1, len(group) // 10),
-                "linewidth": 1.5,
-                "label": method,
-            }
-            ratio_axis.plot(group["epoch"], group["exponent_ratio_pct"], **style)
-            time_axis.plot(group["epoch"], group["encode_seconds"], **style)
-        for axis in (ratio_axis, time_axis):
-            axis.grid(True, axis="y", color="#dddddd", linewidth=0.6)
-            axis.spines["top"].set_visible(False)
-            axis.spines["right"].set_visible(False)
-        time_axis.set_xlabel("Epoch")
-    axes[0, 0].set_ylabel("Exponent ratio (%)")
-    axes[1, 0].set_ylabel("Encoding time (s)")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    if not handles:
-        for axis in axes[0, 1:]:
-            handles, labels = axis.get_legend_handles_labels()
-            if handles:
-                break
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    figure_dir = output_dir / "figures"
-    figure_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = figure_dir / "checkpoint_training.pdf"
-    png_path = figure_dir / "checkpoint_training.png"
-    fig.savefig(pdf_path, bbox_inches="tight")
-    fig.savefig(png_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return pdf_path, png_path
+    return render_checkpoint_figure(
+        result_path,
+        output_dir,
+        models=DEFAULT_MODELS,
+        model_labels={slug: spec.label for slug, spec in MODEL_SPECS.items()},
+        output_stem="checkpoint_training",
+        figure_size=(14.4, 6.2),
+        is_current_result=is_current_codec_result,
+        legend_from_any_axis=True,
+    )
 
 
 def validate_complete_results(
@@ -814,42 +697,13 @@ def validate_complete_results(
     models: Iterable[str],
     epochs: int,
 ) -> None:
-    """Reject partial or duplicated trajectories before final rendering."""
-
-    import pandas as pd
-
-    frame = pd.read_csv(result_path)
-    expected = {
-        (slug, epoch, compressor)
-        for slug in models
-        for epoch in range(int(epochs) + 1)
-        for compressor in ("ZipNN src", "NeuralZip")
-    }
-    observed_rows = frame[
-        frame["model"].isin(tuple(models))
-    ].copy()
-    keys = list(
-        zip(
-            observed_rows["model"],
-            observed_rows["epoch"].astype(int),
-            observed_rows["compressor"],
-        )
+    validate_checkpoint_results(
+        result_path,
+        models=models,
+        epochs=epochs,
+        is_current_result=is_current_codec_result,
+        error_label="Checkpoint results",
     )
-    observed = set(keys)
-    missing = sorted(expected - observed)
-    duplicates = len(keys) - len(observed)
-    invalid = observed_rows[
-        ~observed_rows["status"].eq("ok")
-        | ~observed_rows["roundtrip_exact"].eq(True)  # noqa: E712
-        | ~observed_rows["input_unchanged"].eq(True)  # noqa: E712
-        | ~observed_rows.apply(is_current_codec_result, axis=1)
-    ]
-    if missing or duplicates or not invalid.empty:
-        raise RuntimeError(
-            "Checkpoint results are incomplete or invalid: "
-            f"missing={len(missing)}, duplicates={duplicates}, "
-            f"invalid={len(invalid)}."
-        )
 
 
 def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:

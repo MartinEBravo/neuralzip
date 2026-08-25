@@ -4,18 +4,22 @@ import argparse
 import gc
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from neuralzip.experiment_io import atomic_write_json
 from neuralzip.hashing import (
     canonical_digest as _shared_canonical_digest,
     sha256_file as _shared_sha256_file,
 )
-from huggingface_hub import snapshot_download
 from torchvision.models import (
     ResNet18_Weights,
     ResNet34_Weights,
@@ -36,6 +40,11 @@ from transformers import (
 from neuralzip import Compressor
 from neuralzip.codec_protocol import measure_exponent_streams
 from neuralzip.zipnn_codec import ZipNNCodec
+from examples.checkpoint_loading import (
+    SnapshotSelection,
+    download_safetensors_snapshot,
+    select_safetensors_weights as _select_safetensors_weights,
+)
 
 
 @dataclass(frozen=True)
@@ -49,13 +58,6 @@ class PairSpec:
     target_dir: str | None
     source_revision: str | None = None
     target_revision: str | None = None
-
-
-@dataclass(frozen=True)
-class SnapshotSelection:
-    files: tuple[Path, ...]
-    index_path: Path | None = None
-    expected_keys: frozenset[str] | None = None
 
 
 PAIR_SPECS = {
@@ -152,65 +154,10 @@ def _canonical_digest(value: object) -> str:
     return _shared_canonical_digest(value, stringify_unknown=False)
 
 
-def _safe_snapshot_path(root: Path, value: object) -> Path:
-    relative = Path(str(value))
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"Unsafe checkpoint shard path: {value!r}")
-    return root / relative
-
-
 def select_snapshot_weights(path: Path) -> SnapshotSelection:
-    config = path / "config.json"
-    if not config.is_file():
-        raise FileNotFoundError(f"Snapshot has no config.json: {path}")
+    """Compatibility entry point with the family suite's config requirement."""
 
-    indexes = sorted(path.glob("*.safetensors.index.json"))
-    if indexes:
-        canonical = [
-            index for index in indexes if index.name == "model.safetensors.index.json"
-        ]
-        if len(canonical) == 1:
-            index_path = canonical[0]
-        elif len(indexes) == 1:
-            index_path = indexes[0]
-        else:
-            raise ValueError(
-                "Snapshot contains ambiguous safetensors indexes: "
-                + ", ".join(index.name for index in indexes)
-            )
-        index = json.loads(index_path.read_text())
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError(f"Checkpoint index has no weight_map: {index_path}")
-        shard_names = sorted({str(value) for value in weight_map.values()})
-        if any(not name.endswith(".safetensors") for name in shard_names):
-            raise ValueError(
-                f"Safetensors index references a non-safetensors shard: {index_path}"
-            )
-        files = tuple(_safe_snapshot_path(path, name) for name in shard_names)
-        missing = [file for file in files if not file.is_file() or file.stat().st_size <= 0]
-        if missing:
-            raise FileNotFoundError(
-                "Checkpoint index references missing or empty shards: "
-                + ", ".join(str(file) for file in missing)
-            )
-        return SnapshotSelection(
-            files=files,
-            index_path=index_path,
-            expected_keys=frozenset(str(key) for key in weight_map),
-        )
-
-    canonical = path / "model.safetensors"
-    if canonical.is_file() and canonical.stat().st_size > 0:
-        return SnapshotSelection(files=(canonical,))
-
-    orphan_shards = sorted(path.glob("*.safetensors"))
-    if orphan_shards:
-        raise ValueError(
-            "Snapshot has safetensors files but no authoritative index or "
-            f"model.safetensors: {path}"
-        )
-    raise FileNotFoundError(f"Snapshot has no authoritative weight file: {path}")
+    return _select_safetensors_weights(path, require_config=True)
 
 
 def _download_metadata(path: Path, relative_path: str) -> dict | None:
@@ -333,14 +280,13 @@ def ensure_snapshot(repo_id: str, path: Path, revision: str) -> dict:
         # the immutable requested commit before accepting it as experiment input.
         pass
     path.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
+    _, selection = download_safetensors_snapshot(
         repo_id=repo_id,
         revision=revision,
         local_dir=path,
-        allow_patterns=("*.json", "*.model", "*.safetensors", "*.txt"),
-        ignore_patterns=("*.bin", "*.gguf", "*.h5", "*.msgpack", "*.onnx"),
+        local_files_only=False,
+        include_config=True,
     )
-    selection = select_snapshot_weights(path)
     provenance = snapshot_provenance(
         repo_id,
         path,

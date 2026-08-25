@@ -37,10 +37,14 @@ def test_checkpoint_runners_share_task_agnostic_infrastructure():
         "atomic_torch_save",
         "checkpoint_files",
         "limited",
+        "load_or_fit_frozen_codec",
         "read_csv",
+        "render_checkpoint_figure",
         "restore_rng_state",
         "rng_state",
+        "run_checkpoint_trajectory",
         "set_seed",
+        "validate_checkpoint_results",
     )
 
     for name in shared_names:
@@ -53,8 +57,10 @@ def test_checkpoint_runners_share_task_agnostic_infrastructure():
 
 def test_checkpoint_runners_share_one_compression_protocol():
     shared_names = (
+        "benchmark_checkpoint_codecs",
         "benchmark_neuralzip",
         "benchmark_zipnn_src",
+        "completed_checkpoint_methods",
         "load_codec_plan",
         "nonfloating_state",
         "save_codec_plan",

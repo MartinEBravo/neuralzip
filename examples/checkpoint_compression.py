@@ -11,7 +11,7 @@ import hashlib
 import struct
 import time
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 import torch
 
@@ -25,6 +25,7 @@ from neuralzip.codec_protocol import (
 )
 from neuralzip.tensors import bitwise_equal
 from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.experiment_io import read_csv
 
 
 BASE_RESULT_FIELDS = (
@@ -72,6 +73,29 @@ def is_current_codec_result(row) -> bool:
         is_current_codec_protocol(row.get("codec_protocol_version"))
         and row.get("encoder_path") == ENCODER_PATHS.get(compressor)
     )
+
+
+def completed_checkpoint_methods(
+    result_path: Path,
+    slug: str,
+    epoch: int,
+    *,
+    identities: Mapping[str, object] | None = None,
+) -> set[str]:
+    """Return verified current-protocol measurements for one checkpoint."""
+
+    required = dict(identities or {})
+    return {
+        str(row["compressor"])
+        for row in read_csv(result_path)
+        if row.get("model") == slug
+        and int(row.get("epoch", -1)) == int(epoch)
+        and row.get("status") == "ok"
+        and row.get("roundtrip_exact", "").lower() == "true"
+        and row.get("input_unchanged", "").lower() == "true"
+        and all(row.get(key) == str(value) for key, value in required.items())
+        and is_current_codec_result(row)
+    }
 
 
 def tensor_digest(named_tensors: Iterable[tuple[str, torch.Tensor]]) -> str:
@@ -336,3 +360,44 @@ def benchmark_zipnn_src(
     del result
     gc.collect()
     return output
+
+
+def benchmark_checkpoint_codecs(
+    *,
+    slug: str,
+    epoch: int,
+    plan,
+    setup: Mapping,
+    tensors: Mapping[str, torch.Tensor],
+    common_row: Mapping,
+    completed: set[str],
+    threads: int,
+    upsert_result: Callable[[Mapping], None],
+    transform_metrics: Callable[[Mapping], Mapping] = dict,
+) -> None:
+    """Benchmark and persist both final checkpoint codecs in stable order."""
+
+    named_tensors = list(tensors.items())
+    methods = (
+        (
+            "NeuralZip",
+            lambda: benchmark_neuralzip(
+                plan,
+                named_tensors,
+                epoch=epoch,
+                setup=setup,
+            ),
+        ),
+        ("ZipNN src", lambda: benchmark_zipnn_src(tensors, threads=threads)),
+    )
+    for compressor, benchmark in methods:
+        if compressor in completed:
+            continue
+        metrics = dict(transform_metrics(benchmark()))
+        upsert_result({**common_row, "compressor": compressor, **metrics})
+        print(
+            f"[{slug}] epoch={epoch:03d} {compressor} "
+            f"ratio={metrics['exponent_ratio_pct']:.3f}% "
+            f"encode={metrics['encode_seconds']:.6f}s",
+            flush=True,
+        )

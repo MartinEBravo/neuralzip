@@ -2,6 +2,7 @@ import argparse
 import csv
 import gc
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -9,13 +10,18 @@ import numpy as np
 import pandas as pd
 import torch
 
-from neuralzip.metrics import shannon_entropy_from_counts as _entropy_from_counts
-from huggingface_hub import snapshot_download
-from safetensors.torch import load_file
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+from neuralzip.metrics import shannon_entropy_from_counts as _entropy_from_counts
 from config import MODEL_SUITE, VISION_DIFFUSION_MODEL_SUITE
+from examples.checkpoint_loading import (
+    download_safetensors_snapshot,
+    iter_safetensors_shards,
+)
 from neuralzip.ablations import _delta_stream, zipnn_exponent_stream
-from neuralzip.experiment_scenarios import _load_vision_diffusion_mapping, _normalise_dtype
+from neuralzip.model_experiments import _load_vision_diffusion_mapping, _normalise_dtype
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -148,21 +154,14 @@ def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):
 
 
 def _language_model_metrics(spec, *, dtype, chunk_size, layout, local_files_only):
-    snapshot_path = Path(
-        snapshot_download(
-            spec["model_id"],
-            local_files_only=bool(local_files_only),
-            allow_patterns=("*.safetensors", "*.safetensors.index.json"),
-        )
+    snapshot_path, selection = download_safetensors_snapshot(
+        spec["model_id"],
+        local_files_only=bool(local_files_only),
     )
-    files = sorted(snapshot_path.glob("*.safetensors"))
-    if not files:
-        raise ValueError(f"No safetensors files found for {spec['model_id']}.")
 
     totals = None
     start = time.perf_counter()
-    for file_path in files:
-        state = load_file(str(file_path), device="cpu")
+    for _, state in iter_safetensors_shards(selection):
         metrics = _stream_metrics_from_tensors(
             state.items(),
             dtype=dtype,
@@ -188,9 +187,6 @@ def _language_model_metrics(spec, *, dtype, chunk_size, layout, local_files_only
                     totals[key] += value
                 else:
                     totals[key] += value
-        del state
-        gc.collect()
-
     # Recompute global rates from accumulated counts by rerunning through files
     # is unnecessarily expensive for large checkpoints. The accumulated byte
     # costs are exact; entropy diagnostics are kept approximate only when a
@@ -220,7 +216,7 @@ def _language_model_metrics(spec, *, dtype, chunk_size, layout, local_files_only
     totals["delta_seconds"] = elapsed
     totals["load_backend"] = "safetensors-streaming"
     totals["source"] = str(snapshot_path)
-    totals["shards"] = len(files)
+    totals["shards"] = len(selection.files)
     del totals["_exponent_counts"]
     del totals["_delta_counts"]
     del totals["_repeated_transitions"]

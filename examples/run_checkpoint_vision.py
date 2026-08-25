@@ -304,7 +304,7 @@ def benchmark_checkpoint(
     nonfloating = nonfloating_state(state)
     print(
         f"[{spec.slug}] epoch={epoch:03d} tensors={len(tensors)} "
-        f"parameters={sum(t.numel() for t in tensors.values()):,}",
+        f"floating_values={sum(t.numel() for t in tensors.values()):,}",
         flush=True,
     )
 

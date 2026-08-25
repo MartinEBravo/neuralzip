@@ -15,7 +15,6 @@ from .packed_exponents import (
     restore_2d_stream,
     tokenize_ngrams,
     topk_vocab,
-    transpose_2d_stream,
 )
 from .payloads import (
     ByteGroupPayload,
@@ -55,7 +54,7 @@ class NeuralZipCodec(ZipNNCodec):
         max_codebook_sample_bytes=8 << 20,
         ngram_values=(2, 3, 4),
         top_k=254,
-        exponent_layout="original",
+        exponent_layout=None,
         packed_source_budget_ratio=0.30,
         packed_time_budget_ratio=1.0,
         speed_ratio_tolerance=0.03,
@@ -77,7 +76,6 @@ class NeuralZipCodec(ZipNNCodec):
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
         self.top_k = int(top_k)
-        self.exponent_layout = str(exponent_layout)
         self.packed_source_budget_ratio = float(packed_source_budget_ratio)
         self.packed_time_budget_ratio = float(packed_time_budget_ratio)
         self.speed_ratio_tolerance = float(speed_ratio_tolerance)
@@ -96,8 +94,11 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError("ngram_values must contain only values in [2, 8].")
         if not 1 <= self.top_k <= 254:
             raise ValueError("top_k must be in [1, 254].")
-        if self.exponent_layout not in {"original", "transpose2d"}:
-            raise ValueError("exponent_layout must be 'original' or 'transpose2d'.")
+        if exponent_layout not in {None, "original"}:
+            raise ValueError(
+                "Production encoding only supports the original tensor layout; "
+                "transpose2d remains available through the ablation helpers."
+            )
         if not 0 <= self.packed_source_budget_ratio <= 1:
             raise ValueError("packed_source_budget_ratio must be in [0, 1].")
         if self.packed_time_budget_ratio < 0:
@@ -219,11 +220,6 @@ class NeuralZipCodec(ZipNNCodec):
         return bool(config["bit_reorder"]) and int(stream_id) == (
             int(config["element_size"]) - 1
         )
-
-    def _apply_exponent_layout(self, tensor, stream, is_exponent):
-        if not is_exponent or self.exponent_layout == "original":
-            return bytes(stream), "original"
-        return transpose_2d_stream(stream, tuple(int(dim) for dim in tensor.shape))
 
     @staticmethod
     def _bounded_stream_sample(stream, max_bytes, segments=8):
@@ -662,130 +658,6 @@ class NeuralZipCodec(ZipNNCodec):
     def _transfer_plan_key(name, tensor, stream_id):
         return str(name), dtype_name(tensor.dtype), int(stream_id)
 
-    def _compress_stream_with_mode(
-        self,
-        stream,
-        stream_kind,
-        *,
-        element_size,
-        mode,
-    ):
-        if mode["kind"] == "local_huff0":
-            return super()._compress_stream(
-                stream,
-                stream_kind,
-                chunk_size=self._stream_chunk_size(element_size),
-            )
-
-        step = (
-            self._stream_chunk_size(element_size)
-            if mode["kind"] == "raw"
-            else self._source_chunk_size(element_size, mode)
-        )
-        source_chunks = tuple(
-            stream[start : start + step]
-            for start in range(0, len(stream), step)
-            if stream[start : start + step]
-        )
-        if mode["kind"] == "raw":
-            chunks = [self._raw_chunk(chunk) for chunk in source_chunks]
-            return ByteGroupPayload(
-                stream_kind=stream_kind,
-                symbol_count=len(stream),
-                chunks=tuple(chunks),
-            )
-
-        encoded_chunks = [None] * len(source_chunks)
-        if mode["kind"] == "shared_huff0":
-            encoder = (
-                huff0.encode_many_with_codebook_4x
-                if mode.get("frame_4x", False)
-                else huff0.encode_many_with_codebook
-            )
-            payloads = encoder(
-                source_chunks,
-                mode["codebook"],
-                min_saving_bytes=self.min_saving_bytes,
-                compression_threshold=self.compression_threshold,
-                metadata_bytes=SHARED_CHUNK_METADATA_BYTES,
-                threads=self.threads,
-            )
-            for index, (chunk, payload) in enumerate(
-                zip(source_chunks, payloads, strict=True)
-            ):
-                if payload is not None:
-                    encoded_chunks[index] = StreamChunk(
-                        mode="shared_huff0",
-                        symbol_count=len(chunk),
-                        payload=payload,
-                        codebook_id=mode.get("codebook_id"),
-                    )
-        elif mode["kind"] == "packed_huff0":
-            encoder = (
-                huff0.encode_many_ngram_with_codebook_4x
-                if mode.get("frame_4x", False)
-                else huff0.encode_many_ngram_with_codebook
-            )
-            payloads = encoder(
-                source_chunks,
-                mode["codebook"],
-                mode["vocab"],
-                n=mode["ngram_n"],
-                min_saving_bytes=self.min_saving_bytes,
-                compression_threshold=self.compression_threshold,
-                metadata_bytes=PACKED_CHUNK_METADATA_BYTES,
-                threads=self.threads,
-            )
-            for index, (chunk, payload) in enumerate(
-                zip(source_chunks, payloads, strict=True)
-            ):
-                if payload is not None:
-                    encoded_chunks[index] = StreamChunk(
-                        mode="packed_huff0",
-                        symbol_count=len(chunk),
-                        payload=payload.payload,
-                        codebook_id=mode.get("codebook_id"),
-                        token_count=payload.symbol_count,
-                        escape_payload=payload.escape_bytes,
-                        tail_payload=payload.tail,
-                        ngram_n=int(mode["ngram_n"]),
-                        ngram_hits=payload.hits,
-                        ngram_escapes=payload.misses,
-                    )
-        else:
-            raise ValueError(f"Cannot encode mode {mode['kind']!r}.")
-
-        return self._finish_stream_group(
-            source_chunks,
-            encoded_chunks,
-            stream_kind=stream_kind,
-            symbol_count=len(stream),
-        )
-
-    def _finish_stream_group(
-        self,
-        source_chunks,
-        encoded_chunks,
-        *,
-        stream_kind,
-        symbol_count,
-    ):
-        """Apply the normal local fallback and assemble one byte group."""
-        fallback_indices = [
-            index for index, encoded in enumerate(encoded_chunks) if encoded is None
-        ]
-        if fallback_indices:
-            fallback_chunks = super()._compress_local_huff0_chunks(
-                source_chunks[index] for index in fallback_indices
-            )
-            for index, fallback in zip(fallback_indices, fallback_chunks, strict=True):
-                encoded_chunks[index] = fallback
-        return ByteGroupPayload(
-            stream_kind=stream_kind,
-            symbol_count=int(symbol_count),
-            chunks=tuple(encoded_chunks),
-        )
-
     def _prepare_tensor_modes(self, named_tensors):
         used_codebook_ids = set()
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
@@ -947,7 +819,6 @@ class NeuralZipCodec(ZipNNCodec):
             for stream_id in range(int(config["num_buffers"])):
                 is_exponent = self._is_exponent_stream(config, stream_id)
                 stream = reordered[stream_id::element_size]
-                stream, _ = self._apply_exponent_layout(original, stream, is_exponent)
                 key = self._codebook_key(name, original, stream_id)
                 total_sizes[key] = total_sizes.get(key, 0) + len(stream)
                 remaining = self.max_codebook_sample_bytes - sample_sizes.get(key, 0)
@@ -1059,11 +930,8 @@ class NeuralZipCodec(ZipNNCodec):
         return mode
 
     def compress_tensor(self, name, tensor):
-        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-            raise TypeError("NeuralZipCodec only compresses floating tensors.")
-        config = _zipnn_dtype_config(tensor.dtype)
-        original = tensor.detach().cpu().contiguous()
-        return self._compress_neuralzip(name, original, config)
+        """Compress one tensor through the same native batch path as a model."""
+        return self.compress_tensors(((name, tensor),))[0]
 
     def _compress_direct_native_batch(self, tensor_specs):
         """Encode one input-size-windowed tensor batch through one job queue."""
@@ -1105,249 +973,39 @@ class NeuralZipCodec(ZipNNCodec):
         named_tensors = list(named_tensors)
 
         # Build transient input views and submit input-size-windowed batches to
-        # the fused native encoder. Transposed exponent layouts use the Python
-        # stream scheduler below because they require a tensor-dependent
-        # transform before coding.
-        if self.exponent_layout == "original":
-            outputs = []
-            batch = []
-            batch_bytes = 0
-            for name, tensor in named_tensors:
-                if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-                    raise TypeError("NeuralZipCodec only compresses floating tensors.")
-                config = _zipnn_dtype_config(tensor.dtype)
-                raw_bytes = int(tensor.numel()) * int(config["element_size"])
-                if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
-                    outputs.extend(self._compress_direct_native_batch(batch))
-                    batch = []
-                    batch_bytes = 0
-                # Copy a GPU/non-contiguous tensor only after the preceding
-                # window has released its native scratch buffers.
-                original = tensor.detach().cpu().contiguous()
-                stream_count = int(config["num_buffers"])
-                tensor_modes = tuple(
-                    self._mode_for_tensor_stream(name, original, stream_id)
-                    for stream_id in range(stream_count)
-                )
-                batch.append((name, original, config, tensor_modes))
-                batch_bytes += raw_bytes
-                # One oversized tensor is still bounded to that tensor rather
-                # than being retained alongside the following tensors.
-                if batch_bytes >= self.direct_batch_bytes:
-                    outputs.extend(self._compress_direct_native_batch(batch))
-                    batch = []
-                    batch_bytes = 0
-            if batch:
-                outputs.extend(self._compress_direct_native_batch(batch))
-            return tuple(outputs)
-
-        outputs = [None] * len(named_tensors)
-        tensor_specs = {}
-        packed_batches = {}
-
-        for tensor_index, (name, tensor) in enumerate(named_tensors):
+        # the fused native encoder. Every public encoding entrypoint reaches
+        # this path, so setup selection and runtime fallback share one backend.
+        outputs = []
+        batch = []
+        batch_bytes = 0
+        for name, tensor in named_tensors:
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 raise TypeError("NeuralZipCodec only compresses floating tensors.")
-
             config = _zipnn_dtype_config(tensor.dtype)
+            raw_bytes = int(tensor.numel()) * int(config["element_size"])
+            if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
+                outputs.extend(self._compress_direct_native_batch(batch))
+                batch = []
+                batch_bytes = 0
+            # Copy a GPU/non-contiguous tensor only after the preceding
+            # window has released its native scratch buffers.
             original = tensor.detach().cpu().contiguous()
-            element_size = int(config["element_size"])
             stream_count = int(config["num_buffers"])
             tensor_modes = tuple(
                 self._mode_for_tensor_stream(name, original, stream_id)
                 for stream_id in range(stream_count)
             )
-
-            if not any(mode.get("kind") == "packed_huff0" for mode in tensor_modes):
-                outputs[tensor_index] = self._compress_neuralzip(
-                    name,
-                    original,
-                    config,
-                )
-                continue
-
-            reordered = _zipnn_reordered_bytes(original, config)
-            groups = [None] * stream_count
-            tensor_layout = "original"
-            tensor_specs[tensor_index] = {
-                "name": name,
-                "tensor": original,
-                "config": config,
-                "groups": groups,
-                "tensor_layout": tensor_layout,
-            }
-
-            for stream_id, mode in enumerate(tensor_modes):
-                is_exponent = self._is_exponent_stream(config, stream_id)
-                stream = reordered[stream_id::element_size]
-                stream, layout = self._apply_exponent_layout(
-                    original,
-                    stream,
-                    is_exponent,
-                )
-                if is_exponent:
-                    tensor_specs[tensor_index]["tensor_layout"] = layout
-                stream_kind = "exponent" if is_exponent else "byte_group"
-
-                if mode.get("kind") != "packed_huff0":
-                    groups[stream_id] = self._compress_stream_with_mode(
-                        stream,
-                        stream_kind,
-                        element_size=element_size,
-                        mode=mode,
-                    )
-                    continue
-
-                step = self._source_chunk_size(element_size, mode)
-                source_chunks = tuple(
-                    stream[start : start + step]
-                    for start in range(0, len(stream), step)
-                    if stream[start : start + step]
-                )
-                # Identical serialized codebooks and vocabularies produce the
-                # same token and bit streams even when their archive ids differ.
-                batch_key = (
-                    bytes(mode["codebook"].codebook),
-                    bytes(mode["vocab"]),
-                    int(mode["ngram_n"]),
-                    bool(mode.get("frame_4x", False)),
-                )
-                batch = packed_batches.setdefault(
-                    batch_key,
-                    {"mode": mode, "requests": []},
-                )
-                batch["requests"].append(
-                    {
-                        "tensor_index": tensor_index,
-                        "stream_id": stream_id,
-                        "stream_kind": stream_kind,
-                        "symbol_count": len(stream),
-                        "source_chunks": source_chunks,
-                        "mode": mode,
-                    }
-                )
-
-        for batch in packed_batches.values():
-            mode = batch["mode"]
-            flat_chunks = tuple(
-                chunk
-                for request in batch["requests"]
-                for chunk in request["source_chunks"]
-            )
-            encoder = (
-                huff0.encode_many_ngram_with_codebook_4x
-                if mode.get("frame_4x", False)
-                else huff0.encode_many_ngram_with_codebook
-            )
-            flat_payloads = encoder(
-                flat_chunks,
-                mode["codebook"],
-                mode["vocab"],
-                n=mode["ngram_n"],
-                min_saving_bytes=self.min_saving_bytes,
-                compression_threshold=self.compression_threshold,
-                metadata_bytes=PACKED_CHUNK_METADATA_BYTES,
-                threads=self.threads,
-            )
-
-            offset = 0
-            for request in batch["requests"]:
-                source_chunks = request["source_chunks"]
-                payloads = flat_payloads[offset : offset + len(source_chunks)]
-                offset += len(source_chunks)
-                request_mode = request["mode"]
-                encoded_chunks = [None] * len(source_chunks)
-                for index, (chunk, payload) in enumerate(
-                    zip(source_chunks, payloads, strict=True)
-                ):
-                    if payload is not None:
-                        candidate = StreamChunk(
-                            mode="packed_huff0",
-                            symbol_count=len(chunk),
-                            payload=payload.payload,
-                            codebook_id=request_mode.get("codebook_id"),
-                            token_count=payload.symbol_count,
-                            escape_payload=payload.escape_bytes,
-                            tail_payload=payload.tail,
-                            ngram_n=int(request_mode["ngram_n"]),
-                            ngram_hits=payload.hits,
-                            ngram_escapes=payload.misses,
-                        )
-                        if (
-                            candidate.compressed_bytes
-                            < len(chunk) * self.compression_threshold
-                        ):
-                            encoded_chunks[index] = candidate
-                group = self._finish_stream_group(
-                    source_chunks,
-                    encoded_chunks,
-                    stream_kind=request["stream_kind"],
-                    symbol_count=request["symbol_count"],
-                )
-                tensor_specs[request["tensor_index"]]["groups"][
-                    request["stream_id"]
-                ] = group
-
-            if offset != len(flat_payloads):
-                raise RuntimeError(
-                    "Packed batch result count did not match its inputs."
-                )
-
-        for tensor_index, spec in tensor_specs.items():
-            tensor = spec["tensor"]
-            config = spec["config"]
-            groups = spec["groups"]
-            if any(group is None for group in groups):
-                raise RuntimeError("Packed batch left an uncompressed tensor stream.")
-            outputs[tensor_index] = TensorPayload(
-                name=spec["name"],
-                shape=tuple(int(dim) for dim in tensor.shape),
-                dtype=dtype_name(tensor.dtype),
-                element_size=int(config["element_size"]),
-                numel=int(tensor.numel()),
-                strategy="neuralzip",
-                groups=tuple(groups),
-                byte_reorder=int(config["byte_reorder"]),
-                bit_reorder=int(config["bit_reorder"]),
-                num_buffers=int(config["num_buffers"]),
-                cluster_id=self.cluster_id(spec["name"]),
-                exponent_layout=spec["tensor_layout"],
-            )
-
-        if any(payload is None for payload in outputs):
-            raise RuntimeError("Model batch compression did not produce every tensor.")
+            batch.append((name, original, config, tensor_modes))
+            batch_bytes += raw_bytes
+            # One oversized tensor is still bounded to that tensor rather
+            # than being retained alongside the following tensors.
+            if batch_bytes >= self.direct_batch_bytes:
+                outputs.extend(self._compress_direct_native_batch(batch))
+                batch = []
+                batch_bytes = 0
+        if batch:
+            outputs.extend(self._compress_direct_native_batch(batch))
         return tuple(outputs)
-
-    def _compress_neuralzip_mixed(self, name, tensor, config, tensor_modes):
-        """Encode one tensor from its original buffer without retained target data.
-
-        The native backend performs ZipNN bit reordering, byte-lane extraction,
-        packed tokenization, Huff0 encoding, and local/raw fallback in one
-        transient pipeline.  Only the final archive payload survives the call.
-        """
-        element_size = int(config["element_size"])
-        stream_count = int(config["num_buffers"])
-        if stream_count != element_size:
-            raise RuntimeError("Mixed ZipNN expects one stream per element byte.")
-
-        raw = tensor.view(torch.uint8).reshape(-1).numpy()
-        native_groups = huff0.compress_zipnn_mixed(
-            raw,
-            element_size=element_size,
-            bit_reorder=int(config["bit_reorder"]),
-            chunk_size=self._stream_chunk_size(element_size),
-            stream_modes=tensor_modes,
-            min_saving_bytes=self.min_saving_bytes,
-            threads=self.threads,
-            compression_threshold=self.compression_threshold,
-        )
-        return self._tensor_payload_from_native_mixed(
-            name,
-            tensor,
-            config,
-            tensor_modes,
-            native_groups,
-        )
 
     def _tensor_payload_from_native_mixed(
         self,
@@ -1464,98 +1122,6 @@ class NeuralZipCodec(ZipNNCodec):
             num_buffers=stream_count,
             cluster_id=self.cluster_id(name),
             exponent_layout="original",
-        )
-
-    def _compress_neuralzip(self, name, tensor, config):
-        # When precomputation selects only the baseline local/raw modes, use
-        # ZipNNCodec's native batched Huff0 path directly.  This preserves the
-        # exact baseline representation while avoiding NeuralZip's per-stream
-        # Python dispatch overhead; advanced shared/packed modes continue below.
-        # Inspect only the plans belonging to this tensor.  Looking at the
-        # global plan made a single packed/shared stream disable the fast path
-        # for every otherwise-baseline tensor in the model.
-        element_size = int(config["element_size"])
-        stream_count = int(config["num_buffers"])
-        tensor_modes = tuple(
-            self._mode_for_tensor_stream(name, tensor, stream_id)
-            for stream_id in range(stream_count)
-        )
-        baseline_format = (
-            self.exponent_layout == "original"
-            and tensor_modes
-            and all(mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes)
-        )
-        if self.exponent_layout == "original" and any(
-            mode.get("kind") != "local_huff0" for mode in tensor_modes
-        ):
-            return self._compress_neuralzip_mixed(
-                name,
-                tensor,
-                config,
-                tensor_modes,
-            )
-        if baseline_format:
-            baseline = super()._compress_zipnn(name, tensor, config)
-            return TensorPayload(
-                name=name,
-                shape=tuple(int(dim) for dim in tensor.shape),
-                dtype=dtype_name(tensor.dtype),
-                element_size=element_size,
-                numel=int(tensor.numel()),
-                strategy="neuralzip",
-                groups=baseline.groups,
-                byte_reorder=int(config["byte_reorder"]),
-                bit_reorder=int(config["bit_reorder"]),
-                num_buffers=stream_count,
-                cluster_id=self.cluster_id(name),
-                exponent_layout="original",
-            )
-
-        # Advanced tensors are encoded directly from one reordered buffer.
-        # Running a complete ZipNN baseline first would compress the packed or
-        # shared stream only to discard it immediately afterwards.
-        reordered = _zipnn_reordered_bytes(tensor, config)
-        groups = []
-        tensor_layout = "original"
-        for stream_id, mode in enumerate(tensor_modes):
-            is_exponent = self._is_exponent_stream(config, stream_id)
-            stream = reordered[stream_id::element_size]
-            stream, layout = self._apply_exponent_layout(
-                tensor,
-                stream,
-                is_exponent,
-            )
-            if is_exponent:
-                tensor_layout = layout
-            # The fused ZipNN baseline historically labels every reordered
-            # lane as ``byte_group``.  Preserve that archive representation
-            # when setup selected the baseline local/raw representation.
-            stream_kind = (
-                "byte_group"
-                if baseline_format
-                else ("exponent" if is_exponent else "byte_group")
-            )
-            groups.append(
-                self._compress_stream_with_mode(
-                    stream,
-                    stream_kind,
-                    element_size=element_size,
-                    mode=mode,
-                )
-            )
-        return TensorPayload(
-            name=name,
-            shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=dtype_name(tensor.dtype),
-            element_size=element_size,
-            numel=int(tensor.numel()),
-            strategy="neuralzip",
-            groups=tuple(groups),
-            byte_reorder=int(config["byte_reorder"]),
-            bit_reorder=int(config["bit_reorder"]),
-            num_buffers=stream_count,
-            cluster_id=self.cluster_id(name),
-            exponent_layout=tensor_layout,
         )
 
     def _decompress_cluster_stream(self, group):

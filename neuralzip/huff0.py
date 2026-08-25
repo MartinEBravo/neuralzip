@@ -186,8 +186,8 @@ def compress_zipnn_mixed(
     ``(mode, payload, symbol_count, token_count, escapes, tail, n, hits,
     misses)`` after applying the exact local/raw fallback.
 
-    This primitive implements the original ZipNN stream layout. Callers using
-    a transposed exponent layout must retain the existing Python path.
+    This primitive implements the original ZipNN stream layout used by every
+    production NeuralZip encoding entrypoint.
     """
     return compress_zipnn_mixed_many(
         ((data, element_size, bit_reorder, chunk_size, stream_modes),),

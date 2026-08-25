@@ -1,121 +1,273 @@
 # NeuralZip
 
-Install the project in editable mode before running experiments:
+**Lossless compression for neural-network weights with reusable setup.**
+
+NeuralZip is a Python library for compressing floating-point model weights. It
+is designed for workloads that encode related tensors repeatedly, such as
+training checkpoints, federated updates, model families, and Mixture-of-Experts
+models.
+
+NeuralZip learns a setup from one set of weights: it groups tensors with similar
+exponent distributions and builds shared Huffman codebooks for them. The setup
+can then be reused for later checkpoints or transferred to a compatible model,
+keeping clustering and codebook construction outside the hot encoding path.
+
+- Bitwise-exact round trips for `float16`, `bfloat16`, and `float32` tensors.
+- A simple API for compression, `.nzip` archives, and restoration.
+- Reusable setups for repeated compression and compatible family members.
+- Direct support for PyTorch modules, state dictionaries, and Hugging Face
+  models.
+- Exact byte accounting and separate setup, encoding, and decoding timings.
+- Included local and official ZipNN baselines for comparison.
+
+## Installation
+
+NeuralZip is currently installed from source:
 
 ```bash
-pip install -e ".[experiments]"
+git clone https://github.com/MartinEBravo/nzip.git
+cd nzip
+python -m pip install -e .
 ```
 
-The codebase keeps only the minimal model-loading and compression surface:
+Python 3.10 or newer and a native C/C++ compiler are required. Installation
+builds the bundled Huff0 extension; its required Zstd sources are included in
+the repository.
+
+To reproduce the experiments or use the official ZipNN baseline:
+
+```bash
+python -m pip install -e ".[experiments]"
+```
+
+## Quick start
 
 ```python
-from neuralzip import Compressor, HFModel
+import torch
 
-hf_model = HFModel("gpt2", dtype="bfloat16")
-results = Compressor("zipnn-local").compress(hf_model)
+from neuralzip import Compressor
+
+weights = {
+    "encoder.weight": torch.randn(1024, 1024, dtype=torch.bfloat16),
+    "decoder.weight": torch.randn(1024, 1024, dtype=torch.bfloat16),
+}
+
+compressor = Compressor(
+    "neuralzip",
+    keep_payloads=True,
+    verify=True,
+    threads=4,
+)
+compressed = compressor.compress(weights)
+
+print(f"Stored size: {100 * compressed['compression_ratio']:.2f}% of the input")
+print(f"Setup: {compressed['setup_seconds']:.3f} s")
+print(f"Encode: {compressed['encode_seconds']:.3f} s")
+
+Compressor.save(compressed, "weights.nzip")
+restored = compressor.decompress_file("weights.nzip")
+
+for name, tensor in weights.items():
+    assert torch.equal(
+        restored[name].view(torch.uint8),
+        tensor.view(torch.uint8),
+    )
 ```
 
-`HFModel` wraps Hugging Face model loading. `Compressor("zipnn-local")` applies
-the local ZipNN-compatible implementation.
-For each supported floating-point tensor, the codec applies the same high-level
-strategy as ZipNN: dtype-aware bit/byte reordering, byte-position grouping,
-chunked Huffman compression, and raw fallback when a chunk does not pass the
-compression threshold. Huff0 is implemented in the compiled C++ extension
-`neuralzip._huff0_cpp`.
+`keep_payloads=True` is required when the result will be saved or decompressed.
+The default, `False`, is useful for measurements that do not need to retain the
+encoded bytes. `verify=True` is enabled by default and checks every included
+tensor after compression.
 
-`Compressor("zipnn-src")` calls the official `zipnn` package from the
-authors and treats its binary output as the compressed payload. Use it as the
-external baseline.
+The equivalent explicit load flow is:
 
-`Compressor("neuralzip")` is the single NeuralZip entrypoint and produces a
-reversible full-checkpoint representation. It keeps ZipNN's dtype-aware byte
-layout and clusters tensors by Jensen-Shannon distance over exponent histograms.
-For each cluster and byte stream, a bounded sample evaluates raw storage, local
-Huff0, a shared Huff0 codebook, and packed-exponent Huff0 with `n` in
-`{2, 3, 4}`. Packed modes use a Top-K vocabulary, an escape symbol for unseen
-n-grams, and a raw tail, so reconstruction remains bitwise exact. New shared
-and packed payloads use explicit four-stream Huff0 frames.
+```python
+loaded = Compressor.load("weights.nzip")
+restored = Compressor("neuralzip").decompress(loaded)
+```
 
-The JS threshold is controlled by `cluster_js_threshold`; sample size by
-`max_codebook_sample_bytes`; and the packed candidates by `ngram_values` and
-`top_k`. Two-dimensional exponent streams use a deterministic transposed layout
-when selected with `exponent_layout="transpose2d"`; the default layout is
-`"original"`. Codebooks and vocabularies are stored once in the compressed
-header and referenced by chunks.
+## Compressing a model
 
-Once modes and codebooks are available, a fused native pipeline reads each
-target tensor, performs ZipNN reordering and stream extraction, tokenizes packed
-exponents, applies Huff0 and its local/raw fallback, and returns only the final
-payload. Reordered streams and tokens are transient. Tensors are submitted
-through input-size-windowed native batches whose jobs share one queue per
-window. The default threshold is 128 MiB; an individual larger tensor forms its
-own window. Encoding a new checkpoint therefore does not retain a second
-transformed copy of its floating-point parameters in memory.
-
-Mode selection is time-aware. Among modes within `speed_ratio_tolerance`
-(default 3% relative compressed bytes) of the best estimated ratio, it chooses
-the fastest direct encoding path. Packed opportunities are ranked by bytes
-saved per additional second and admitted under `packed_time_budget_ratio`
-(default 100% of estimated base time), with `packed_source_budget_ratio` retained
-as a coverage cap.
-
-Timing is reported as `setup_seconds`, `encode_seconds`, and `total_seconds`.
-The setup is also split into `clustering_seconds` and
-`codebook_setup_seconds`; encoding includes all target-dependent work. Results
-also record selected modes, packed chunks, escape counts, and round-trip status.
+NeuralZip accepts a `torch.nn.Module` directly:
 
 ```python
 compressed = Compressor(
     "neuralzip",
-    verify=True,
     keep_payloads=True,
-).compress(hf_model)
-Compressor.save(compressed, "model.nzip")
-restored = Compressor("neuralzip").decompress_file("model.nzip")
+).compress(model)
 ```
 
-Direct family transfer reuses only the source setup:
+It also includes a small Hugging Face loader:
 
 ```python
-codec = Compressor("neuralzip").codec
-codec.prepare_clusters(source_parameters)
-codec.build_codebooks_and_select_modes(source_parameters)
-codec.prepare_direct_transfer_target(target_parameters)
-target_payloads = codec.compress_tensors(target_parameters)
+from neuralzip import Compressor, HFModel
+
+hf_model = HFModel("openai-community/gpt2", dtype="bfloat16")
+compressed = Compressor(
+    "neuralzip",
+    keep_payloads=True,
+).compress(hf_model)
 ```
 
-The mapping step reads target metadata only. It does not compute target
-histograms, perform JS matching or mode probing, or retain target data.
+For a module, NeuralZip includes its floating-point named parameters. Passing a
+`state_dict()` instead also includes floating-point buffers:
 
-The `compressed_bytes` metric is the exact size of this versioned archive, not
-an entropy estimate or a sum that omits container metadata.
+```python
+module = hf_model.model  # Or any torch.nn.Module.
+state = module.state_dict()
+compressor = Compressor("neuralzip", keep_payloads=True)
+compressed = compressor.compress(state)
+Compressor.save(compressed, "model-weights.nzip")
 
-The implementation is centered on `neuralzip/compressor.py` (public facade),
-`neuralzip/neuralzip_codec.py` (setup and direct codec), and
-`neuralzip/archive.py` (versioned representation). The experiment helpers in
-`examples/model_loading.py`, `examples/direct_compression.py`,
-`examples/checkpoint_common.py`, `examples/checkpoint_compression.py`, and
-`examples/federated_common.py` keep model loading, timing, metrics, and
-trajectory handling out of the runners. The fixed-checkpoint, setup-transfer,
-phenomenon, clustering, and quantized entrypoints share
-`examples/model_catalog.py`:
+floating_state = compressor.decompress_file("model-weights.nzip")
+state.update(floating_state)
+module.load_state_dict(state)
+```
 
-| Thesis result | Entrypoint |
+An `.nzip` file is a tensor archive, not a serialized model object. It does not
+contain the model architecture, configuration, non-floating state, optimizer,
+or original Python container. Keep those separately when reconstructing a full
+training checkpoint.
+
+## Reusing a setup
+
+`NeuralZipPlan` separates the one-time setup from encoding. This is the
+recommended interface for checkpoint trajectories and other repeated workloads.
+
+```python
+from neuralzip import NeuralZipPlan
+
+source = dict(source_model.named_parameters())
+target = dict(target_model.named_parameters())
+
+# Pay clustering and codebook construction once.
+plan = NeuralZipPlan.fit(source, threads=8)
+print(f"Setup: {plan.setup_report.setup_seconds:.3f} s")
+
+# The same setup can encode its source immediately.
+source_batch = plan.encode(source)
+source_restored = plan.decode(source_batch.payloads)
+
+# Save the reusable setup independently of any compressed checkpoint.
+plan.save("family.setup.pkl", source)
+
+# Later, map a compatible checkpoint or family member and encode it directly.
+plan = NeuralZipPlan.load("family.setup.pkl")
+mapping = plan.map_target(target)
+target_batch = plan.encode(target)
+target_restored = plan.decode(target_batch.payloads)
+
+assert mapping["matched_tensors"] == mapping["target_tensors"]
+```
+
+Transfer is deterministic and value-independent: every target tensor must match
+a source tensor by name, dtype, and byte stream. NeuralZip does not automatically
+search for the nearest architecture; the application chooses the compatible
+source setup. Plan files use Python pickle and should only be loaded from trusted
+sources.
+
+## Compression methods
+
+| Method | Purpose | `.nzip` save and restore |
+| --- | --- | --- |
+| `neuralzip` | Main codec with reusable clustering, shared codebooks, and packed exponents | Yes |
+| `zipnn-local` | Included ZipNN-compatible local baseline | Yes |
+| `zipnn-src` | Adapter to the official `zipnn` package for benchmarking | No |
+
+`zipnn-src` is installed by the `experiments` extra. Its retained payloads are
+official per-tensor ZipNN frames and are intentionally outside NeuralZip's
+model-level archive API.
+
+## Result fields
+
+`Compressor.compress()` returns a dictionary. The most useful fields are:
+
+| Field | Meaning |
 | --- | --- |
-| Field entropy, JS heatmaps, packed entropy, component isolation, deferred methods, and ZipNN implementations | `run_thesis_model_suite.py` |
-| Clustering agreement | `run_clustering_ablation.py` |
-| Direct encoding, model storage, MoE, and distilled models | `run_fixed_model_suite.py` |
-| Setup transfer between family members | `run_setup_transfer_suite.py`, then `summarize_setup_transfer_suite.py` |
-| Quantized weights | `run_quantized_nibble_compression.py` |
-| Training checkpoints | `run_checkpoint_vision.py`, `run_checkpoint_language.py`, then `render_four_model_training_suite.py` |
-| Federated training | `run_federated_vision.py`, `run_federated_language.py`, then `render_four_model_training_suite.py` |
+| `raw_bytes` | Bytes in the selected floating-point tensors |
+| `compressed_bytes` | Exact serialized output size for the selected tensors |
+| `compression_ratio` | `compressed_bytes / raw_bytes`; lower is better |
+| `setup_seconds` | Clustering and codebook construction |
+| `encode_seconds` | Target-dependent encoding work |
+| `total_seconds` | `setup_seconds + encode_seconds` |
+| `decode_seconds` | Verification decode time when `verify=True` |
+| `roundtrip_ok` | Whether verification was bitwise exact |
 
-`run_fixed_model_suite.py` uses the versioned checkpoint revisions and weight
-fingerprints in `examples/fixed_model_manifest.json`. Hugging Face snapshots
-must already exist below the cache passed with `--cache-root`; the runner never
-silently substitutes a newer revision. The deferred-method phase of
-`run_thesis_model_suite.py` additionally expects external MM-RePair and TurboRC
-installations.
+For `neuralzip` and `zipnn-local`, `compressed_bytes` is the exact `.nzip` size
+for the selected tensors. For `zipnn-src`, it is the size of the official
+per-tensor frames. Verification time is reported separately and is not included
+in `total_seconds`.
 
-Generated checkpoints, logs, tables, and figures are intentionally not
-versioned. Runners create them locally under `results/`.
+## Common options
+
+```python
+compressor = Compressor(
+    "neuralzip",
+    verify=True,
+    keep_payloads=False,
+    threads=0,
+    chunk_size=256 << 10,
+    compression_threshold=0.95,
+    cluster_js_threshold=0.05,
+)
+```
+
+- `verify` performs a bitwise round-trip check.
+- `keep_payloads` retains encoded tensors for saving or later decompression.
+- `threads` controls native encoding workers.
+- `chunk_size` sets the source bytes processed per chunk.
+- `compression_threshold` controls raw fallback for weakly compressible chunks.
+- `cluster_js_threshold` controls exponent-histogram clustering.
+
+Advanced controls for sampling, packed exponent n-grams, codebook sharing, and
+time-aware mode selection are also exposed by `Compressor` and
+`NeuralZipPlan.fit()`.
+
+## How it works
+
+1. NeuralZip rearranges floating-point bytes into dtype-aware streams, exposing
+   the exponent field that carries most of the compressible structure.
+2. It groups tensors using Jensen-Shannon distance between exponent histograms.
+3. For each group and byte stream, it selects among raw storage, local Huff0,
+   shared Huff0 codebooks, and packed exponent n-grams.
+4. A native batched encoder applies the selected modes and falls back to raw
+   storage whenever compression is not worthwhile.
+
+The setup cost is visible and reported. NeuralZip is most useful when that cost
+can be amortized across repeated checkpoints or compatible models; for an
+unrelated one-shot model, compare `total_seconds`, not only `encode_seconds`.
+
+## Reproducing the experiments
+
+Install the experiment dependencies and inspect the available runner options:
+
+```bash
+python -m pip install -e ".[experiments]"
+
+python examples/run_fixed_model_suite.py --help
+python examples/run_setup_transfer_suite.py --help
+python examples/run_thesis_model_suite.py --help
+python examples/run_clustering_ablation.py --help
+python examples/run_checkpoint_vision.py --help
+python examples/run_federated_vision.py --help
+```
+
+The fixed-model suite uses the pinned revisions and fingerprints in
+`examples/fixed_model_manifest.json`. Generated checkpoints, logs, tables, and
+figures are written below `results/` and are intentionally not versioned.
+
+Some deferred-compressor experiments require external MM-RePair or TurboRC
+installations; they are not dependencies of the NeuralZip library.
+
+## Development
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest -q
+```
+
+The public package surface is intentionally small:
+
+```python
+from neuralzip import Compressor, HFModel, NeuralZipPlan
+```

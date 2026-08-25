@@ -230,7 +230,7 @@ def benchmark_neuralzip(
     mapping_seconds = time.perf_counter() - mapping_started
     if int(transfer["matched_tensors"]) != len(named_tensors):
         raise RuntimeError(
-            f"NeuralZip failed full checkpoint mapping at epoch {epoch}."
+            f"NeuralZip failed complete floating-state mapping at epoch {epoch}."
         )
     if plan.digest != str(setup["codebook_digest"]):
         raise RuntimeError("NeuralZip changed the frozen epoch-0 codebooks.")

@@ -9,13 +9,25 @@ except ImportError as error:
     raise unittest.SkipTest("NeuralZip codec tests require torch") from error
 
 from neuralzip import Compressor, huff0
-from neuralzip.archive import dumps
+from neuralzip.archive import dumps, loads
 from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.packed_exponents import tokenize_ngrams, topk_vocab
 from neuralzip.payloads import CodebookPayload
 from neuralzip.zipnn_codec import (
+    ZipNNCodec,
     _zipnn_dtype_config,
     _zipnn_reordered_bytes,
+)
+
+LEGACY_TRANSPOSED_ARCHIVE_V2 = bytes.fromhex(
+    "4e5a50310200090000006e657572616c7a697000000000000000000100000000000000"
+    "0d0000006c65676163792e7765696768740800000062666c6f61743136090000006e65"
+    "7572616c7a6970000000000b0000007472616e73706f73653264020000000000000006"
+    "000000000000000a000000010000000200000002000000020000000000000003000000"
+    "00000000000000000000000002000000000000000a000000627974655f67726f757006"
+    "0000000000000001000000000000000006000000000000000600000000000000000000"
+    "000000080000006578706f6e656e740600000000000000010000000000000000060000"
+    "000000000006000000000000007f8280838184"
 )
 
 
@@ -39,6 +51,17 @@ class NeuralZipCodecTests(unittest.TestCase):
         codec.prepare_clusters(source)
         codec.build_codebooks_and_select_modes(source)
         return codec, source, target
+
+    def test_legacy_layout_option_accepts_only_original_order(self):
+        codec = NeuralZipCodec(exponent_layout="original")
+        compressor = Compressor("neuralzip", exponent_layout="original")
+
+        self.assertFalse(hasattr(codec, "exponent_layout"))
+        self.assertFalse(hasattr(compressor.codec, "exponent_layout"))
+        with self.assertRaisesRegex(ValueError, "only supports the original"):
+            NeuralZipCodec(exponent_layout="transpose2d")
+        with self.assertRaisesRegex(ValueError, "only supports the original"):
+            Compressor("neuralzip", exponent_layout="transpose2d")
 
     def test_direct_transfer_skips_histogram_js_and_probe(self):
         codec, _, target = self._prepared_direct_transfer_codec()
@@ -84,17 +107,17 @@ class NeuralZipCodecTests(unittest.TestCase):
             )
         )
 
-    def test_direct_native_path_matches_python_stream_path(self):
+    def test_single_and_model_encoding_use_native_batch_path(self):
         codec, _, target = self._prepared_direct_transfer_codec()
         codec.prepare_direct_transfer_target(target)
-
-        # A one-dimensional tensor is unchanged by transpose2d, but selecting
-        # that layout deliberately exercises the legacy Python stream path.
-        codec.exponent_layout = "transpose2d"
-        legacy = codec.compress_tensors(target)[0]
-        codec.exponent_layout = "original"
+        expected = codec.compress_tensors(target)[0]
 
         with (
+            mock.patch.object(
+                codec,
+                "compress_tensors",
+                wraps=codec.compress_tensors,
+            ) as batch_frontend,
             mock.patch.object(
                 huff0,
                 "compress_zipnn_mixed_many",
@@ -103,8 +126,8 @@ class NeuralZipCodecTests(unittest.TestCase):
             mock.patch.object(
                 huff0,
                 "compress_zipnn_mixed",
-                wraps=huff0.compress_zipnn_mixed,
-            ) as mixed_single,
+                side_effect=AssertionError("single-tensor legacy encoder was used"),
+            ),
             mock.patch(
                 "neuralzip.neuralzip_codec._zipnn_reordered_bytes",
                 side_effect=AssertionError("direct encode constructed reordered bytes"),
@@ -113,18 +136,33 @@ class NeuralZipCodecTests(unittest.TestCase):
                 "neuralzip.neuralzip_codec.tokenize_ngrams",
                 side_effect=AssertionError("direct encode used Python tokenization"),
             ),
-            mock.patch.object(
-                codec,
-                "_compress_stream_with_mode",
-                side_effect=AssertionError("direct encode used the legacy stream path"),
-            ),
         ):
-            direct = codec.compress_tensors(target)[0]
+            direct = codec.compress_tensor(*target[0])
 
+        batch_frontend.assert_called_once()
         mixed_many.assert_called_once()
-        mixed_single.assert_not_called()
-        self.assertEqual(direct, legacy)
+        delegated = tuple(batch_frontend.call_args.args[0])
+        self.assertEqual(len(delegated), 1)
+        self.assertEqual(delegated[0][0], target[0][0])
+        self.assertIs(delegated[0][1], target[0][1])
+        self.assertEqual(len(mixed_many.call_args.args[0]), 1)
+        self.assertEqual(direct, expected)
         self.assertTrue(torch.equal(codec.decompress_tensor(direct), target[0][1]))
+
+    def test_legacy_transposed_archive_still_decodes(self):
+        expected = torch.tensor(
+            [[1.0, 2.0, 4.0], [8.0, 16.0, 32.0]],
+            dtype=torch.bfloat16,
+        )
+        self.assertEqual(LEGACY_TRANSPOSED_ARCHIVE_V2[:6], b"NZP1\x02\x00")
+        archived = loads(LEGACY_TRANSPOSED_ARCHIVE_V2)["tensor_results"][0]["payload"]
+        self.assertEqual(archived.exponent_layout, "transpose2d")
+
+        restored = NeuralZipCodec().decompress_tensor(archived)
+
+        self.assertTrue(
+            torch.equal(restored.view(torch.uint8), expected.view(torch.uint8))
+        )
 
     def test_direct_transfer_requires_complete_exact_name_mapping(self):
         codec, _, target = self._prepared_direct_transfer_codec()
@@ -209,7 +247,6 @@ class NeuralZipCodecTests(unittest.TestCase):
         codec = NeuralZipCodec(
             threads=4,
             compression_threshold=1.0,
-            exponent_layout="original",
         )
         packed_mode = {
             "kind": "packed_huff0",
@@ -311,7 +348,6 @@ class NeuralZipCodecTests(unittest.TestCase):
         ]
         codec = NeuralZipCodec(
             threads=2,
-            exponent_layout="original",
             direct_batch_bytes=200,
         )
         codec._clusters_prepared = True
@@ -378,6 +414,22 @@ class NeuralZipCodecTests(unittest.TestCase):
             self.assertEqual(call.kwargs["min_saving_bytes"], 7)
             self.assertEqual(call.kwargs["threads"], 3)
             self.assertEqual(call.kwargs["compression_threshold"], 0.75)
+
+    def test_native_local_mode_matches_zipnn_payload(self):
+        name = "baseline.weight"
+        tensor = torch.arange(256, dtype=torch.float32).reshape(16, 16)
+        codec = NeuralZipCodec(threads=2)
+        codec._mode_by_tensor_stream = {
+            (name, "float32", stream_id): {"kind": "local_huff0"}
+            for stream_id in range(4)
+        }
+
+        actual = codec.compress_tensor(name, tensor)
+        baseline = ZipNNCodec(threads=2).compress_tensor(name, tensor)
+
+        self.assertEqual(actual.groups, baseline.groups)
+        self.assertEqual(actual.payload_bytes, baseline.payload_bytes)
+        self.assertTrue(torch.equal(codec.decompress_tensor(actual), tensor))
 
     def test_packed_ratio_best_is_not_hidden_by_faster_non_saving_ngram(self):
         codec = NeuralZipCodec(
@@ -484,36 +536,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 2)
         self.assertEqual(evaluation["opportunity"]["saved_bytes"], 1.0)
 
-    def test_fast_path_is_selected_per_tensor(self):
-        codec = NeuralZipCodec(threads=2, exponent_layout="original")
-        tensor = torch.ones((8, 8), dtype=torch.float32)
-        # This tensor is baseline-only even though another tensor in the model
-        # uses an advanced mode.  The latter must not disable this fast path.
-        codec._mode_by_tensor_stream = {
-            **{
-                ("baseline.weight", "float32", stream_id): {"kind": "local_huff0"}
-                for stream_id in range(4)
-            },
-            ("advanced.weight", "float32", 3): {"kind": "packed_huff0"},
-        }
-        baseline_payload = codec.__class__.__bases__[0](threads=2)._compress_zipnn(
-            "baseline.weight",
-            tensor,
-            _zipnn_dtype_config(tensor.dtype),
-        )
-        with mock.patch.object(
-            codec.__class__.__bases__[0],
-            "_compress_zipnn",
-            return_value=baseline_payload,
-        ) as baseline:
-            result = codec._compress_neuralzip(
-                "baseline.weight", tensor, _zipnn_dtype_config(tensor.dtype)
-            )
-        self.assertEqual(result.strategy, "neuralzip")
-        self.assertEqual(result.groups, baseline_payload.groups)
-        baseline.assert_called_once()
-
-    def test_full_checkpoint_roundtrip_and_archive(self):
+    def test_floating_tensor_archive_roundtrip(self):
         repeated = torch.tensor(
             [[1.0, 1.0, 0.5, 1.0], [1.0, 0.5, 1.0, 1.0]],
             dtype=torch.bfloat16,
@@ -532,6 +555,12 @@ class NeuralZipCodecTests(unittest.TestCase):
         result = compressor.compress(model)
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["method"], "neuralzip")
+        self.assertTrue(
+            all(
+                tensor_result["payload"].exponent_layout == "original"
+                for tensor_result in result["tensor_results"]
+            )
+        )
         self.assertAlmostEqual(
             result["setup_seconds"],
             result["clustering_seconds"] + result["codebook_setup_seconds"],
@@ -684,24 +713,6 @@ class NeuralZipCodecTests(unittest.TestCase):
             1,
         )
         self.assertTrue(all(result["roundtrip_ok"] for result in results))
-
-    def test_shared_codebook_failure_falls_back_to_local_huff0(self):
-        codec = NeuralZipCodec(ngram_values=())
-        mode = codec._build_candidate(
-            bytes([1, 3]) * 2048,
-            kind="shared_huff0",
-            prior_count=1,
-        )
-        mode["codebook_id"] = 0
-        group = codec._compress_stream_with_mode(
-            bytes([2, 4]) * 2048,
-            "exponent",
-            element_size=2,
-            mode=mode,
-        )
-
-        self.assertEqual(group.chunks[0].mode, "local_huff0")
-        self.assertEqual(codec._decompress_stream(group), bytes([2, 4]) * 2048)
 
 
 if __name__ == "__main__":

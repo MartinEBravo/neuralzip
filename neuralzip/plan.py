@@ -168,5 +168,13 @@ class NeuralZipPlan:
         codec = value.codec if isinstance(value, cls) else value
         if not isinstance(codec, NeuralZipCodec):
             raise TypeError(f"Unsupported NeuralZip plan payload: {type(codec)!r}.")
+        legacy_layout = getattr(codec, "exponent_layout", "original")
+        if legacy_layout != "original":
+            raise ValueError(
+                "Legacy NeuralZip plans with transposed exponent streams cannot "
+                "be used by the native-only encoder. Refit the setup with the "
+                "original tensor layout."
+            )
+        codec.__dict__.pop("exponent_layout", None)
         _restore_native_codebooks(codec)
         return cls(codec=codec)

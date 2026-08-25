@@ -1,8 +1,12 @@
+import pickle
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
 from neuralzip import NeuralZipPlan
+from neuralzip.neuralzip_codec import NeuralZipCodec
 
 
 class NeuralZipPlanTests(unittest.TestCase):
@@ -59,25 +63,21 @@ class NeuralZipPlanTests(unittest.TestCase):
         )
         expected_digest = plan.digest
 
-        with self.subTest("save-load"):
-            import tempfile
-            from pathlib import Path
+        with (
+            self.subTest("save-load"),
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            path = Path(directory) / "plan.pkl"
+            plan.save(path, source)
+            loaded = NeuralZipPlan.load(path)
 
-            with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "plan.pkl"
-                plan.save(path, source)
-                loaded = NeuralZipPlan.load(path)
-
-                self.assertEqual(loaded.digest, expected_digest)
-                self.assertEqual(
-                    loaded.encode(source).payloads,
-                    plan.encode(source).payloads,
-                )
+            self.assertEqual(loaded.digest, expected_digest)
+            self.assertEqual(
+                loaded.encode(source).payloads,
+                plan.encode(source).payloads,
+            )
 
     def test_failed_save_leaves_live_plan_usable(self):
-        import tempfile
-        from pathlib import Path
-
         source = {
             "layers.0.weight": torch.ones(32768, dtype=torch.bfloat16),
             "layers.1.weight": torch.arange(32768, dtype=torch.bfloat16),
@@ -99,6 +99,38 @@ class NeuralZipPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.digest, expected_digest)
         self.assertEqual(plan.encode(source).payloads, expected_payloads)
+
+    def test_load_rejects_legacy_transposed_plan(self):
+        codec = NeuralZipCodec()
+        codec.exponent_layout = "transpose2d"
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-transposed.pkl"
+            with path.open("wb") as handle:
+                pickle.dump(codec, handle, protocol=5)
+
+            with self.assertRaisesRegex(ValueError, "transposed exponent streams"):
+                NeuralZipPlan.load(path)
+
+    def test_load_migrates_legacy_original_plan(self):
+        source = dict(self.tensors())
+        plan = NeuralZipPlan.fit(
+            source,
+            threads=2,
+            max_codebook_sample_bytes=1 << 20,
+        )
+        expected_digest = plan.digest
+        expected_payloads = plan.encode(source).payloads
+        plan.codec.exponent_layout = "original"
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-original.pkl"
+            plan.save(path, source)
+            loaded = NeuralZipPlan.load(path)
+
+        self.assertFalse(hasattr(loaded.codec, "exponent_layout"))
+        self.assertEqual(loaded.digest, expected_digest)
+        self.assertEqual(loaded.encode(source).payloads, expected_payloads)
 
 
 if __name__ == "__main__":

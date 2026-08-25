@@ -1092,7 +1092,8 @@ def benchmark_checkpoint(
         return
     print(
         f"[{spec.slug}] epoch={epoch:03d} unique_tensors={len(canonical)} "
-        f"aliases={len(aliases)} parameters={sum(t.numel() for t in floating.values()):,}",
+        f"aliases={len(aliases)} "
+        f"floating_values={sum(t.numel() for t in floating.values()):,}",
         flush=True,
     )
 

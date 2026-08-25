@@ -114,6 +114,12 @@ def _write_archive(handle, method, codebooks, tensors):
 
 
 def dump(compressed_model, target):
+    method = str(compressed_model.get("method", ""))
+    method_key = method.strip().lower().replace("-", "_").replace(" ", "_")
+    if method_key == "zipnn_src":
+        raise NotImplementedError(
+            "Official ZipNN frames are not stored in the NeuralZip archive format."
+        )
     codebooks = tuple(
         compressed_model.get("codebooks")
         or (compressed_model.get("header") or {}).get("codebooks")

@@ -1,22 +1,27 @@
-"""Shared persistence and trajectory helpers for final checkpoint runners.
+"""Task-independent plumbing for checkpoint experiments.
 
-This module intentionally contains only task-agnostic plumbing.  Model
-construction, training, compression, and rendering stay in their respective
-runners so their experiment protocols remain explicit.
+Model construction and training remain explicit in the vision and language
+runners. Persistence, reusable-setup lifecycle, compression trajectories, and
+validation live here so the two protocols cannot drift.
 """
 
 from __future__ import annotations
 
+import gc
+import json
 import random
+from argparse import BooleanOptionalAction, Namespace
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
+from neuralzip.checkpoint_loading import load_torch_checkpoint
 from neuralzip.experiment_io import (
     atomic_write_csv,
+    atomic_write_json,
     read_csv,
 )
 
@@ -33,6 +38,67 @@ def limited(dataset: Dataset, limit: int | None) -> Dataset:
     if limit is None or int(limit) >= len(dataset):
         return dataset
     return Subset(dataset, range(max(0, int(limit))))
+
+
+def add_checkpoint_run_arguments(
+    parser,
+    *,
+    epochs: int,
+    batch_size: int | None,
+    batch_size_help: str | None = None,
+    data_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Add execution options shared by vision and language trajectories."""
+
+    parser.add_argument("--epochs", type=int, default=epochs)
+    parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=batch_size,
+        help=batch_size_help,
+    )
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--threads", type=int, default=12)
+    parser.add_argument(
+        "--device",
+        default="cuda:0" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument("--data-dir", type=Path, default=data_dir)
+    parser.add_argument("--output-dir", type=Path, default=output_dir)
+    parser.add_argument(
+        "--existing-checkpoint-root",
+        type=Path,
+        help="Optional root containing complete <model>/checkpoints trajectories.",
+    )
+    parser.add_argument(
+        "--train-missing",
+        action=BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--train-only", action="store_true")
+    parser.add_argument("--compression-only", action="store_true")
+    parser.add_argument("--no-amp", action="store_true")
+
+
+def initialize_checkpoint_run(args: Namespace) -> Path:
+    """Validate common modes and initialize paths and CPU timing controls."""
+
+    modes = (args.train_only, args.compression_only)
+    if sum(map(bool, modes)) > 1:
+        raise ValueError("--train-only and --compression-only are mutually exclusive.")
+    args.output_dir = args.output_dir.resolve()
+    args.data_dir = args.data_dir.resolve()
+    if args.existing_checkpoint_root is not None:
+        args.existing_checkpoint_root = args.existing_checkpoint_root.resolve()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    torch.set_num_threads(max(1, int(args.threads)))
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+    return args.output_dir / "checkpoint_results.csv"
 
 
 def atomic_torch_save(path: Path, value) -> None:
@@ -115,7 +181,9 @@ def checkpoint_epoch(path: Path) -> int:
 def checkpoint_files(checkpoint_dir: Path, maximum_epoch: int) -> dict[int, Path]:
     files = {}
     for path in checkpoint_dir.glob("*.pt"):
-        if path.name.endswith("training_state.pt") or path.name.endswith("latest_state.pt"):
+        if path.name.endswith("training_state.pt") or path.name.endswith(
+            "latest_state.pt"
+        ):
             continue
         try:
             epoch = checkpoint_epoch(path)
@@ -154,3 +222,225 @@ def find_complete_local_checkpoint_dir(
     if all(epoch in files for epoch in range(int(epochs) + 1)):
         return candidate
     return None
+
+
+def missing_checkpoint_slugs(
+    *,
+    slugs: Iterable[str],
+    external_root: Path | None,
+    output_dir: Path,
+    epochs: int,
+) -> list[str]:
+    """Return models without a complete external or local trajectory."""
+
+    return [
+        slug
+        for slug in slugs
+        if find_external_checkpoint_dir(external_root, slug, epochs) is None
+        and find_complete_local_checkpoint_dir(output_dir, slug, epochs) is None
+    ]
+
+
+def run_checkpoint_models(
+    *,
+    args: Namespace,
+    specs: Mapping,
+    result_path: Path,
+    local_source: str,
+    train_trajectory: Callable,
+    process_trajectory: Callable,
+    validate_results: Callable,
+) -> None:
+    """Reuse, train, and compress each requested checkpoint trajectory."""
+
+    for slug in args.models:
+        spec = specs[slug]
+        checkpoint_dir = find_external_checkpoint_dir(
+            args.existing_checkpoint_root,
+            slug,
+            args.epochs,
+        )
+        if checkpoint_dir is not None:
+            source = "external-existing"
+            print(f"[{slug}] reuse checkpoints from {checkpoint_dir}", flush=True)
+        else:
+            checkpoint_dir = find_complete_local_checkpoint_dir(
+                args.output_dir,
+                slug,
+                args.epochs,
+            )
+            if checkpoint_dir is not None:
+                source = local_source
+                print(
+                    f"[{slug}] reuse locally trained checkpoints from {checkpoint_dir}",
+                    flush=True,
+                )
+            else:
+                if args.compression_only or not args.train_missing:
+                    raise FileNotFoundError(
+                        f"No complete epoch 0..{args.epochs} trajectory for {slug}."
+                    )
+                checkpoint_dir = train_trajectory(spec)
+                source = local_source
+        if args.train_only:
+            print(f"[{slug}] train-only complete: {checkpoint_dir}", flush=True)
+            continue
+        process_trajectory(spec, checkpoint_dir, source, args, result_path)
+
+    if not args.train_only:
+        validate_results(result_path, models=args.models, epochs=args.epochs)
+    print(f"results={result_path}", flush=True)
+
+
+def load_or_fit_frozen_codec(
+    *,
+    slug: str,
+    checkpoint_dir: Path,
+    model_dir: Path,
+    epochs: int,
+    threads: int,
+    prepare_epoch_zero: Callable[[Mapping], tuple[Sequence, Mapping, Mapping]],
+):
+    """Load or fit the one epoch-0 codec setup used by a trajectory.
+
+    ``prepare_epoch_zero`` returns ``(named_tensors, identity, metadata)``.
+    Identity fields are checked when resuming an existing setup, while metadata
+    is recorded only to describe a newly fitted setup.
+    """
+
+    from examples.checkpoint_compression import setup_neuralzip
+    from neuralzip import NeuralZipPlan
+
+    files = checkpoint_files(checkpoint_dir, epochs)
+    if 0 not in files:
+        raise FileNotFoundError(f"Missing epoch-0 checkpoint in {checkpoint_dir}.")
+
+    setup_state_path = model_dir / "neuralzip_epoch0_setup.pkl"
+    setup_path = model_dir / "neuralzip_epoch0_setup.json"
+    checkpoint = load_torch_checkpoint(files[0])
+    named_tensors, identity, metadata = prepare_epoch_zero(checkpoint)
+    named_tensors = list(named_tensors)
+
+    if setup_state_path.is_file() and setup_path.is_file():
+        setup = json.loads(setup_path.read_text())
+        for key, expected in identity.items():
+            if setup.get(key) != expected:
+                raise RuntimeError(
+                    f"Reusable setup in {setup_state_path} has a different {key}."
+                )
+        if int(setup.get("threads", -1)) != int(threads):
+            raise RuntimeError(
+                f"Reusable setup in {setup_state_path} used threads={setup.get('threads')}, "
+                f"not {threads}; use a fresh output directory."
+            )
+        plan = NeuralZipPlan.load(setup_state_path)
+        if plan.digest != setup["codebook_digest"]:
+            raise RuntimeError(
+                f"Reusable NeuralZip setup is corrupt: {setup_state_path}."
+            )
+        print(f"[{slug}] loaded reusable epoch-0 NeuralZip setup", flush=True)
+    else:
+        plan, setup = setup_neuralzip(named_tensors, threads=threads)
+        setup = {
+            **setup,
+            "model": slug,
+            "dtype": "float32",
+            "epoch0_checkpoint": str(files[0]),
+            **dict(identity),
+            "threads": threads,
+            **dict(metadata),
+        }
+        plan.save(setup_state_path, named_tensors)
+        atomic_write_json(setup_path, setup)
+
+    print(
+        f"[{slug}] epoch-0 NeuralZip setup={setup['setup_seconds']:.3f}s",
+        flush=True,
+    )
+    del checkpoint, named_tensors
+    gc.collect()
+    return plan, setup, files
+
+
+def run_checkpoint_trajectory(
+    *,
+    spec,
+    checkpoint_dir: Path,
+    checkpoint_source: str,
+    args,
+    result_path: Path,
+    frozen_codec_for_trajectory: Callable,
+    benchmark_checkpoint: Callable,
+    after_epoch: Callable[[int], None] | None = None,
+) -> None:
+    """Run the task-independent compression loop for one trajectory."""
+
+    model_dir = args.output_dir / spec.slug
+    model_dir.mkdir(parents=True, exist_ok=True)
+    plan, setup, files = frozen_codec_for_trajectory(
+        spec,
+        checkpoint_dir,
+        model_dir,
+        args,
+    )
+    missing = [epoch for epoch in range(int(args.epochs) + 1) if epoch not in files]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing checkpoints for {spec.slug}: {missing[:8]}"
+            + (f" (+{len(missing) - 8} more)" if len(missing) > 8 else "")
+        )
+    for epoch in range(int(args.epochs) + 1):
+        benchmark_checkpoint(
+            spec=spec,
+            epoch=epoch,
+            path=files[epoch],
+            checkpoint_source=checkpoint_source,
+            plan=plan,
+            setup=setup,
+            args=args,
+            result_path=result_path,
+        )
+        if after_epoch is not None:
+            after_epoch(epoch)
+    del plan
+    gc.collect()
+
+
+def validate_checkpoint_results(
+    result_path: Path,
+    *,
+    models: Iterable[str],
+    epochs: int,
+    is_current_result: Callable[[Mapping], bool],
+    error_label: str,
+) -> None:
+    """Reject incomplete, duplicated, or stale checkpoint measurements."""
+
+    selected_models = set(models)
+    rows = read_csv(result_path)
+    expected = {
+        (slug, epoch, compressor)
+        for slug in selected_models
+        for epoch in range(int(epochs) + 1)
+        for compressor in ("ZipNN", "NeuralZip")
+    }
+    selected_rows = [row for row in rows if row.get("model") in selected_models]
+    keys = [
+        (str(row["model"]), int(row["epoch"]), str(row["compressor"]))
+        for row in selected_rows
+    ]
+    observed = set(keys)
+    invalid = [
+        row
+        for row in selected_rows
+        if row.get("status") != "ok"
+        or row.get("roundtrip_exact", "").lower() != "true"
+        or row.get("input_unchanged", "").lower() != "true"
+        or not is_current_result(row)
+    ]
+    if expected - observed or len(keys) != len(observed) or invalid:
+        raise RuntimeError(
+            f"{error_label} are incomplete or invalid: "
+            f"missing={len(expected - observed)}, "
+            f"duplicates={len(keys) - len(observed)}, invalid={len(invalid)}."
+        )

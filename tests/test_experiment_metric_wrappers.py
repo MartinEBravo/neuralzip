@@ -1,10 +1,9 @@
 import unittest
 
-from examples.run_latency_profile_probe import exponent_metrics as latency_metrics
-from examples.run_precompute_family_transfer import (
+from examples.direct_compression import exponent_metrics as direct_metrics
+from examples.run_setup_transfer_suite import (
     exponent_metrics as family_metrics,
 )
-from neuralzip.archive import serialized_codebooks_size
 from neuralzip.codec_protocol import measure_exponent_streams
 from neuralzip.payloads import (
     ByteGroupPayload,
@@ -12,6 +11,7 @@ from neuralzip.payloads import (
     StreamChunk,
     TensorPayload,
 )
+from neuralzip.serialization import serialized_codebooks_size
 
 
 def _fixture():
@@ -85,32 +85,28 @@ class ExperimentMetricWrapperTests(unittest.TestCase):
                 "compressed_exponent_bytes",
                 "compressed_exponent_group_bytes",
                 "exponent_codebook_metadata_bytes",
-                "exponent_pct",
-                "shared_exponent_pct",
-                "packed_exponent_pct",
-                "local_exponent_pct",
-                "raw_exponent_pct",
+                "exponent_ratio_pct",
+                "shared_exponent_share_pct",
+                "packed_exponent_share_pct",
+                "local_exponent_share_pct",
+                "raw_exponent_share_pct",
                 "mode_symbols",
                 "mode_chunks",
                 "referenced_codebooks",
             },
         )
         self.assertEqual(metrics["raw_exponents"], report.raw_bytes)
-        self.assertEqual(
-            metrics["compressed_exponent_group_bytes"], report.group_bytes
-        )
+        self.assertEqual(metrics["compressed_exponent_group_bytes"], report.group_bytes)
         self.assertEqual(
             metrics["exponent_codebook_metadata_bytes"], report.codebook_bytes
         )
-        self.assertEqual(
-            metrics["compressed_exponent_bytes"], report.compressed_bytes
-        )
-        self.assertEqual(metrics["exponent_pct"], report.ratio_pct)
+        self.assertEqual(metrics["compressed_exponent_bytes"], report.compressed_bytes)
+        self.assertEqual(metrics["exponent_ratio_pct"], report.ratio_pct)
         self.assertEqual(metrics["referenced_codebooks"], 1)
         self.assertEqual(metrics["mode_symbols"], {"shared_huff0": 4, "raw": 2})
         self.assertEqual(metrics["mode_chunks"], {"shared_huff0": 1, "raw": 1})
 
-    def test_latency_wrapper_preserves_schema_and_diagnostic_counters(self):
+    def test_direct_wrapper_preserves_schema_and_diagnostic_counters(self):
         payload, referenced, unused = _fixture()
         codebooks = (referenced, unused)
         report = measure_exponent_streams(
@@ -119,7 +115,7 @@ class ExperimentMetricWrapperTests(unittest.TestCase):
             codebook_scope="stream",
         )
 
-        metrics = latency_metrics(_Codec(codebooks), (payload,))
+        metrics = direct_metrics(_Codec(codebooks), (payload,))
 
         self.assertEqual(
             set(metrics),
@@ -152,9 +148,7 @@ class ExperimentMetricWrapperTests(unittest.TestCase):
             metrics["all_codebook_metadata_bytes"],
             serialized_codebooks_size(codebooks),
         )
-        self.assertEqual(
-            metrics["exponent_compressed_bytes"], report.compressed_bytes
-        )
+        self.assertEqual(metrics["exponent_compressed_bytes"], report.compressed_bytes)
         self.assertEqual(metrics["exponent_ratio_pct"], report.ratio_pct)
         self.assertEqual(metrics["shared_huff0_chunks"], 1)
         self.assertEqual(metrics["raw_chunks"], 1)

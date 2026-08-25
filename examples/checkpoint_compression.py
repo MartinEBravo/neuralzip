@@ -1,4 +1,4 @@
-"""Shared compression protocol for the final checkpoint trajectories.
+"""Shared compression protocol for checkpoint trajectories.
 
 Vision and language checkpoints deliberately share this implementation so
 their timing and byte-accounting boundaries cannot drift independently.
@@ -10,22 +10,22 @@ import gc
 import hashlib
 import struct
 import time
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import torch
 
 from neuralzip import Compressor, NeuralZipPlan
-from neuralzip.archive import serialized_codebooks_size
 from neuralzip.codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     encode_tensor_batch,
     is_current_codec_protocol,
     measure_exponent_streams,
 )
+from neuralzip.experiment_io import read_csv
+from neuralzip.serialization import serialized_codebooks_size
 from neuralzip.tensors import bitwise_equal
-from neuralzip.zipnn_source import parse_zipnn_streams
-
+from neuralzip.zipnn_source import parse_zipnn_exponent_stream
 
 BASE_RESULT_FIELDS = (
     "model",
@@ -34,9 +34,6 @@ BASE_RESULT_FIELDS = (
     "compressor",
     "codec_protocol_version",
     "encoder_path",
-    "materialization_active",
-    "materialization_bytes",
-    "materialization_hits",
     "checkpoint_path",
     "checkpoint_source",
     "dtype",
@@ -63,15 +60,37 @@ BASE_RESULT_FIELDS = (
     "status",
 )
 
-ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN src": "zipnn-src"}
+ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN": "zipnn-src"}
 
 
 def is_current_codec_result(row) -> bool:
     compressor = str(row.get("compressor", ""))
-    return (
-        is_current_codec_protocol(row.get("codec_protocol_version"))
-        and row.get("encoder_path") == ENCODER_PATHS.get(compressor)
-    )
+    return is_current_codec_protocol(row.get("codec_protocol_version")) and row.get(
+        "encoder_path"
+    ) == ENCODER_PATHS.get(compressor)
+
+
+def completed_checkpoint_methods(
+    result_path: Path,
+    slug: str,
+    epoch: int,
+    *,
+    identities: Mapping[str, object] | None = None,
+) -> set[str]:
+    """Return verified current-protocol measurements for one checkpoint."""
+
+    required = dict(identities or {})
+    return {
+        str(row["compressor"])
+        for row in read_csv(result_path)
+        if row.get("model") == slug
+        and int(row.get("epoch", -1)) == int(epoch)
+        and row.get("status") == "ok"
+        and row.get("roundtrip_exact", "").lower() == "true"
+        and row.get("input_unchanged", "").lower() == "true"
+        and all(row.get(key) == str(value) for key, value in required.items())
+        and is_current_codec_result(row)
+    }
 
 
 def tensor_digest(named_tensors: Iterable[tuple[str, torch.Tensor]]) -> str:
@@ -95,6 +114,29 @@ def nonfloating_state(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tens
     }
 
 
+def floating_state(
+    state: Mapping[str, torch.Tensor],
+    *,
+    error_prefix: str,
+) -> dict[str, torch.Tensor]:
+    tensors = {
+        str(name): tensor.detach().cpu().contiguous()
+        for name, tensor in state.items()
+        if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.numel()
+    }
+    invalid = {
+        name: tensor.dtype
+        for name, tensor in tensors.items()
+        if tensor.dtype != torch.float32
+    }
+    if invalid:
+        preview = ", ".join(
+            f"{name}={dtype}" for name, dtype in list(invalid.items())[:8]
+        )
+        raise TypeError(f"{error_prefix} require exact FP32 tensors; got {preview}.")
+    return tensors
+
+
 def exponent_metrics(payloads, codebooks=()) -> dict[str, int | float]:
     report = measure_exponent_streams(payloads, codebooks)
     return {
@@ -115,16 +157,14 @@ def zipnn_src_exponent_size(
 
     if tensor.dtype != torch.float32:
         raise TypeError(f"Expected FP32 ZipNN payload, got {tensor.dtype}.")
-    layout = parse_zipnn_streams(
+    _, exponent = parse_zipnn_exponent_stream(
         payload,
         element_size=tensor.element_size(),
         expected_raw_bytes=tensor.numel() * tensor.element_size(),
+        expected_byte_reorder=220,
+        expected_bit_reorder=1,
+        expected_chunk_size=chunk_size,
     )
-    if layout.chunk_bytes != int(chunk_size):
-        raise ValueError(
-            f"ZipNN chunk size mismatch: {layout.chunk_bytes} != {int(chunk_size)}."
-        )
-    exponent = layout.exponent_stream
     return int(exponent.raw_bytes), int(exponent.compressed_bytes)
 
 
@@ -141,44 +181,27 @@ def setup_neuralzip(
         named_tensors,
         threads=threads,
         compression_threshold=0.95,
-        enable_prepacked_cache=False,
     )
     report = plan.setup_report
     if report is None:
-        raise RuntimeError("Fitted NeuralZip plan did not report setup timing.")
+        raise RuntimeError("Fitted NeuralZip setup did not report setup timing.")
     codebooks = plan.codebooks
     return plan, {
-        "clustering_seconds": report.precompute_seconds,
-        "codebook_seconds": report.codebook_setup_seconds,
-        "total_seconds": report.total_setup_seconds,
+        "clustering_seconds": report.clustering_seconds,
+        "codebook_setup_seconds": report.codebook_setup_seconds,
+        "setup_seconds": report.setup_seconds,
         "clusters": int(plan.codec.cluster_count),
         "codebooks": len(codebooks),
         "codebook_digest": plan.digest,
         "selected_modes": plan.codec.selected_modes,
         "epoch": 0,
-        "scope": "one frozen plan per training trajectory",
+        "scope": "one reusable setup per training trajectory",
     }
-
-
-def save_codec_plan(
-    path: Path,
-    plan,
-    named_tensors: Iterable[tuple[str, torch.Tensor]],
-) -> None:
-    _as_plan(plan).save(path, named_tensors)
-
-
-def load_codec_plan(path: Path) -> NeuralZipPlan:
-    return NeuralZipPlan.load(path)
 
 
 def _encode_batch(plan, named_tensors):
     plan = _as_plan(plan)
-    plan.codec.clear_prepacked_cache()
-    encoded = encode_tensor_batch(plan.codec, tuple(named_tensors))
-    if plan.codec.prepacked_cache_bytes != 0:
-        raise RuntimeError("NeuralZip unexpectedly retained an exact-target cache.")
-    return encoded
+    return encode_tensor_batch(plan.codec, tuple(named_tensors))
 
 
 def verify_neuralzip(plan, named_tensors, payloads) -> bool:
@@ -203,14 +226,12 @@ def benchmark_neuralzip(
     plan = _as_plan(plan)
     before = tensor_digest(named_tensors)
     mapping_started = time.perf_counter()
-    transfer = plan.map_target(
-        named_tensors,
-        strategy="structural",
-        require_full_match=True,
-    )
+    transfer = plan.map_target(named_tensors)
     mapping_seconds = time.perf_counter() - mapping_started
     if int(transfer["matched_tensors"]) != len(named_tensors):
-        raise RuntimeError(f"NeuralZip failed full checkpoint mapping at epoch {epoch}.")
+        raise RuntimeError(
+            f"NeuralZip failed full checkpoint mapping at epoch {epoch}."
+        )
     if plan.digest != str(setup["codebook_digest"]):
         raise RuntimeError("NeuralZip changed the frozen epoch-0 codebooks.")
 
@@ -234,20 +255,15 @@ def benchmark_neuralzip(
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
         "encoder_path": encoded.encoder_path,
-        "materialization_active": encoded.materialization_active,
-        "materialization_bytes": encoded.materialization_bytes,
-        "materialization_hits": encoded.materialization_hits,
         "raw_bytes": encoded.raw_bytes,
         "compressed_bytes": compressed_bytes,
         "full_ratio_pct": (
-            100.0 * compressed_bytes / encoded.raw_bytes
-            if encoded.raw_bytes
-            else 0.0
+            100.0 * compressed_bytes / encoded.raw_bytes if encoded.raw_bytes else 0.0
         ),
         "encode_seconds": encoded.encode_seconds,
         "codec_encode_seconds": encoded.encode_seconds,
         "input_copy_seconds": 0.0,
-        "setup_seconds_once": float(setup["total_seconds"]),
+        "setup_seconds_once": float(setup["setup_seconds"]),
         "mapping_seconds": mapping_seconds,
         "mapped_tensors": int(transfer["matched_tensors"]),
         "roundtrip_exact": roundtrip,
@@ -303,15 +319,12 @@ def benchmark_zipnn_src(
     roundtrip = result["roundtrip_ok"] is True
     if not unchanged or not roundtrip:
         raise RuntimeError(
-            "ZipNN src must receive a dedicated clone and preserve the checkpoint: "
+            "ZipNN must receive a dedicated clone and preserve the checkpoint: "
             f"roundtrip={roundtrip}, input_unchanged={unchanged}."
         )
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
         "encoder_path": "zipnn-src",
-        "materialization_active": False,
-        "materialization_bytes": 0,
-        "materialization_hits": 0,
         "raw_bytes": int(result["raw_bytes"]),
         "compressed_bytes": int(result["compressed_bytes"]),
         "full_ratio_pct": 100.0 * float(result["compression_ratio"]),
@@ -336,3 +349,44 @@ def benchmark_zipnn_src(
     del result
     gc.collect()
     return output
+
+
+def benchmark_checkpoint_codecs(
+    *,
+    slug: str,
+    epoch: int,
+    plan,
+    setup: Mapping,
+    tensors: Mapping[str, torch.Tensor],
+    common_row: Mapping,
+    completed: set[str],
+    threads: int,
+    upsert_result: Callable[[Mapping], None],
+    transform_metrics: Callable[[Mapping], Mapping] = dict,
+) -> None:
+    """Benchmark and persist both checkpoint codecs in stable order."""
+
+    named_tensors = list(tensors.items())
+    methods = (
+        (
+            "NeuralZip",
+            lambda: benchmark_neuralzip(
+                plan,
+                named_tensors,
+                epoch=epoch,
+                setup=setup,
+            ),
+        ),
+        ("ZipNN", lambda: benchmark_zipnn_src(tensors, threads=threads)),
+    )
+    for compressor, benchmark in methods:
+        if compressor in completed:
+            continue
+        metrics = dict(transform_metrics(benchmark()))
+        upsert_result({**common_row, "compressor": compressor, **metrics})
+        print(
+            f"[{slug}] epoch={epoch:03d} {compressor} "
+            f"ratio={metrics['exponent_ratio_pct']:.3f}% "
+            f"encode={metrics['encode_seconds']:.6f}s",
+            flush=True,
+        )

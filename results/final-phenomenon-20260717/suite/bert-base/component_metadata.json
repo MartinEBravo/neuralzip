@@ -1,7 +1,0 @@
-{
-  "repetitions": 1,
-  "warmup_runs": 1,
-  "threads": 12,
-  "backend": "production direct encoder",
-  "seconds": 35.047261639498174
-}

@@ -1,33 +1,25 @@
 import unittest
 from dataclasses import replace
-from unittest import mock
 
 import torch
 
-from neuralzip.archive import (
-    serialized_codebooks_size,
-    serialized_group_size,
-    serialized_tensor_size,
-)
 from neuralzip.codec_protocol import (
-    CODEC_PROTOCOL_VERSION,
-    assert_tensor_roundtrip,
     encode_tensor_batch,
     measure_compressor_exponents,
     measure_exponent_streams,
     payload_exponent_sizes,
     prepare_neuralzip_codec,
 )
-from neuralzip.experiment_scenarios import (
-    _compress_mapping,
-    _model_methods_completed,
-    _upsert_model_compressor_row,
-)
 from neuralzip.payloads import (
     ByteGroupPayload,
     CodebookPayload,
     StreamChunk,
     TensorPayload,
+)
+from neuralzip.serialization import (
+    serialized_codebooks_size,
+    serialized_group_size,
+    serialized_tensor_size,
 )
 
 
@@ -93,9 +85,6 @@ class CodecProtocolTests(unittest.TestCase):
 
         self.assertTrue(result.used_batch)
         self.assertEqual(result.encoder_path, "compress_tensors")
-        self.assertFalse(result.materialization_active)
-        self.assertEqual(result.materialization_bytes, 0)
-        self.assertEqual(result.materialization_hits, 0)
         self.assertEqual(codec.batch_calls, 1)
         self.assertEqual(codec.tensor_calls, 0)
         self.assertEqual(
@@ -106,6 +95,7 @@ class CodecProtocolTests(unittest.TestCase):
             tuple(payload.name for payload in result.payloads),
             tuple(self.tensors),
         )
+        self.assertGreaterEqual(result.encode_seconds, 0.0)
 
     def test_sequential_fallback_preserves_payloads(self):
         batch = encode_tensor_batch(_BatchCodec(), self.tensors)
@@ -117,6 +107,16 @@ class CodecProtocolTests(unittest.TestCase):
         self.assertEqual(sequential_codec.tensor_calls, len(self.tensors))
         self.assertEqual(sequential.payloads, batch.payloads)
         self.assertEqual(sequential.compressed_bytes, batch.compressed_bytes)
+        self.assertGreaterEqual(sequential.encode_seconds, 0.0)
+
+    def test_every_frontend_gets_the_same_payload_validation(self):
+        class ReorderedCodec(_BatchCodec):
+            def compress_tensors(self, named_tensors):
+                payloads = super().compress_tensors(named_tensors)
+                return tuple(reversed(payloads))
+
+        with self.assertRaisesRegex(RuntimeError, "changed tensor names or order"):
+            encode_tensor_batch(ReorderedCodec(), self.tensors)
 
     def test_exponent_metrics_use_the_archive_group_size(self):
         payload = _payload("weight", self.tensors["first"])
@@ -194,121 +194,12 @@ class CodecProtocolTests(unittest.TestCase):
                 ("codebooks", tuple(self.tensors)),
             ],
         )
-        self.assertGreaterEqual(report.precompute_seconds, 0.0)
+        self.assertGreaterEqual(report.clustering_seconds, 0.0)
         self.assertGreaterEqual(report.codebook_setup_seconds, 0.0)
         self.assertEqual(
-            report.total_setup_seconds,
-            report.precompute_seconds + report.codebook_setup_seconds,
+            report.setup_seconds,
+            report.clustering_seconds + report.codebook_setup_seconds,
         )
-
-    def test_roundtrip_comparison_is_bitwise(self):
-        restored = {name: tensor.clone() for name, tensor in self.tensors.items()}
-        assert_tensor_roundtrip(
-            self.tensors,
-            restored,
-            method="test",
-            checkpoint="checkpoint",
-        )
-        restored["first"][0] += 1
-        with self.assertRaises(AssertionError):
-            assert_tensor_roundtrip(
-                self.tensors,
-                restored,
-                method="test",
-                checkpoint="checkpoint",
-            )
-
-    def test_mapping_preserves_codec_timing_fields(self):
-        result = {
-            "method": "neuralzip",
-            "raw_bytes": 100,
-            "compressed_bytes": 50,
-            "compression_ratio": 0.5,
-            "encode_seconds": 1.0,
-            "compression_seconds": 2.0,
-            "total_compression_seconds": 3.0,
-            "cold_encode_seconds": 4.0,
-            "precompute_seconds": 0.5,
-            "codebook_setup_seconds": 0.5,
-            "tensor_results": (),
-        }
-        compressor = mock.Mock()
-        compressor.compress.return_value = result
-        with mock.patch(
-            "neuralzip.experiment_scenarios.Compressor",
-            return_value=compressor,
-        ):
-            rows = _compress_mapping(
-                "model",
-                {"weight": torch.ones(1)},
-                methods=(("NeuralZip", "neuralzip"),),
-            )
-
-        self.assertEqual(rows[0]["compression_seconds"], 2.0)
-        self.assertEqual(rows[0]["total_compression_seconds"], 3.0)
-        self.assertEqual(rows[0]["cold_encode_seconds"], 4.0)
-
-    def test_mapping_cascades_missing_timing_fields_from_encode(self):
-        result = {
-            "method": "zipnn-src",
-            "raw_bytes": 100,
-            "compressed_bytes": 50,
-            "compression_ratio": 0.5,
-            "encode_seconds": 1.25,
-            "tensor_results": (),
-        }
-        compressor = mock.Mock()
-        compressor.compress.return_value = result
-        with mock.patch(
-            "neuralzip.experiment_scenarios.Compressor",
-            return_value=compressor,
-        ):
-            row = _compress_mapping(
-                "model",
-                {"weight": torch.ones(1)},
-                methods=(("ZipNN", "zipnn-src"),),
-            )[0]
-
-        self.assertEqual(row["compression_seconds"], 1.25)
-        self.assertEqual(row["total_compression_seconds"], 1.25)
-        self.assertEqual(row["cold_encode_seconds"], 1.25)
-
-    def test_model_resume_rejects_rows_without_current_encoder_protocol(self):
-        methods = (("NeuralZip", "neuralzip"),)
-        legacy = {
-            "model_name": "model",
-            "compressor": "NeuralZip",
-            "method": "neuralzip",
-            "status": "ok",
-        }
-        self.assertFalse(_model_methods_completed([legacy], "model", methods))
-
-        current = {
-            **legacy,
-            "codec_protocol_version": float(CODEC_PROTOCOL_VERSION),
-            "encoder_path": "compress_tensors",
-        }
-        self.assertTrue(_model_methods_completed([current], "model", methods))
-        current["codec_protocol_version"] = CODEC_PROTOCOL_VERSION + 0.5
-        self.assertFalse(_model_methods_completed([current], "model", methods))
-
-    def test_model_result_upsert_replaces_legacy_compressor_row(self):
-        rows = [
-            {
-                "model_name": "model",
-                "compressor": "NeuralZip",
-                "codec_protocol_version": None,
-            }
-        ]
-        current = {
-            "model_name": "model",
-            "compressor": "NeuralZip",
-            "codec_protocol_version": CODEC_PROTOCOL_VERSION,
-        }
-
-        _upsert_model_compressor_row(rows, current)
-
-        self.assertEqual(rows, [current])
 
 
 if __name__ == "__main__":

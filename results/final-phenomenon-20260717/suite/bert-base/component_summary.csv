@@ -1,5 +1,0 @@
-model,variant,repeats,raw_bytes,compressed_bytes,codebook_bytes,compression_pct,encode_seconds,precompute_seconds,clusters,selected_modes,roundtrip_ok
-BERT Base,ZipNN,1,109482240,35701873,0,32.60973925999322,0.09888717997819185,0.0,0,{},True
-BERT Base,Sharing Only,1,109482240,35701873,0,32.60973925999322,0.056778570637106895,1.675983919762075,111,"{'raw': 90, 'local_huff0': 132}",True
-BERT Base,Packing Only,1,109482240,35701873,0,32.60973925999322,0.04390376713126898,9.231113861314952,199,"{'raw': 134, 'local_huff0': 264}",True
-BERT Base,NeuralZip,1,109482240,35701267,312,32.60918574556019,0.06639726553112268,4.5058498196303844,111,"{'raw': 91, 'local_huff0': 129, 'packed_huff0_n4': 2}",True

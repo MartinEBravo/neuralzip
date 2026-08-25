@@ -15,20 +15,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-diffusion = ["diffusers"]
 experiments = [
     "huggingface-hub",
-    "jupyter",
     "matplotlib",
     "pandas",
     "pillow",
     "pyarrow",
     "safetensors",
-    "timm",
     "torchvision",
-    "zipnn",
+    "zipnn==0.5.4",
 ]
-test = ["pandas", "pytest"]
+test = [
+    "huggingface-hub",
+    "matplotlib",
+    "pandas",
+    "pillow",
+    "pytest",
+    "torchvision",
+    "zipnn==0.5.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

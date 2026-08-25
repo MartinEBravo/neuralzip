@@ -16,6 +16,19 @@ def _raw_from_bit_reordered_streams(*streams):
 
 
 class Huff0Tests(unittest.TestCase):
+    def test_single_block_facade_composes_codebook_encode_and_decode(self):
+        source = b"abcde" * 4096
+        codebook = huff0.build_codebook(source, prior_count=1)
+        encoded = huff0.encode_with_codebook(source, codebook)
+        payload = huff0.compress(source, prior_count=1)
+
+        self.assertIsNotNone(encoded)
+        self.assertEqual(payload, encoded)
+        self.assertEqual(huff0.decompress(payload), source)
+        self.assertIsNone(huff0.compress(source, min_saving_bytes=len(source)))
+        with self.assertRaisesRegex(ValueError, "min_saving_bytes"):
+            huff0.compress(source, min_saving_bytes=-1)
+
     def test_parallel_local_blocks_roundtrip_and_keep_order(self):
         chunks = [
             bytes([index % 5 for index in range(64 << 10)]),
@@ -82,10 +95,8 @@ class Huff0Tests(unittest.TestCase):
 
     def test_parallel_packed_ngram_matches_single_and_roundtrips(self):
         chunks = [
-            (bytes([127, 127, 126, 127, 127, 127, 124, 127]) * (32 << 10))
-            + b"x",
-            (bytes([126, 126, 127, 126, 124, 126, 127, 126]) * (32 << 10))
-            + b"yz",
+            (bytes([127, 127, 126, 127, 127, 127, 124, 127]) * (32 << 10)) + b"x",
+            (bytes([126, 126, 127, 126, 124, 126, 127, 126]) * (32 << 10)) + b"yz",
             bytes(range(256)) * 1024,
         ]
         n = 3
@@ -152,12 +163,8 @@ class Huff0Tests(unittest.TestCase):
 
         for n in (2, 3, 8):
             with self.subTest(n=n):
-                packed_stream = (
-                    bytes([127, 127, 126, 127, 127, 127, 124, 127]) * 8193
-                )
-                first_stream = bytes(range(256)) * (
-                    (len(packed_stream) + 255) // 256
-                )
+                packed_stream = bytes([127, 127, 126, 127, 127, 127, 124, 127]) * 8193
+                first_stream = bytes(range(256)) * ((len(packed_stream) + 255) // 256)
                 first_stream = first_stream[: len(packed_stream)]
                 raw = interleave_reordered_streams(first_stream, packed_stream)
 
@@ -245,17 +252,12 @@ class Huff0Tests(unittest.TestCase):
     def test_mixed_many_matches_single_calls_for_fp16_fp32_and_keeps_order(self):
         length = 48 << 10
         packed_stream = (
-            bytes([127, 127, 126, 127, 127, 127, 124, 127])
-            * ((length + 7) // 8)
+            bytes([127, 127, 126, 127, 127, 127, 124, 127]) * ((length + 7) // 8)
         )[:length]
-        fp16_first_stream = (
-            bytes(range(256)) * ((length + 255) // 256)
-        )[:length]
+        fp16_first_stream = (bytes(range(256)) * ((length + 255) // 256))[:length]
         ngram_n = 3
         packed_vocab = topk_vocab(packed_stream, ngram_n, top_k=16)
-        packed_tokens = tokenize_ngrams(
-            packed_stream, ngram_n, packed_vocab
-        )[0]
+        packed_tokens = tokenize_ngrams(packed_stream, ngram_n, packed_vocab)[0]
         packed_codebook = huff0.build_codebook(packed_tokens, prior_count=1)
         fp16_modes = (
             {"kind": "raw"},
@@ -335,16 +337,14 @@ class Huff0Tests(unittest.TestCase):
             for chunk in stream_chunks
         }
         self.assertTrue(
-            {"raw", "local_huff0", "shared_huff0", "packed_huff0"}
-            <= emitted_modes
+            {"raw", "local_huff0", "shared_huff0", "packed_huff0"} <= emitted_modes
         )
 
     def test_mixed_many_matches_single_calls_when_planned_modes_fallback(self):
         length = 8192
         shared_stream = (b"abcde" * ((length + 4) // 5))[:length]
         packed_stream = (
-            bytes([127, 127, 126, 127, 127, 127, 124, 127])
-            * ((length + 7) // 8)
+            bytes([127, 127, 126, 127, 127, 127, 124, 127]) * ((length + 7) // 8)
         )[:length]
         ngram_n = 3
         packed_vocab = topk_vocab(packed_stream, ngram_n, top_k=16)

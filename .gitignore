@@ -2,15 +2,16 @@ __pycache__/
 *.py[cod]
 *.so
 *.egg-info/
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+/.coverage
+/htmlcov/
+/.venv/
+/.DS_Store
 /build/
-**.csv
-**.json
-examples/models/
-examples/outputs/
-examples/uploaded/
-
-# Rebuildable frozen plans from the final language checkpoint benchmark.
-results/final-language-checkpoints-wikitext2/*/neuralzip_epoch0_plan.pkl
+/dist/
+/results/
 
 # Only the curated Zstandard sources already tracked by Git are part of Huff0.
 # Ignore files from full upstream source-tree extractions in this directory.

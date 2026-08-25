@@ -1,20 +1,17 @@
 from dataclasses import dataclass
 
-
-RAW_CHUNK_METADATA_BYTES = 1 + 8 + 8
-SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + 8
-PACKED_CHUNK_METADATA_BYTES = SHARED_CHUNK_METADATA_BYTES + 8 + 1 + 8 + 8
-
-
-def stream_chunk_metadata_bytes(mode, code_lengths_bytes=0):
-    """Return the serialized metadata overhead for one stream chunk."""
-    if mode == "huffman":
-        return SHARED_CHUNK_METADATA_BYTES + int(code_lengths_bytes)
-    if mode in {"shared_huffman", "shared_huff0"}:
-        return SHARED_CHUNK_METADATA_BYTES
-    if mode == "packed_huff0":
-        return PACKED_CHUNK_METADATA_BYTES
-    return RAW_CHUNK_METADATA_BYTES
+from .serialization import (
+    serialized_codebook_size as _serialized_codebook_size,
+)
+from .serialization import (
+    serialized_group_size as _serialized_group_size,
+)
+from .serialization import (
+    serialized_tensor_size as _serialized_tensor_size,
+)
+from .serialization import (
+    stream_chunk_metadata_bytes as _stream_chunk_metadata_bytes,
+)
 
 
 @dataclass(frozen=True)
@@ -32,19 +29,7 @@ class CodebookPayload:
 
     @property
     def metadata_bytes(self):
-        strings = (self.cluster_id, self.dtype, self.codec, self.mode)
-        return (
-            8
-            + 4
-            + 1
-            + sum(4 + len(value.encode("utf-8")) for value in strings)
-            + 8
-            + len(self.code_lengths)
-            + 8
-            + len(self.codebook)
-            + 8
-            + len(self.vocab)
-        )
+        return _serialized_codebook_size(self)
 
 
 @dataclass(frozen=True)
@@ -52,7 +37,6 @@ class StreamChunk:
     mode: str
     symbol_count: int
     payload: bytes = b""
-    code_lengths: bytes = b""
     codebook_id: int | None = None
     token_count: int | None = None
     escape_payload: bytes = b""
@@ -67,7 +51,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        return stream_chunk_metadata_bytes(self.mode, len(self.code_lengths))
+        return _stream_chunk_metadata_bytes(self.mode)
 
     @property
     def compressed_bytes(self):
@@ -86,32 +70,16 @@ class ByteGroupPayload:
 
     @property
     def metadata_bytes(self):
-        return (
-            4
-            + len(self.stream_kind.encode("utf-8"))
-            + 8
-            + 8
-            + sum(chunk.metadata_bytes for chunk in self.chunks)
-        )
+        return _serialized_group_size(self) - self.payload_bytes
 
     @property
     def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
+        return _serialized_group_size(self)
 
     @property
     def huffman_chunks(self):
-        modes = {
-            "huffman",
-            "local_huff0",
-            "shared_huffman",
-            "shared_huff0",
-            "packed_huff0",
-        }
+        modes = {"local_huff0", "shared_huff0", "packed_huff0"}
         return sum(chunk.mode in modes for chunk in self.chunks)
-
-    @property
-    def local_huffman_chunks(self):
-        return sum(chunk.mode in {"huffman", "local_huff0"} for chunk in self.chunks)
 
     @property
     def local_huff0_chunks(self):
@@ -128,21 +96,6 @@ class ByteGroupPayload:
     @property
     def zero_chunks(self):
         return sum(chunk.mode == "zero" for chunk in self.chunks)
-
-    @property
-    def shared_codebook_defs(self):
-        return sum(
-            chunk.mode == "shared_huffman" and bool(chunk.code_lengths)
-            for chunk in self.chunks
-        )
-
-    @property
-    def shared_codebook_refs(self):
-        return sum(
-            (chunk.mode == "shared_huffman" and not chunk.code_lengths)
-            or chunk.mode in {"shared_huff0", "packed_huff0"}
-            for chunk in self.chunks
-        )
 
     @property
     def packed_ngram_chunks(self):
@@ -178,43 +131,12 @@ class TensorPayload:
         return self.numel * self.element_size
 
     @property
-    def metadata_bytes(self):
-        strings = (
-            self.name,
-            self.dtype,
-            self.strategy,
-            self.cluster_id or "",
-            self.exponent_layout,
-        )
-        return (
-            sum(4 + len(value.encode("utf-8")) for value in strings)
-            + 32
-            + 8 * len(self.shape)
-            + 8
-            + len(self.remainder_payload)
-            + 8
-            + sum(group.metadata_bytes for group in self.groups)
-        )
-
-    @property
     def payload_bytes(self):
         return sum(group.payload_bytes for group in self.groups)
 
     @property
     def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
-
-    @property
-    def huffman_groups(self):
-        return sum(group.huffman_chunks > 0 for group in self.groups)
-
-    @property
-    def raw_groups(self):
-        return sum(group.raw_chunks > 0 for group in self.groups)
-
-    @property
-    def zero_groups(self):
-        return sum(group.zero_chunks > 0 for group in self.groups)
+        return _serialized_tensor_size(self)
 
     @property
     def huffman_chunks(self):
@@ -227,18 +149,6 @@ class TensorPayload:
     @property
     def zero_chunks(self):
         return sum(group.zero_chunks for group in self.groups)
-
-    @property
-    def shared_codebook_defs(self):
-        return sum(getattr(group, "shared_codebook_defs", 0) for group in self.groups)
-
-    @property
-    def shared_codebook_refs(self):
-        return sum(getattr(group, "shared_codebook_refs", 0) for group in self.groups)
-
-    @property
-    def local_huffman_chunks(self):
-        return sum(getattr(group, "local_huffman_chunks", 0) for group in self.groups)
 
     @property
     def local_huff0_chunks(self):

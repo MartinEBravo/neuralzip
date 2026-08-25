@@ -1,18 +1,16 @@
+import math
 import unittest
 
-import math
 import numpy as np
 
-from neuralzip.ablations import jensen_shannon
-from neuralzip.metrics import jensen_shannon_distance, shannon_entropy_from_counts
-from neuralzip.neuralzip_codec import _jensen_shannon
+from neuralzip.metrics import (
+    conditional_entropy_from_counts,
+    jensen_shannon_distance,
+    shannon_entropy_from_counts,
+)
 
 
 class MetricsTests(unittest.TestCase):
-    def test_jensen_shannon_compatibility_aliases_share_one_implementation(self):
-        self.assertIs(jensen_shannon, jensen_shannon_distance)
-        self.assertIs(_jensen_shannon, jensen_shannon_distance)
-
     def test_jensen_shannon_characterization_values_are_unchanged(self):
         cases = (
             ((1.0, 0.0), (1.0, 0.0), 0.0),
@@ -37,6 +35,13 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(shannon_entropy_from_counts((0, 0, 0)), 0.0)
         self.assertEqual(shannon_entropy_from_counts((2, 2)), 1.0)
         self.assertEqual(shannon_entropy_from_counts((4, 0)), 0.0)
+
+    def test_conditional_entropy_from_transition_counts(self):
+        self.assertEqual(conditional_entropy_from_counts(()), 0.0)
+        self.assertEqual(
+            conditional_entropy_from_counts(((2, 2), (0, 4))),
+            0.5,
+        )
 
 
 if __name__ == "__main__":

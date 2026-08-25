@@ -1,27 +1,0 @@
-Loading weights:   0%|          | 0/148 [00:00<?, ?it/s]Loading weights:  80%|███████▉  | 118/148 [00:00<00:00, 1117.17it/s]Loading weights: 100%|██████████| 148/148 [00:00<00:00, 1209.28it/s]
-loaded=GPT-2 parameters=124,439,808
-phase=component status=start
-phase=component status=complete seconds=39.398
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  71%|███████   | 141/199 [00:00<00:00, 1364.89it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1352.14it/s]
-[transformers] [1mBertModel LOAD REPORT[0m from: google-bert/bert-base-uncased
-Key                                        | Status     |  | 
--------------------------------------------+------------+--+-
-cls.predictions.transform.LayerNorm.bias   | UNEXPECTED |  | 
-cls.predictions.transform.dense.weight     | UNEXPECTED |  | 
-cls.predictions.transform.dense.bias       | UNEXPECTED |  | 
-cls.predictions.transform.LayerNorm.weight | UNEXPECTED |  | 
-cls.predictions.bias                       | UNEXPECTED |  | 
-cls.seq_relationship.weight                | UNEXPECTED |  | 
-cls.seq_relationship.bias                  | UNEXPECTED |  | 
-
-Notes:
-- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
-loaded=BERT Base parameters=109,482,240
-phase=component status=start
-phase=component status=complete seconds=34.681
-loaded=ResNet-18 parameters=11,689,512
-phase=component status=start
-phase=component status=complete seconds=7.539
-loaded=ResNet-34 parameters=21,797,672
-phase=component status=start
-phase=component status=complete seconds=12.256

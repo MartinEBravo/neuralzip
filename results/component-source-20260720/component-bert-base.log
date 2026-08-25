@@ -1,17 +1,0 @@
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  53%|█████▎    | 105/199 [00:00<00:00, 987.05it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1012.23it/s]
-[transformers] [1mBertModel LOAD REPORT[0m from: google-bert/bert-base-uncased
-Key                                        | Status     |  | 
--------------------------------------------+------------+--+-
-cls.predictions.transform.dense.weight     | UNEXPECTED |  | 
-cls.predictions.transform.LayerNorm.weight | UNEXPECTED |  | 
-cls.predictions.transform.dense.bias       | UNEXPECTED |  | 
-cls.seq_relationship.bias                  | UNEXPECTED |  | 
-cls.predictions.transform.LayerNorm.bias   | UNEXPECTED |  | 
-cls.seq_relationship.weight                | UNEXPECTED |  | 
-cls.predictions.bias                       | UNEXPECTED |  | 
-
-Notes:
-- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
-loaded=BERT Base parameters=109,482,240
-phase=component status=start
-phase=component status=complete seconds=34.306

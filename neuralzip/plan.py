@@ -1,9 +1,8 @@
 """Public facade for fitting, transferring, encoding, and persisting setup."""
 
-from dataclasses import dataclass
-import hashlib
-from pathlib import Path
 import pickle
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
@@ -15,10 +14,10 @@ from .codec_protocol import (
     named_tensor_items,
     prepare_neuralzip_codec,
 )
+from .hashing import sha256_bytes
 from .neuralzip_codec import NeuralZipCodec
 from .packed_exponents import tokenize_ngrams
-from .zipnn_codec import _zipnn_dtype_config, _zipnn_reordered_bytes
-
+from .zipnn_codec import _zipnn_dtype_config
 
 PLAN_MARKER = "frozen-huff0-codebook-v1"
 
@@ -26,36 +25,11 @@ PLAN_MARKER = "frozen-huff0-codebook-v1"
 def codebook_digest(codebooks):
     """Return the stable digest historically used by experiment runners."""
 
-    return hashlib.sha256(
-        pickle.dumps(tuple(codebooks), protocol=5)
-    ).hexdigest()
+    return sha256_bytes(pickle.dumps(tuple(codebooks), protocol=5))
 
 
 def _source_samples(codec, named_tensors):
-    sample_parts = {}
-    sample_sizes = {}
-    for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
-        original = tensor.detach().cpu().contiguous()
-        config = _zipnn_dtype_config(original.dtype)
-        reordered = _zipnn_reordered_bytes(original, config)
-        element_size = int(config["element_size"])
-        for stream_id in range(int(config["num_buffers"])):
-            is_exponent = codec._is_exponent_stream(config, stream_id)
-            stream = reordered[stream_id::element_size]
-            stream, _ = codec._apply_exponent_layout(
-                original,
-                stream,
-                is_exponent,
-            )
-            key = codec._codebook_key(name, original, stream_id)
-            remaining = codec.max_codebook_sample_bytes - sample_sizes.get(key, 0)
-            if remaining <= 0:
-                continue
-            part = codec._bounded_stream_sample(stream, remaining)
-            if not part:
-                continue
-            sample_parts.setdefault(key, []).append(bytes(part))
-            sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
+    sample_parts, _, _ = codec._collect_codebook_samples(named_tensors)
     return {key: b"".join(parts) for key, parts in sample_parts.items()}
 
 
@@ -142,7 +116,6 @@ class NeuralZipPlan:
         named_tensors = named_tensor_items(named_tensors)
         codec = NeuralZipCodec(**codec_options) if codec is None else codec
         setup_report = prepare_neuralzip_codec(codec, named_tensors)
-        codec.clear_prepacked_cache()
         return cls(codec=codec, setup_report=setup_report)
 
     @property
@@ -153,33 +126,15 @@ class NeuralZipPlan:
     def digest(self):
         return codebook_digest(self.codebooks)
 
-    def map_target(
-        self,
-        named_tensors,
-        *,
-        strategy="structural",
-        require_full_match=True,
-        js_threshold=None,
-    ):
+    def map_target(self, named_tensors):
+        """Apply the frozen setup by exact tensor name, dtype, and stream."""
+
         named_tensors = named_tensor_items(named_tensors)
-        if strategy in {"structural", "direct"}:
-            return self.codec.prepare_direct_transfer_target(
-                named_tensors,
-                require_full_match=require_full_match,
-            )
-        if strategy in {"js", "jensen-shannon"}:
-            return self.codec.prepare_transfer_target(
-                named_tensors,
-                js_threshold=js_threshold,
-            )
-        raise ValueError("strategy must be 'structural' or 'js'.")
+        return self.codec.prepare_direct_transfer_target(
+            named_tensors,
+        )
 
-    def materialize(self, named_tensors):
-        return self.codec.materialize_precompute(named_tensor_items(named_tensors))
-
-    def encode(self, named_tensors, *, clear_materialization=False):
-        if clear_materialization:
-            self.codec.clear_prepacked_cache()
+    def encode(self, named_tensors):
         return encode_tensor_batch(self.codec, named_tensor_items(named_tensors))
 
     def decode(self, payloads):

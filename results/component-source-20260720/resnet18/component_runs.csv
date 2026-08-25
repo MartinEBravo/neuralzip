@@ -1,5 +1,0 @@
-model,variant,repeats,raw_bytes,compressed_bytes,codebook_bytes,compression_pct,encode_seconds,precompute_seconds,clusters,selected_modes,roundtrip_ok
-ResNet-18,ZipNN,1,11689512,3900909,0,33.37101668572649,0.040263877250254154,0.0,0,{},True
-ResNet-18,Sharing Only,1,11689512,3904051,0,33.39789548100896,0.006994522176682949,0.3926112297922373,44,"{'raw': 36, 'local_huff0': 52}",True
-ResNet-18,Packing Only,1,11689512,3783408,2268,32.365833577997094,0.007087763398885727,1.2342082811519504,62,"{'raw': 54, 'local_huff0': 68, 'packed_huff0_n2': 1, 'packed_huff0_n3': 1}",True
-ResNet-18,NeuralZip,1,11689512,3784278,2348,32.37327614702821,0.007448233664035797,1.2863142704591155,44,"{'raw': 36, 'local_huff0': 50, 'packed_huff0_n2': 1, 'packed_huff0_n3': 1}",True

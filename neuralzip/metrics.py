@@ -2,6 +2,18 @@
 
 import numpy as np
 
+from .utils import split_fields
+
+
+def exponent_distribution(tensor):
+    """Return the normalized 8-bit exponent histogram of a floating tensor."""
+
+    _, exponent, _ = split_fields(tensor.detach().cpu().contiguous())
+    stream = exponent.reshape(-1).numpy()
+    counts = np.bincount(stream, minlength=256).astype(np.float64)
+    total = counts.sum()
+    return counts / total if total else counts
+
 
 def jensen_shannon_distance(left, right):
     """Return the base-2 Jensen--Shannon distance between two distributions.
@@ -24,11 +36,6 @@ def jensen_shannon_distance(left, right):
     return float(np.sqrt(max(float(divergence), 0.0)))
 
 
-# Descriptive alias for experiment code that historically used this shorter
-# name.  Both names intentionally refer to the same implementation.
-jensen_shannon = jensen_shannon_distance
-
-
 def shannon_entropy_from_counts(counts):
     """Return zero-order base-2 entropy for non-negative symbol counts."""
 
@@ -38,3 +45,19 @@ def shannon_entropy_from_counts(counts):
         return 0.0
     probabilities = counts[counts > 0] / total
     return float(-(probabilities * np.log2(probabilities)).sum())
+
+
+def conditional_entropy_from_counts(transition_counts):
+    """Return first-order entropy from a matrix of transition counts."""
+
+    transition_counts = np.asarray(transition_counts, dtype=np.float64)
+    total = float(transition_counts.sum())
+    if total == 0.0:
+        return 0.0
+    return float(
+        sum(
+            (float(row.sum()) / total) * shannon_entropy_from_counts(row)
+            for row in transition_counts
+            if row.sum() > 0
+        )
+    )

@@ -1,17 +1,16 @@
 import unittest
 
-from neuralzip.archive import (
-    dumps,
-    loads,
-    serialized_codebooks_size,
-    serialized_size,
-    serialized_tensor_size,
-)
+from neuralzip.archive import dumps, loads
 from neuralzip.payloads import (
     ByteGroupPayload,
     CodebookPayload,
     StreamChunk,
     TensorPayload,
+)
+from neuralzip.serialization import (
+    serialized_codebooks_size,
+    serialized_size,
+    serialized_tensor_size,
 )
 
 
@@ -61,15 +60,16 @@ class ArchiveTests(unittest.TestCase):
         }
 
         encoded = dumps(result)
-        self.assertEqual(codebook.metadata_bytes, serialized_codebooks_size((codebook,)))
+        self.assertEqual(
+            codebook.metadata_bytes, serialized_codebooks_size((codebook,))
+        )
         self.assertEqual(tensor.compressed_bytes, serialized_tensor_size(tensor))
-        self.assertEqual(len(encoded), serialized_size("neuralzip", (codebook,), (tensor,)))
+        self.assertEqual(
+            len(encoded), serialized_size("neuralzip", (codebook,), (tensor,))
+        )
         decoded = loads(encoded)
         self.assertEqual(decoded["codebooks"], (codebook,))
         self.assertEqual(decoded["tensor_results"][0]["payload"], tensor)
-
-        version_one = encoded[:4] + b"\x01\x00" + encoded[6:]
-        self.assertEqual(loads(version_one)["tensor_results"][0]["payload"], tensor)
 
     def test_local_huff0_chunk_roundtrip(self):
         chunk = StreamChunk(

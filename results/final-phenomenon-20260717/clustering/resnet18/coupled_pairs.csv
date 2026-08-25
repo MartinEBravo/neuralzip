@@ -1,5 +1,0 @@
-depth,left,right,left_cluster,right_cluster,same_cluster,js_distance
-100,layer1.0.conv2.weight,layer1.1.conv1.weight,js_010,js_010,True,0.03673316363610137
-200,layer2.0.conv2.weight,layer2.1.conv1.weight,js_019,js_019,True,0.012056482950398939
-300,layer3.0.conv2.weight,layer3.1.conv1.weight,js_028,js_028,True,0.04440627388341657
-400,layer4.0.conv2.weight,layer4.1.conv1.weight,js_038,js_038,True,0.028306127052010403

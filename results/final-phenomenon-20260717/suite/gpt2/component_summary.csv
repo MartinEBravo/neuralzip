@@ -1,5 +1,0 @@
-model,variant,repeats,raw_bytes,compressed_bytes,codebook_bytes,compression_pct,encode_seconds,precompute_seconds,clusters,selected_modes,roundtrip_ok
-GPT-2,ZipNN,1,124439808,41296372,0,33.1858210517329,0.09775829780846834,0.0,0,{},True
-GPT-2,Sharing Only,1,124439808,41296370,0,33.18581944453016,0.05531572084873915,2.08130647521466,96,"{'raw': 75, 'local_huff0': 116, 'shared_huff0': 1}",True
-GPT-2,Packing Only,1,124439808,41285967,2348,33.17745957949405,0.08245965093374252,9.602910502813756,148,"{'raw': 106, 'local_huff0': 188, 'packed_huff0_n2': 2}",True
-GPT-2,NeuralZip,1,124439808,41287796,1169,33.178929366396964,0.0477039385586977,5.815335278399289,96,"{'raw': 76, 'local_huff0': 114, 'packed_huff0_n2': 1, 'shared_huff0': 1}",True

@@ -1,33 +1,13 @@
 import io
 import struct
+from contextlib import nullcontext
 from pathlib import Path
 
 from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayload
-
+from .serialization import CHUNK_MODE_IDS, CHUNK_MODES
 
 MAGIC = b"NZP1"
 VERSION = 2
-SUPPORTED_VERSIONS = {1, VERSION}
-
-CHUNK_MODE_IDS = {
-    "raw": 0,
-    "zero": 1,
-    "huffman": 2,
-    "shared_huffman": 3,
-    "shared_huff0": 4,
-    "packed_huff0": 5,
-    "local_huff0": 6,
-}
-CHUNK_MODES = {value: key for key, value in CHUNK_MODE_IDS.items()}
-
-
-class _CountingWriter:
-    def __init__(self):
-        self.count = 0
-
-    def write(self, data):
-        self.count += len(data)
-        return len(data)
 
 
 def _write_struct(handle, fmt, *values):
@@ -72,9 +52,7 @@ def _write_chunk(handle, chunk):
         raise ValueError(f"Unsupported archive chunk mode {chunk.mode!r}.")
     _write_struct(handle, "BQ", CHUNK_MODE_IDS[chunk.mode], int(chunk.symbol_count))
     _write_bytes(handle, chunk.payload)
-    if chunk.mode == "huffman":
-        _write_bytes(handle, chunk.code_lengths)
-    elif chunk.mode in {"shared_huffman", "shared_huff0"}:
+    if chunk.mode == "shared_huff0":
         if chunk.codebook_id is None:
             raise ValueError(f"{chunk.mode} chunk is missing its codebook id.")
         _write_struct(handle, "q", int(chunk.codebook_id))
@@ -135,31 +113,6 @@ def _write_archive(handle, method, codebooks, tensors):
         _write_tensor(handle, tensor)
 
 
-def serialized_size(method, codebooks, tensors):
-    counter = _CountingWriter()
-    _write_archive(counter, method, tuple(codebooks), tuple(tensors))
-    return counter.count
-
-
-def serialized_codebooks_size(codebooks):
-    counter = _CountingWriter()
-    for codebook in codebooks:
-        _write_codebook(counter, codebook)
-    return counter.count
-
-
-def serialized_tensor_size(tensor):
-    counter = _CountingWriter()
-    _write_tensor(counter, tensor)
-    return counter.count
-
-
-def serialized_group_size(group):
-    counter = _CountingWriter()
-    _write_group(counter, group)
-    return counter.count
-
-
 def dump(compressed_model, target):
     codebooks = tuple(
         compressed_model.get("codebooks")
@@ -175,15 +128,18 @@ def dump(compressed_model, target):
             )
         tensors.append(payload)
 
-    close = False
-    if isinstance(target, (str, Path)):
-        target = Path(target).open("wb")
-        close = True
-    try:
-        _write_archive(target, compressed_model.get("method", "neuralzip"), codebooks, tensors)
-    finally:
-        if close:
-            target.close()
+    context = (
+        Path(target).open("wb")  # noqa: SIM115 - entered by the context below
+        if isinstance(target, (str, Path))
+        else nullcontext(target)
+    )
+    with context as handle:
+        _write_archive(
+            handle,
+            compressed_model.get("method", "neuralzip"),
+            codebooks,
+            tensors,
+        )
 
 
 def dumps(compressed_model):
@@ -215,7 +171,9 @@ class _Reader:
         try:
             return self.read_exact(size).decode("utf-8")
         except UnicodeDecodeError as error:
-            raise ValueError("NeuralZip archive contains invalid UTF-8 metadata.") from error
+            raise ValueError(
+                "NeuralZip archive contains invalid UTF-8 metadata."
+            ) from error
 
 
 def _read_codebook(reader):
@@ -250,9 +208,7 @@ def _read_chunk(reader):
         "symbol_count": symbol_count,
         "payload": reader.bytes(),
     }
-    if mode == "huffman":
-        values["code_lengths"] = reader.bytes()
-    elif mode in {"shared_huffman", "shared_huff0"}:
+    if mode == "shared_huff0":
         values["codebook_id"] = reader.unpack("q")[0]
     elif mode == "packed_huff0":
         codebook_id, token_count, ngram_n = reader.unpack("qQB")
@@ -308,30 +264,27 @@ def _read_tensor(reader):
 
 
 def load(source):
-    close = False
-    if isinstance(source, (str, Path)):
-        source = Path(source).open("rb")
-        close = True
-    reader = _Reader(source)
-    try:
+    context = (
+        Path(source).open("rb")  # noqa: SIM115 - entered by the context below
+        if isinstance(source, (str, Path))
+        else nullcontext(source)
+    )
+    with context as handle:
+        reader = _Reader(handle)
         if reader.read_exact(len(MAGIC)) != MAGIC:
             raise ValueError("Not a NeuralZip archive.")
         (version,) = reader.unpack("H")
-        if version not in SUPPORTED_VERSIONS:
+        if version != VERSION:
             raise ValueError(f"Unsupported NeuralZip archive version {version}.")
         method = reader.text()
         (codebook_count,) = reader.unpack("Q")
         codebooks = tuple(_read_codebook(reader) for _ in range(codebook_count))
         (tensor_count,) = reader.unpack("Q")
         tensors = tuple(_read_tensor(reader) for _ in range(tensor_count))
-        if source.read(1):
+        if handle.read(1):
             raise ValueError("NeuralZip archive contains trailing bytes.")
-    finally:
-        if close:
-            source.close()
     return {
         "method": method,
-        "header": {"codebooks": codebooks},
         "codebooks": codebooks,
         "tensor_results": [{"payload": tensor} for tensor in tensors],
     }

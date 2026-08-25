@@ -3,7 +3,7 @@ import struct
 import sys
 import unittest
 
-from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_streams
 
 
 def _frame(*, element_size, original_bytes, chunk_exponent, totals):
@@ -23,8 +23,7 @@ def _frame(*, element_size, original_bytes, chunk_exponent, totals):
         for chunk in range(chunks):
             entries.append((total * (chunk + 1)) // chunks)
     sizes = b"".join(
-        int(value).to_bytes(struct.calcsize("P"), sys.byteorder)
-        for value in entries
+        int(value).to_bytes(struct.calcsize("P"), sys.byteorder) for value in entries
     )
     data = bytes(sum(totals))
     payload = header + shape + types + sizes + data
@@ -33,18 +32,74 @@ def _frame(*, element_size, original_bytes, chunk_exponent, totals):
 
 
 class ZipNNSourceParserTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
+    def test_compressor_frontend_uses_shared_source_timing(self):
+        import torch
+
+        from neuralzip import Compressor
+
+        source = torch.arange(4096, dtype=torch.bfloat16)
+        reference = source.clone()
+        model = type(
+            "MappingModel",
+            (),
+            {"model_name": "test", "model": {"weight": source}},
+        )()
+
+        result = Compressor("zipnn-src", threads=2, verify=True).compress(model)
+
+        self.assertTrue(result["roundtrip_ok"])
+        self.assertEqual(result["num_tensors"], 1)
+        self.assertAlmostEqual(
+            result["encode_seconds"],
+            result["codec_encode_seconds"] + result["input_copy_seconds"],
+        )
+        self.assertTrue(
+            torch.equal(source.view(torch.uint8), reference.view(torch.uint8))
+        )
+
+    @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
+    def test_shared_adapter_is_non_destructive_and_reports_one_time_boundary(self):
+        import torch
+
+        source = torch.arange(4096, dtype=torch.bfloat16)
+        reference = source.clone()
+        codec = ZipNNSourceCodec(
+            threads=2,
+            chunk_size=256 << 10,
+            compression_threshold=0.95,
+        )
+
+        encoded = codec.encode_tensor(source, verify=True)
+
+        self.assertTrue(
+            torch.equal(source.view(torch.uint8), reference.view(torch.uint8))
+        )
+        self.assertTrue(encoded.roundtrip_ok)
+        self.assertGreaterEqual(encoded.input_copy_seconds, 0.0)
+        self.assertGreaterEqual(encoded.codec_encode_seconds, 0.0)
+        self.assertAlmostEqual(
+            encoded.encode_seconds,
+            encoded.input_copy_seconds + encoded.codec_encode_seconds,
+        )
+        self.assertEqual(encoded.layout.exponent_stream.raw_bytes, source.numel())
+
     def test_official_empty_tensor_golden_frames(self):
         frames = (
             (
                 2,
-                "5a4e0005040a010102000000000012060000000000000000"
-                "2300000000000000010100",
+                (
+                    "5a4e0005040a010102000000000012060000000000000000"
+                    "2300000000000000010100"
+                ),
                 10,
             ),
             (
                 4,
-                "5a4e000504dc010102000000000012010000000000000000"
-                "2300000000000000010100",
+                (
+                    "5a4e000504dc010102000000000012010000000000000000"
+                    "2300000000000000010100"
+                ),
                 220,
             ),
         )
@@ -157,7 +212,9 @@ class ZipNNSourceParserTests(unittest.TestCase):
                     self.assertEqual(layout.exponent_stream.raw_bytes, tensor.numel())
                     restored = codec.decompress(payload)
                     self.assertTrue(
-                        torch.equal(tensor.view(torch.uint8), restored.view(torch.uint8))
+                        torch.equal(
+                            tensor.view(torch.uint8), restored.view(torch.uint8)
+                        )
                     )
 
 

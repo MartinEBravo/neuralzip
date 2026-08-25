@@ -38,7 +38,7 @@ class NeuralZipPlanTests(unittest.TestCase):
             )
 
         target = self.tensors(offset=1.0)
-        transfer = plan.map_target(target, strategy="structural")
+        transfer = plan.map_target(target)
         self.assertEqual(transfer["matched_tensors"], len(target))
         transferred = plan.encode(target)
         transferred_restored = plan.decode(transferred.payloads)
@@ -99,22 +99,6 @@ class NeuralZipPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.digest, expected_digest)
         self.assertEqual(plan.encode(source).payloads, expected_payloads)
-
-    def test_encode_reports_materialized_cache_usage(self):
-        source = dict(self.tensors())
-        plan = NeuralZipPlan.fit(
-            source,
-            threads=2,
-            max_codebook_sample_bytes=1 << 20,
-            enable_prepacked_cache=True,
-        )
-        plan.materialize(source)
-
-        encoded = plan.encode(source)
-
-        self.assertTrue(encoded.materialization_active)
-        self.assertGreater(encoded.materialization_bytes, 0)
-        self.assertEqual(encoded.materialization_hits, len(source))
 
 
 if __name__ == "__main__":

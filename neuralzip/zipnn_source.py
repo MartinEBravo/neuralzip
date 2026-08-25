@@ -1,9 +1,14 @@
-"""Parser for the stream-size metadata emitted by official ZipNN archives."""
+"""Non-destructive adapter for the official ZipNN package and its archives."""
 
-from dataclasses import dataclass
 import math
 import struct
 import sys
+import time
+from dataclasses import dataclass
+
+import torch
+
+from .tensors import bitwise_equal
 
 
 @dataclass(frozen=True)
@@ -30,12 +35,107 @@ class ZipNNArchiveLayout:
     bit_reorder: int
     streams: tuple[ZipNNStreamSize, ...]
 
-    def stream(self, stream_id):
-        return self.streams[int(stream_id)]
-
     @property
     def exponent_stream(self):
         return self.streams[self.element_size - 1]
+
+
+@dataclass(frozen=True)
+class ZipNNEncodedTensor:
+    """One official ZipNN result with a consistent encoding time boundary."""
+
+    payload: bytes
+    raw_bytes: int
+    element_size: int
+    encode_seconds: float
+    codec_encode_seconds: float
+    input_copy_seconds: float
+    decode_seconds: float | None = None
+    roundtrip_ok: bool | None = None
+
+    @property
+    def archive_bytes(self):
+        return len(self.payload)
+
+    @property
+    def layout(self):
+        return parse_zipnn_streams(
+            self.payload,
+            element_size=self.element_size,
+            expected_raw_bytes=self.raw_bytes,
+        )
+
+
+class ZipNNSourceCodec:
+    """Shared adapter around ZipNN's mutating tensor API.
+
+    Official ZipNN reorders tensor storage in place while encoding.  Every
+    frontend therefore has to clone its input and include that required copy
+    in the encode measurement.  Keeping the operation here gives model,
+    checkpoint, and federated experiments the same safety and timing rules.
+    """
+
+    def __init__(
+        self,
+        *,
+        threads,
+        chunk_size,
+        compression_threshold,
+        method="HUFFMAN",
+    ):
+        try:
+            from zipnn import ZipNN
+        except ImportError as error:
+            raise ImportError(
+                "The official zipnn package is required: pip install zipnn."
+            ) from error
+
+        self.settings = {
+            "method": str(method).upper(),
+            "input_format": "torch",
+            "threads": int(threads),
+            "compression_threshold": float(compression_threshold),
+            "compression_chunk": int(chunk_size),
+        }
+        self._encoder = ZipNN(**self.settings)
+        self._decoder = ZipNN(**self.settings)
+
+    def encode_tensor(self, tensor, *, verify=False):
+        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
+            raise TypeError("ZipNN source only compresses floating tensors.")
+
+        original = tensor.detach().cpu().contiguous()
+        copy_started = time.perf_counter()
+        compressor_input = original.clone()
+        copy_seconds = time.perf_counter() - copy_started
+        if original.numel() and compressor_input.data_ptr() == original.data_ptr():
+            raise AssertionError("ZipNN source input clone aliases the source tensor.")
+
+        codec_started = time.perf_counter()
+        payload = self._encoder.compress(compressor_input)
+        codec_seconds = time.perf_counter() - codec_started
+
+        decode_seconds = None
+        roundtrip_ok = None
+        if verify:
+            decode_started = time.perf_counter()
+            restored = self._decoder.decompress(payload)
+            decode_seconds = time.perf_counter() - decode_started
+            roundtrip_ok = bitwise_equal(original, restored)
+
+        return ZipNNEncodedTensor(
+            payload=payload,
+            raw_bytes=int(original.numel()) * int(original.element_size()),
+            element_size=int(original.element_size()),
+            encode_seconds=copy_seconds + codec_seconds,
+            codec_encode_seconds=codec_seconds,
+            input_copy_seconds=copy_seconds,
+            decode_seconds=decode_seconds,
+            roundtrip_ok=roundtrip_ok,
+        )
+
+    def decode(self, payload):
+        return self._decoder.decompress(payload).detach().cpu().contiguous()
 
 
 def _shape_header_end(payload):
@@ -74,8 +174,7 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
     archive_bytes = int.from_bytes(view[24:32], byteorder="little")
     if archive_bytes != len(view):
         raise ValueError(
-            "ZipNN compressed length mismatch: "
-            f"{archive_bytes} != {len(view)}."
+            f"ZipNN compressed length mismatch: {archive_bytes} != {len(view)}."
         )
     if expected_raw_bytes is not None and original_bytes != int(expected_raw_bytes):
         raise ValueError(
@@ -83,15 +182,11 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
             f"{original_bytes} != {int(expected_raw_bytes)}."
         )
     if original_bytes % element_size:
-        raise ValueError(
-            f"ZipNN original length is not divisible by {element_size}."
-        )
+        raise ValueError(f"ZipNN original length is not divisible by {element_size}.")
 
     input_format = int(view[8])
     if input_format not in {2, 3}:
-        raise ValueError(
-            "ZipNN stream parsing requires a torch or numpy tensor frame."
-        )
+        raise ValueError("ZipNN stream parsing requires a torch or numpy tensor frame.")
     header_bytes = _shape_header_end(view)
     chunk_exponent = int(view[14])
     if chunk_exponent >= 63:
@@ -149,3 +244,30 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
         bit_reorder=int(view[6]),
         streams=streams,
     )
+
+
+def parse_zipnn_exponent_stream(
+    payload,
+    *,
+    element_size,
+    expected_raw_bytes=None,
+    expected_byte_reorder=None,
+    expected_bit_reorder=None,
+    expected_chunk_size=None,
+):
+    """Parse and validate the exponent stream used by experiment frontends."""
+
+    layout = parse_zipnn_streams(
+        payload,
+        element_size=element_size,
+        expected_raw_bytes=expected_raw_bytes,
+    )
+    expectations = (
+        ("byte reorder", layout.byte_reorder, expected_byte_reorder),
+        ("bit reorder", layout.bit_reorder, expected_bit_reorder),
+        ("chunk size", layout.chunk_bytes, expected_chunk_size),
+    )
+    for label, observed, expected in expectations:
+        if expected is not None and observed != int(expected):
+            raise ValueError(f"ZipNN {label} mismatch: {observed} != {int(expected)}.")
+    return layout, layout.exponent_stream

@@ -1,12 +1,14 @@
 import unittest
 
-from neuralzip.archive import serialized_group_size
 from neuralzip.payloads import (
     ByteGroupPayload,
+    StreamChunk,
+)
+from neuralzip.serialization import (
     PACKED_CHUNK_METADATA_BYTES,
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
-    StreamChunk,
+    serialized_group_size,
     stream_chunk_metadata_bytes,
 )
 
@@ -19,24 +21,6 @@ class StreamChunkMetadataTests(unittest.TestCase):
             (
                 StreamChunk("local_huff0", 3, b"local"),
                 RAW_CHUNK_METADATA_BYTES,
-            ),
-            (
-                StreamChunk(
-                    "huffman",
-                    3,
-                    b"bits",
-                    code_lengths=b"lengths",
-                ),
-                SHARED_CHUNK_METADATA_BYTES + len(b"lengths"),
-            ),
-            (
-                StreamChunk(
-                    "shared_huffman",
-                    3,
-                    b"bits",
-                    codebook_id=7,
-                ),
-                SHARED_CHUNK_METADATA_BYTES,
             ),
             (
                 StreamChunk(
@@ -66,10 +50,7 @@ class StreamChunkMetadataTests(unittest.TestCase):
             with self.subTest(mode=chunk.mode):
                 self.assertEqual(chunk.metadata_bytes, expected_metadata_bytes)
                 self.assertEqual(
-                    stream_chunk_metadata_bytes(
-                        chunk.mode,
-                        len(chunk.code_lengths),
-                    ),
+                    stream_chunk_metadata_bytes(chunk.mode),
                     expected_metadata_bytes,
                 )
                 group = ByteGroupPayload("stream", chunk.symbol_count, (chunk,))

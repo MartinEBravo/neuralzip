@@ -19,5 +19,6 @@ class ZipNNCodecTests(unittest.TestCase):
                 )
                 self.assertGreater(payload.huffman_chunks, 0)
 
+
 if __name__ == "__main__":
     unittest.main()

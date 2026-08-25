@@ -1,15 +1,11 @@
 import numpy as np
 import torch
 
-from . import huff0, huffman
+from . import huff0
+from .dtypes import FLOAT_DTYPES_BY_NAME, dtype_name
 from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
-
-DTYPE_BY_NAME = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
-}
+DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
 
 ZIPNN_DTYPE_CONFIG = {
     torch.float32: {
@@ -31,10 +27,6 @@ ZIPNN_DTYPE_CONFIG = {
         "bit_reorder": 0,
     },
 }
-
-
-def _dtype_name(dtype):
-    return str(dtype).replace("torch.", "")
 
 
 def _tensor_raw_bytes(tensor):
@@ -151,63 +143,7 @@ class ZipNNCodec:
 
         if compressed.strategy in {"zipnn", "byte_groups"}:
             return self._decompress_zipnn(compressed)
-        if compressed.strategy == "delta":
-            raise ValueError("Delta payloads require decompress_delta_tensor().")
         raise ValueError(f"Unsupported ZipNN strategy: {compressed.strategy!r}")
-
-    def compress_delta_tensor(self, name, base_tensor, target_tensor):
-        if not torch.is_tensor(base_tensor) or not torch.is_tensor(target_tensor):
-            raise TypeError("Delta compression expects torch tensors.")
-        if (
-            base_tensor.shape != target_tensor.shape
-            or base_tensor.dtype != target_tensor.dtype
-        ):
-            raise ValueError("Delta tensors must have matching shape and dtype.")
-        if not target_tensor.is_floating_point():
-            raise TypeError("ZipNN delta compression only supports floating tensors.")
-
-        base = base_tensor.detach().cpu().contiguous()
-        target = target_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        target_bytes = np.frombuffer(_tensor_raw_bytes(target), dtype=np.uint8)
-        delta = np.bitwise_xor(base_bytes, target_bytes).tobytes()
-        group = self._compress_stream(delta, "delta")
-
-        return TensorPayload(
-            name=name,
-            shape=tuple(int(dim) for dim in target.shape),
-            dtype=_dtype_name(target.dtype),
-            element_size=int(target.element_size()),
-            numel=int(target.numel()),
-            strategy="delta",
-            groups=(group,),
-        )
-
-    def decompress_delta_tensor(self, compressed, base_tensor):
-        if compressed.strategy != "delta":
-            raise ValueError("Expected a delta payload.")
-        if len(compressed.groups) != 1:
-            raise ValueError("Delta payload must contain exactly one stream.")
-        if not torch.is_tensor(base_tensor):
-            raise TypeError("base_tensor must be a torch tensor.")
-        if tuple(int(dim) for dim in base_tensor.shape) != compressed.shape:
-            raise ValueError("Base tensor shape does not match delta payload.")
-
-        dtype = DTYPE_BY_NAME[compressed.dtype]
-        if base_tensor.dtype != dtype:
-            raise ValueError("Base tensor dtype does not match delta payload.")
-
-        delta = self._decompress_stream(compressed.groups[0])
-        if len(delta) != compressed.raw_bytes:
-            raise ValueError(
-                f"Delta stream has {len(delta)} bytes; expected {compressed.raw_bytes}."
-            )
-
-        base = base_tensor.detach().cpu().contiguous()
-        base_bytes = np.frombuffer(_tensor_raw_bytes(base), dtype=np.uint8)
-        delta_bytes = np.frombuffer(delta, dtype=np.uint8)
-        target_bytes = np.bitwise_xor(base_bytes, delta_bytes).tobytes()
-        return _tensor_from_raw_bytes(target_bytes, dtype, compressed.shape)
 
     def _stream_chunk_size(self, element_size):
         return max(1, self.chunk_size // int(element_size))
@@ -288,16 +224,6 @@ class ZipNNCodec:
                 output.extend(b"\x00" * chunk.symbol_count)
             elif chunk.mode == "raw":
                 output.extend(chunk.payload)
-            elif chunk.mode == "huffman":
-                output.extend(
-                    huffman.decompress(
-                        huffman.HuffmanPayload(
-                            payload=chunk.payload,
-                            code_lengths=chunk.code_lengths,
-                            symbol_count=chunk.symbol_count,
-                        )
-                    )
-                )
             elif chunk.mode == "local_huff0":
                 output.extend(huff0.decompress_block(chunk.payload, chunk.symbol_count))
             else:
@@ -341,7 +267,7 @@ class ZipNNCodec:
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=_dtype_name(tensor.dtype),
+            dtype=dtype_name(tensor.dtype),
             element_size=element_size,
             numel=int(tensor.numel()),
             strategy="zipnn",
@@ -368,13 +294,13 @@ class ZipNNCodec:
         raw = bytearray(compressed.raw_bytes)
         for byte_offset, group in enumerate(compressed.groups):
             stream = self._decompress_stream(group)
-            expected_symbols = len(raw[byte_offset::compressed.element_size])
+            expected_symbols = len(raw[byte_offset :: compressed.element_size])
             if len(stream) != expected_symbols:
                 raise ValueError(
                     f"Byte group {byte_offset} has {len(stream)} symbols; "
                     f"expected {expected_symbols}."
                 )
-            raw[byte_offset::compressed.element_size] = stream
+            raw[byte_offset :: compressed.element_size] = stream
 
         restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

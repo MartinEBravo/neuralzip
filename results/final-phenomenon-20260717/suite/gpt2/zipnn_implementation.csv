@@ -1,3 +1,0 @@
-model,method,encode_seconds,codec_encode_seconds,input_copy_seconds,raw_bytes,compressed_bytes,compressed_pct,full_raw_bytes,full_compressed_bytes,roundtrip_ok
-GPT-2,zipnn-local,0.10106921568512917,0.10106921568512917,0.0,124439808,41296372,33.1858210517329,248879616,165771877,True
-GPT-2,zipnn-src,0.18254950735718012,0.1718033365905285,0.01074617076665163,124439808,41282232,33.17445812838284,248879616,165732852,True

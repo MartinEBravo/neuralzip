@@ -41,4 +41,8 @@ def split_fields(tensor, bit_width=None):
     sign = (bits >> (exponent_bits + mantissa_bits)) & 0x1
     exponent = (bits >> mantissa_bits) & ((1 << exponent_bits) - 1)
     mantissa = bits & ((1 << mantissa_bits) - 1)
-    return sign.reshape(tensor.shape), exponent.reshape(tensor.shape), mantissa.reshape(tensor.shape)
+    return (
+        sign.reshape(tensor.shape),
+        exponent.reshape(tensor.shape),
+        mantissa.reshape(tensor.shape),
+    )

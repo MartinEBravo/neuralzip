@@ -1,6 +1,5 @@
 import numpy as np
 
-
 ESCAPE_SYMBOL = 255
 
 
@@ -60,13 +59,13 @@ def tokenize_ngrams(data, n, vocab):
 
     positions = np.searchsorted(vocab_values, packed)
     safe_positions = np.minimum(positions, vocab_values.size - 1)
-    hits = (positions < vocab_values.size) & (
-        vocab_values[safe_positions] == packed
-    )
+    hits = (positions < vocab_values.size) & (vocab_values[safe_positions] == packed)
     tokens = np.full(packed.size, ESCAPE_SYMBOL, dtype=np.uint8)
     tokens[hits] = positions[hits].astype(np.uint8)
 
-    source = np.frombuffer(bytes(data)[: packed.size * n], dtype=np.uint8).reshape(-1, n)
+    source = np.frombuffer(bytes(data)[: packed.size * n], dtype=np.uint8).reshape(
+        -1, n
+    )
     escapes = source[~hits].reshape(-1).tobytes() if np.any(~hits) else b""
     hit_count = int(np.count_nonzero(hits))
     return tokens.tobytes(), escapes, tail, hit_count, int(packed.size - hit_count)
@@ -89,7 +88,9 @@ def restore_ngrams(tokens, n, vocab, escapes, tail):
             escape_offset = end
             continue
         if token >= vocab_values.size:
-            raise ValueError(f"Packed exponent token {token} is outside the vocabulary.")
+            raise ValueError(
+                f"Packed exponent token {token} is outside the vocabulary."
+            )
         value = int(vocab_values[token])
         output.extend(value.to_bytes(_symbol_dtype(n).itemsize, "little")[:n])
 

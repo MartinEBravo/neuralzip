@@ -1262,7 +1262,6 @@ def benchmark_checkpoint(
                 named_tensors,
                 epoch=epoch,
                 setup=setup,
-                threads=args.threads,
             ),
             aliases,
         )

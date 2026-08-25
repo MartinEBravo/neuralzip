@@ -348,9 +348,7 @@ class Compressor:
     def _codec_compression(self, model: "HFModel", *, method_name, method_detail):
         tensor_results = []
         total_raw_bytes = 0
-        total_compressed_bytes = 0
         total_payload_bytes = 0
-        total_metadata_bytes = 0
         total_numel = 0
         total_encode_seconds = 0.0
         total_decode_seconds = 0.0
@@ -366,7 +364,6 @@ class Compressor:
         total_packed_ngram_chunks = 0
         total_ngram_hits = 0
         total_ngram_escapes = 0
-        precompute_seconds = 0.0
         clustering_seconds = 0.0
         prepack_seconds = 0.0
         codebook_setup_seconds = 0.0
@@ -397,8 +394,6 @@ class Compressor:
             codebook_setup_seconds = time.perf_counter() - start
             codebooks = self.codec.export_codebooks()
             codebook_metadata_bytes = serialized_codebooks_size(codebooks)
-            total_metadata_bytes += codebook_metadata_bytes
-            total_compressed_bytes += codebook_metadata_bytes
             total_shared_codebook_defs += len(codebooks)
 
         if (
@@ -453,9 +448,7 @@ class Compressor:
 
             compressed_bytes = serialized_tensor_size(compressed)
             compressed_payloads.append(compressed)
-            total_compressed_bytes += compressed_bytes
             total_payload_bytes += compressed.payload_bytes
-            total_metadata_bytes += compressed_bytes - compressed.payload_bytes
             total_encode_seconds += encode_seconds
             total_huffman_groups += compressed.huffman_groups
             total_raw_groups += compressed.raw_groups

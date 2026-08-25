@@ -261,10 +261,6 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _sha256_file(path: Path, *, block_bytes: int = 4 << 20) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

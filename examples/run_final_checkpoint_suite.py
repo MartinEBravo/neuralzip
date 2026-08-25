@@ -34,7 +34,6 @@ from neuralzip.archive import (  # noqa: E402
 from neuralzip import huff0  # noqa: E402
 from neuralzip.packed_exponents import tokenize_ngrams  # noqa: E402
 from neuralzip.zipnn_codec import (  # noqa: E402
-    _dtype_name,
     _zipnn_dtype_config,
     _zipnn_reordered_bytes,
 )
@@ -724,7 +723,6 @@ def benchmark_neuralzip(
     *,
     epoch: int,
     setup: Mapping,
-    threads: int,
 ) -> dict:
     before = tensor_digest(named_tensors)
     mapping_started = time.perf_counter()
@@ -898,7 +896,6 @@ def benchmark_checkpoint(
             named_tensors,
             epoch=epoch,
             setup=setup,
-            threads=args.threads,
         )
         row = {**common, "compressor": "NeuralZip", **metrics}
         upsert_result(result_path, row)

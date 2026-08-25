@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from .dtypes import dtype_name, resolve_torch_dtype
 from .codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     is_current_codec_protocol,
@@ -55,22 +56,7 @@ def _tensor_mapping_from_module(module, *, dtype=None, predicate=None):
 def _normalise_dtype(dtype):
     if dtype is None:
         return None
-    if isinstance(dtype, torch.dtype):
-        return dtype
-    dtype_key = str(dtype).lower().replace("torch.", "").replace("-", "_")
-    dtype_map = {
-        "auto": "auto",
-        "float32": torch.float32,
-        "fp32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "bf16": torch.bfloat16,
-        "float16": torch.float16,
-        "fp16": torch.float16,
-    }
-    if dtype_key not in dtype_map:
-        choices = ", ".join(sorted(dtype_map))
-        raise ValueError(f"Unsupported dtype {dtype!r}. Expected one of: {choices}.")
-    return dtype_map[dtype_key]
+    return resolve_torch_dtype(dtype)
 
 
 def _model_spec_value(spec, key, default=None):
@@ -360,7 +346,7 @@ def run_hf_model_suite_experiment(
                 row["model_id"] = model_id
                 row["representation"] = representation
                 row["category"] = category
-                row["dtype"] = str(dtype).replace("torch.", "")
+                row["dtype"] = dtype_name(dtype)
                 row["tensor_count"] = len(tensors)
                 row["load_backend"] = load_backend
                 rows.append(row)
@@ -504,7 +490,7 @@ def _load_failure_row(spec, *, experiment, error, dtype, fallback_for=None):
         or _model_spec_value(spec, "constructor", None),
         "weights": _model_spec_value(spec, "weights", None),
         "fallback_for": fallback_for,
-        "dtype": str(dtype).replace("torch.", ""),
+        "dtype": dtype_name(dtype),
         "status": "load-failed",
         "error": f"{type(error).__name__}: {error}",
         "load_backend": None,
@@ -628,7 +614,7 @@ def run_vision_diffusion_experiment(
                         "source": load_metadata.get("source"),
                         "weights": load_metadata.get("weights"),
                         "fallback_for": fallback_for,
-                        "dtype": str(candidate_dtype).replace("torch.", ""),
+                        "dtype": dtype_name(candidate_dtype),
                         "status": "no-floating-tensors",
                         "error": "Loaded model exposes no floating-point tensors.",
                         "load_backend": load_metadata.get("load_backend"),
@@ -651,7 +637,7 @@ def run_vision_diffusion_experiment(
                 row["source"] = load_metadata.get("source")
                 row["weights"] = load_metadata.get("weights")
                 row["fallback_for"] = fallback_for
-                row["dtype"] = str(candidate_dtype).replace("torch.", "")
+                row["dtype"] = dtype_name(candidate_dtype)
                 row["tensor_count"] = len(tensors)
                 row["parameter_count"] = parameter_count
                 row["floating_raw_bytes"] = floating_raw_bytes
@@ -813,7 +799,7 @@ def run_lossy_lossless_experiment(
                 row["model_name"] = model_name
                 row["model_id"] = model_id
                 row["representation"] = representation
-                row["dtype"] = str(dtype).replace("torch.", "")
+                row["dtype"] = dtype_name(dtype)
                 row["tensor_count"] = len(tensors)
                 rows.append(row)
             del model, tensors

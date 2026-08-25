@@ -37,7 +37,8 @@ import torch
 from neuralzip import Compressor
 from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
 from neuralzip.hashing import canonical_digest, sha256_file
-from neuralzip.zipnn_source import ZipNNSourceCodec
+from neuralzip.system import host_facts, parse_cpu_set
+from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
 
 METHODS = ("zipnn-src", "neuralzip")
@@ -93,25 +94,7 @@ def host_provenance() -> dict[str, object]:
     global _HOST_PROVENANCE
     if _HOST_PROVENANCE is not None:
         return _HOST_PROVENANCE
-    cpu_model = platform.processor()
-    cpuinfo = Path("/proc/cpuinfo")
-    if cpuinfo.is_file():
-        for line in cpuinfo.read_text(errors="replace").splitlines():
-            if line.lower().startswith("model name") and ":" in line:
-                cpu_model = line.split(":", 1)[1].strip()
-                break
-    machine_id_digest = None
-    machine_id = Path("/etc/machine-id")
-    if machine_id.is_file():
-        machine_id_digest = hashlib.sha256(machine_id.read_bytes()).hexdigest()
-    fields = {
-        "hostname": platform.node(),
-        "machine": platform.machine(),
-        "kernel": platform.release(),
-        "cpu_model": cpu_model,
-        "logical_cpus": os.cpu_count(),
-        "machine_id_sha256": machine_id_digest,
-    }
+    fields = host_facts(include_machine_id=True)
     _HOST_PROVENANCE = {**fields, "fingerprint": canonical_digest(fields)}
     return _HOST_PROVENANCE
 
@@ -124,22 +107,6 @@ def default_hf_cache() -> Path:
     if home:
         return Path(home) / "hub"
     return Path.home() / ".cache" / "huggingface" / "hub"
-
-
-def parse_cpu_set(value: str) -> set[int]:
-    cpus: set[int] = set()
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            first, last = part.split("-", 1)
-            cpus.update(range(int(first), int(last) + 1))
-        else:
-            cpus.add(int(part))
-    if not cpus:
-        raise ValueError("CPU set cannot be empty.")
-    return cpus
 
 
 def package_version(name: str) -> str | None:
@@ -842,14 +809,18 @@ def zipnn_src_pass(
         if original.dtype != torch.bfloat16:
             raise TypeError(f"{name} is {original.dtype}; expected BF16.")
         encoded = codec.encode_tensor(original, verify=verify)
-        layout = encoded.layout
-        if layout.byte_reorder != 10 or layout.bit_reorder != 1:
-            raise ValueError("Expected a BF16 ZipNN byte-reordered archive.")
+        layout, exponent = parse_zipnn_exponent_stream(
+            encoded.payload,
+            element_size=2,
+            expected_raw_bytes=encoded.raw_bytes,
+            expected_byte_reorder=10,
+            expected_bit_reorder=1,
+            expected_chunk_size=DEFAULT_CHUNK_SIZE,
+        )
 
         total_copy += encoded.input_copy_seconds
         total_codec += encoded.codec_encode_seconds
         total_encode += encoded.encode_seconds
-        exponent = layout.exponent_stream
         exponent_raw += int(original.numel())
         exponent_data += exponent.payload_bytes
         exponent_metadata += exponent.metadata_bytes

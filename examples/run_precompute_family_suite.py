@@ -29,6 +29,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from neuralzip.experiment_io import atomic_write_json
+from neuralzip.system import cpu_affinity, parse_cpu_set
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -41,7 +42,6 @@ from examples.run_general_codec_rerun import (
     host_provenance,
     iter_float_tensors,
     load_model,
-    parse_cpu_set,
     snapshot_weight_files,
     utc_now,
     zipnn_src_pass,
@@ -572,11 +572,7 @@ def run_family(
         "code_provenance": code_provenance(),
         "dtype": "bfloat16",
         "threads": threads,
-        "cpu_set": (
-            sorted(os.sched_getaffinity(0))
-            if hasattr(os, "sched_getaffinity")
-            else None
-        ),
+        "cpu_set": cpu_affinity(),
         "chunk_size": DEFAULT_CHUNK_SIZE,
         "compression_threshold": DEFAULT_COMPRESSION_THRESHOLD,
         "warmup_repetitions": 1,

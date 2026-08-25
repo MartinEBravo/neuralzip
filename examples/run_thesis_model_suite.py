@@ -36,6 +36,7 @@ from neuralzip.ablations import (
     selected_turborc_range_cost,
     zipnn_exponent_stream,
 )
+from neuralzip.metrics import shannon_entropy_from_counts as entropy_from_counts
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,15 +133,6 @@ def floating_parameters(view: ModelView):
         for name, parameter in view.model.named_parameters()
         if parameter.is_floating_point()
     ]
-
-
-def entropy_from_counts(counts) -> float:
-    counts = np.asarray(counts, dtype=np.float64)
-    counts = counts[counts > 0]
-    if counts.size == 0:
-        return 0.0
-    probabilities = counts / counts.sum()
-    return float(-(probabilities * np.log2(probabilities)).sum())
 
 
 def first_order_entropy_from_counts(counts) -> float:

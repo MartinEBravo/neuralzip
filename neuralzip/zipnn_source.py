@@ -252,3 +252,32 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
         bit_reorder=int(view[6]),
         streams=streams,
     )
+
+
+def parse_zipnn_exponent_stream(
+    payload,
+    *,
+    element_size,
+    expected_raw_bytes=None,
+    expected_byte_reorder=None,
+    expected_bit_reorder=None,
+    expected_chunk_size=None,
+):
+    """Parse and validate the exponent stream used by experiment frontends."""
+
+    layout = parse_zipnn_streams(
+        payload,
+        element_size=element_size,
+        expected_raw_bytes=expected_raw_bytes,
+    )
+    expectations = (
+        ("byte reorder", layout.byte_reorder, expected_byte_reorder),
+        ("bit reorder", layout.bit_reorder, expected_bit_reorder),
+        ("chunk size", layout.chunk_bytes, expected_chunk_size),
+    )
+    for label, observed, expected in expectations:
+        if expected is not None and observed != int(expected):
+            raise ValueError(
+                f"ZipNN {label} mismatch: {observed} != {int(expected)}."
+            )
+    return layout, layout.exponent_stream

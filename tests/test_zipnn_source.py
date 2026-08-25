@@ -34,6 +34,30 @@ def _frame(*, element_size, original_bytes, chunk_exponent, totals):
 
 class ZipNNSourceParserTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
+    def test_compressor_frontend_uses_shared_source_timing(self):
+        import torch
+
+        from neuralzip import Compressor
+
+        source = torch.arange(4096, dtype=torch.bfloat16)
+        reference = source.clone()
+        model = type(
+            "MappingModel",
+            (),
+            {"model_name": "test", "model": {"weight": source}},
+        )()
+
+        result = Compressor("zipnn-src", threads=2, verify=True).compress(model)
+
+        self.assertTrue(result["roundtrip_ok"])
+        self.assertEqual(result["num_tensors"], 1)
+        self.assertAlmostEqual(
+            result["encode_seconds"],
+            result["codec_encode_seconds"] + result["input_copy_seconds"],
+        )
+        self.assertTrue(torch.equal(source.view(torch.uint8), reference.view(torch.uint8)))
+
+    @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
     def test_shared_adapter_is_non_destructive_and_reports_one_time_boundary(self):
         import torch
 

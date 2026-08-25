@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from .dtypes import dtype_name
 from .codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     assert_tensor_roundtrip,
@@ -226,7 +227,7 @@ def compress_training_checkpoints(
                 "encoder_path": encoded.encoder_path,
                 "setup_scope": "per-checkpoint",
                 "dtype": (
-                    str(dtype).replace("torch.", "")
+                    dtype_name(dtype)
                     if dtype is not None
                     else "checkpoint"
                 ),
@@ -317,6 +318,5 @@ def compress_training_checkpoints(
     )
     summary.to_csv(summary_path, index=False)
     return result_df, summary
-
 
 

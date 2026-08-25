@@ -30,12 +30,14 @@ def dtype_name(dtype):
 def resolve_torch_dtype(dtype):
     """Resolve accepted model dtype aliases while preserving ``auto``."""
 
-    if dtype is None or dtype == "auto":
+    if dtype is None:
         return "auto"
     if isinstance(dtype, torch.dtype):
         return dtype
 
     dtype_key = dtype_name(dtype).lower().replace("-", "_")
+    if dtype_key == "auto":
+        return "auto"
     if dtype_key not in _DTYPE_ALIASES:
         choices = ", ".join(("auto", *sorted(_DTYPE_ALIASES)))
         raise ValueError(f"Unsupported dtype {dtype!r}. Expected one of: {choices}.")

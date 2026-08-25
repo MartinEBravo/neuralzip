@@ -35,6 +35,7 @@ from neuralzip.payloads import (
     RAW_CHUNK_METADATA_BYTES as CHUNK_HEADER_BYTES,
     SHARED_CHUNK_METADATA_BYTES as SHARED_CHUNK_HEADER_BYTES,
 )
+from neuralzip.system import cpu_affinity
 
 
 DEFAULT_OUTPUT_DIR = Path(
@@ -1077,15 +1078,12 @@ def _backend_fingerprint() -> dict:
 
 
 def _host_metadata(threads: int) -> dict:
-    affinity = None
-    if hasattr(os, "sched_getaffinity"):
-        affinity = sorted(int(cpu) for cpu in os.sched_getaffinity(0))
     return {
         "hostname": platform.node(),
         "platform": platform.platform(),
         "python": sys.version,
         "logical_cpus": os.cpu_count(),
-        "cpu_affinity": affinity,
+        "cpu_affinity": cpu_affinity(),
         "threads": threads,
     }
 

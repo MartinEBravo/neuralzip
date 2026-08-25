@@ -17,6 +17,7 @@ def test_dtype_name_has_one_compatibility_implementation():
     (
         (None, "auto"),
         ("auto", "auto"),
+        ("AUTO", "auto"),
         ("fp16", torch.float16),
         ("torch.float16", torch.float16),
         ("bf16", torch.bfloat16),

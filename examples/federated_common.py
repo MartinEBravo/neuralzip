@@ -19,7 +19,7 @@ from neuralzip.archive import serialized_tensor_size
 from neuralzip.experiment_io import atomic_write_csv, atomic_write_json
 from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.tensors import bitwise_equal
-from neuralzip.zipnn_source import parse_zipnn_streams
+from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
 
 COMPRESSOR_SRC = "ZipNN src"
@@ -60,45 +60,30 @@ class EncodedState:
 
 
 class ZipNNSrcStateCodec:
-    """Non-destructive adapter around the official ZipNN source package."""
+    """Federated-state wrapper around the shared official ZipNN adapter."""
 
     def __init__(self, *, threads: int, chunk_size: int, threshold: float):
+        self.codec = ZipNNSourceCodec(
+            method="HUFFMAN",
+            threads=threads,
+            compression_threshold=threshold,
+            chunk_size=chunk_size,
+        )
+
+    @staticmethod
+    def _fp32_exponent_sizes(payload: bytes) -> tuple[int, int]:
         try:
-            from zipnn import ZipNN
-        except ImportError as error:
-            raise ImportError(
-                "The official zipnn package is required: pip install zipnn."
-            ) from error
-
-        self._settings = {
-            "method": "HUFFMAN",
-            "input_format": "torch",
-            "threads": int(threads),
-            "compression_threshold": float(threshold),
-            "compression_chunk": int(chunk_size),
-        }
-        self._encoder = ZipNN(**self._settings)
-        self._decoder = ZipNN(**self._settings)
-
-    @classmethod
-    def _fp32_exponent_sizes(cls, payload: bytes) -> tuple[int, int]:
-        """Return exact raw/compressed bytes for ZipNN's FP32 exponent group.
-
-        ZipNN source writes, after its tensor header, one compression-type byte
-        and one native ``size_t`` cumulative length per chunk and byte group,
-        followed by the group payloads.  FP32 bit reordering places the
-        exponent/sign stream in byte group 3.  We charge that group's own
-        metadata and payload, matching the per-stream accounting used by
-        NeuralZip while excluding the tensor-global header.
-        """
-
-        layout = parse_zipnn_streams(payload, element_size=4)
-        if layout.byte_reorder != 220 or layout.bit_reorder != 1:
+            _, exponent = parse_zipnn_exponent_stream(
+                payload,
+                element_size=4,
+                expected_byte_reorder=220,
+                expected_bit_reorder=1,
+            )
+        except ValueError as error:
             raise ValueError(
                 "Expected the official ZipNN FP32 byte/bit-reorder layout."
-            )
-        exponent_stream = layout.exponent_stream
-        return exponent_stream.raw_bytes, exponent_stream.compressed_bytes
+            ) from error
+        return exponent.raw_bytes, exponent.compressed_bytes
 
     def encode(self, tensors: Mapping[str, torch.Tensor]) -> EncodedState:
         payloads = {}
@@ -111,26 +96,20 @@ class ZipNNSrcStateCodec:
         for name, tensor in tensors.items():
             if tensor.dtype != torch.float32:
                 raise TypeError(f"{name} is {tensor.dtype}; FP32 is required.")
-            # ZipNN source reorders the input buffer in place.  The clone is a
-            # required part of a non-destructive encode and is timed.
             with SuspendAutomaticGC():
-                started = time.perf_counter()
-                compressor_input = tensor.detach().cpu().contiguous().clone()
-                if tensor.numel() and compressor_input.data_ptr() == tensor.data_ptr():
-                    raise AssertionError(
-                        "ZipNN source input clone aliases the model state."
-                    )
-                payload = self._encoder.compress(compressor_input)
-                encode_seconds += time.perf_counter() - started
+                encoded = self.codec.encode_tensor(tensor)
+            encode_seconds += encoded.encode_seconds
 
             # Archive bookkeeping and exponent-ratio parsing are deliberately
             # outside the encoding timer, matching the NeuralZip adapter.
-            payloads[name] = payload
-            raw_bytes, compressed_bytes = self._fp32_exponent_sizes(payload)
-            exponent_raw_bytes += raw_bytes
-            exponent_compressed_bytes += compressed_bytes
-            archive_bytes += len(payload)
-            raw_floating_bytes += int(tensor.numel()) * tensor.element_size()
+            exponent_raw, exponent_compressed = self._fp32_exponent_sizes(
+                encoded.payload
+            )
+            payloads[name] = encoded.payload
+            exponent_raw_bytes += exponent_raw
+            exponent_compressed_bytes += exponent_compressed
+            archive_bytes += encoded.archive_bytes
+            raw_floating_bytes += encoded.raw_bytes
 
         return EncodedState(
             payloads=payloads,
@@ -143,7 +122,7 @@ class ZipNNSrcStateCodec:
 
     def decode(self, encoded: EncodedState) -> dict[str, torch.Tensor]:
         return {
-            name: self._decoder.decompress(payload).detach().cpu().contiguous()
+            name: self.codec.decode(payload)
             for name, payload in encoded.payloads.items()
         }
 

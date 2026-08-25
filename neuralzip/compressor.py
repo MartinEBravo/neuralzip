@@ -16,6 +16,7 @@ from .dtypes import dtype_name
 from .neuralzip_codec import NeuralZipCodec
 from .tensors import bitwise_equal
 from .zipnn_codec import ZipNNCodec
+from .zipnn_source import ZipNNSourceCodec
 
 if TYPE_CHECKING:
     from .model import HFModel
@@ -594,14 +595,6 @@ class Compressor:
         }
 
     def _zipnn_src(self, model: "HFModel"):
-        try:
-            from zipnn import ZipNN
-        except ImportError as exc:
-            raise ImportError(
-                "Compressor('zipnn-src') requires the official zipnn package. "
-                "Install it with `pip install zipnn` or `pip install -e \".[experiments]\"`."
-            ) from exc
-
         tensor_results = []
         total_raw_bytes = 0
         total_compressed_bytes = 0
@@ -611,6 +604,12 @@ class Compressor:
         total_input_copy_seconds = 0.0
         total_decode_seconds = 0.0
         roundtrip_ok = True if self.verify else None
+        codec = ZipNNSourceCodec(
+            method=self.zipnn_method,
+            threads=self.threads,
+            compression_threshold=self.codec.compression_threshold,
+            chunk_size=self.codec.chunk_size,
+        )
 
         for name, parameter in _model_parameters(model):
             if not torch.is_tensor(parameter) or not parameter.is_floating_point():
@@ -621,20 +620,11 @@ class Compressor:
             total_raw_bytes += raw_bytes
             total_numel += int(original.numel())
 
-            compressor = ZipNN(
-                method=self.zipnn_method,
-                input_format="torch",
-                threads=self.threads,
-                compression_threshold=self.codec.compression_threshold,
-                compression_chunk=self.codec.chunk_size,
-            )
-            copy_start = time.perf_counter()
-            compressor_input = original.clone()
-            input_copy_seconds = time.perf_counter() - copy_start
-            start = time.perf_counter()
-            payload = compressor.compress(compressor_input)
-            codec_encode_seconds = time.perf_counter() - start
-            encode_seconds = input_copy_seconds + codec_encode_seconds
+            encoded = codec.encode_tensor(original, verify=self.verify)
+            payload = encoded.payload
+            input_copy_seconds = encoded.input_copy_seconds
+            codec_encode_seconds = encoded.codec_encode_seconds
+            encode_seconds = encoded.encode_seconds
 
             compressed_bytes = len(payload)
             total_compressed_bytes += compressed_bytes
@@ -642,20 +632,9 @@ class Compressor:
             total_codec_encode_seconds += codec_encode_seconds
             total_input_copy_seconds += input_copy_seconds
 
-            tensor_roundtrip_ok = None
-            decode_seconds = None
+            tensor_roundtrip_ok = encoded.roundtrip_ok
+            decode_seconds = encoded.decode_seconds
             if self.verify:
-                decompressor = ZipNN(
-                    method=self.zipnn_method,
-                    input_format="torch",
-                    threads=self.threads,
-                    compression_threshold=self.codec.compression_threshold,
-                    compression_chunk=self.codec.chunk_size,
-                )
-                start = time.perf_counter()
-                decompressed = decompressor.decompress(payload)
-                decode_seconds = time.perf_counter() - start
-                tensor_roundtrip_ok = bitwise_equal(original, decompressed)
                 roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
                 total_decode_seconds += decode_seconds
 

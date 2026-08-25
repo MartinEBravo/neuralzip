@@ -8,7 +8,6 @@ import json
 import math
 import platform
 import re
-import statistics
 import struct
 import subprocess
 import sys

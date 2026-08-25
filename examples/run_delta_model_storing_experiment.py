@@ -2,7 +2,6 @@ import argparse
 import csv
 import gc
 import json
-import math
 import time
 from pathlib import Path
 
@@ -38,11 +37,6 @@ TARGET_LANGUAGE_MODELS = {
     "Qwen3.5 27B",
     "LatamGPT-70B",
 }
-
-
-def _iter_chunks(data, chunk_size):
-    for start in range(0, len(data), int(chunk_size)):
-        yield data[start : start + int(chunk_size)]
 
 
 def _entropy_from_counts(counts):

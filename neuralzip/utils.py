@@ -1,24 +1,11 @@
 import torch
 
-from . import huff0
-
-
 FLOAT_LAYOUTS = {
     torch.float16: {"exponent_bits": 5, "mantissa_bits": 10},
     torch.bfloat16: {"exponent_bits": 8, "mantissa_bits": 7},
     torch.float32: {"exponent_bits": 8, "mantissa_bits": 23},
     torch.float64: {"exponent_bits": 11, "mantissa_bits": 52},
 }
-
-
-def _as_byte_stream(data):
-    if torch.is_tensor(data):
-        return data.detach().cpu().contiguous().view(torch.uint8).reshape(-1)
-    if isinstance(data, bytes):
-        return torch.tensor(tuple(data), dtype=torch.uint8)
-    if isinstance(data, bytearray):
-        return torch.tensor(tuple(data), dtype=torch.uint8)
-    return torch.as_tensor(data, dtype=torch.uint8).reshape(-1)
 
 
 def _tensor_bits(tensor):
@@ -55,42 +42,3 @@ def split_fields(tensor, bit_width=None):
     exponent = (bits >> mantissa_bits) & ((1 << exponent_bits) - 1)
     mantissa = bits & ((1 << mantissa_bits) - 1)
     return sign.reshape(tensor.shape), exponent.reshape(tensor.shape), mantissa.reshape(tensor.shape)
-
-
-def partition_into_byte_groups(data, element_size=None):
-    """Split a byte stream into ZipNN-style streams by byte offset."""
-
-    if torch.is_tensor(data):
-        element_size = data.element_size() if element_size is None else int(element_size)
-        stream = _as_byte_stream(data)
-    else:
-        if element_size is None:
-            raise ValueError("element_size is required for raw byte streams.")
-        element_size = int(element_size)
-        stream = _as_byte_stream(data)
-
-    if element_size <= 0:
-        raise ValueError("element_size must be positive.")
-    if stream.numel() % element_size != 0:
-        raise ValueError("byte stream length must be divisible by element_size.")
-
-    return tuple(
-        stream[byte_offset::element_size].contiguous().numpy().tobytes()
-        for byte_offset in range(element_size)
-    )
-
-
-def entropic_encode(data, method="huffman", *, min_saving_bytes=16):
-    """Compress byte-valued data with the selected entropy coder."""
-
-    method_key = method.lower().replace("-", "_")
-    if method_key != "huffman":
-        raise ValueError("Only method='huffman' is implemented.")
-    stream = _as_byte_stream(data).numpy().tobytes()
-    return huff0.compress(stream, min_saving_bytes=min_saving_bytes)
-
-
-def is_compressible(data, *, min_saving_bytes=16):
-    """Return True when Huffman beats raw storage plus codebook overhead."""
-
-    return entropic_encode(data, min_saving_bytes=min_saving_bytes) is not None

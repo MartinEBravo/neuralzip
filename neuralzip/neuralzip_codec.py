@@ -16,13 +16,15 @@ from .mode_selection import (
     select_fastest_within_ratio,
     select_packed_time_budget,
 )
-from .utils import split_fields
-from .zipnn_codec import (
-    DTYPE_BY_NAME,
+from .payloads import (
     ByteGroupPayload,
     CodebookPayload,
     StreamChunk,
     TensorPayload,
+)
+from .utils import split_fields
+from .zipnn_codec import (
+    DTYPE_BY_NAME,
     ZipNNCodec,
     _dtype_name,
     _tensor_from_raw_bytes,
@@ -1945,7 +1947,7 @@ class NeuralZipCodec(ZipNNCodec):
                     if matched
                     else None
                 )
-                selected, probe = self._select_transfer_mode(
+                selected, _ = self._select_transfer_mode(
                     sample,
                     source_mode,
                     element_size=element_size,
@@ -2220,8 +2222,6 @@ class NeuralZipCodec(ZipNNCodec):
         stream,
         stream_kind,
         stream_id,
-        *,
-        is_exponent,
     ):
         mode = self._mode_for_tensor_stream(name, tensor, stream_id)
         return self._compress_stream_with_mode(
@@ -2856,30 +2856,20 @@ class NeuralZipCodec(ZipNNCodec):
             and prepacked is None
         ):
             baseline = super()._compress_zipnn(name, tensor, config)
-            # A planned local mode is exactly ZipNN's native decision.  A raw
-            # mode is equivalent only when the native threshold also kept all
-            # of its chunks raw; otherwise use the explicit per-stream path so
-            # the selected representation and ratio remain unchanged.
-            baseline_matches = all(
-                mode.get("kind") != "raw"
-                or all(chunk.mode == "raw" for chunk in baseline.groups[stream_id].chunks)
-                for stream_id, mode in enumerate(tensor_modes)
+            return TensorPayload(
+                name=name,
+                shape=tuple(int(dim) for dim in tensor.shape),
+                dtype=_dtype_name(tensor.dtype),
+                element_size=element_size,
+                numel=int(tensor.numel()),
+                strategy="neuralzip",
+                groups=baseline.groups,
+                byte_reorder=int(config["byte_reorder"]),
+                bit_reorder=int(config["bit_reorder"]),
+                num_buffers=stream_count,
+                cluster_id=self.cluster_id(name),
+                exponent_layout="original",
             )
-            if baseline_matches:
-                return TensorPayload(
-                    name=name,
-                    shape=tuple(int(dim) for dim in tensor.shape),
-                    dtype=_dtype_name(tensor.dtype),
-                    element_size=element_size,
-                    numel=int(tensor.numel()),
-                    strategy="neuralzip",
-                    groups=baseline.groups,
-                    byte_reorder=int(config["byte_reorder"]),
-                    bit_reorder=int(config["bit_reorder"]),
-                    num_buffers=stream_count,
-                    cluster_id=self.cluster_id(name),
-                    exponent_layout="original",
-                )
 
         # Advanced tensors are encoded directly from one reordered buffer.
         # Running a complete ZipNN baseline first would compress the packed or

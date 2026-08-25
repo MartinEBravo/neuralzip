@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from . import huff0, huffman
-from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayload
+from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
 
 DTYPE_BY_NAME = {
@@ -393,7 +393,3 @@ class ZipNNCodec:
 
         restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)
-
-
-def compression_ratio(compressed):
-    return compressed.compressed_bytes / compressed.raw_bytes if compressed.raw_bytes else 0.0

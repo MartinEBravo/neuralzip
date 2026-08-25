@@ -55,7 +55,7 @@ from transformers import (
 )
 
 try:
-    from examples.run_final_federated_suite import (
+    from examples.federated_common import (
         COMPRESSOR_NEURALZIP,
         COMPRESSOR_SRC,
         DTYPE_NAME,
@@ -69,7 +69,7 @@ try:
         _write_json_atomic,
     )
 except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
-    from run_final_federated_suite import (  # type: ignore
+    from federated_common import (  # type: ignore
         COMPRESSOR_NEURALZIP,
         COMPRESSOR_SRC,
         DTYPE_NAME,

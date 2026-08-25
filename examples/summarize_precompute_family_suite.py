@@ -15,6 +15,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from neuralzip.experiment_io import atomic_write_json
+
 from examples.run_general_codec_rerun import (  # noqa: E402
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COMPRESSION_THRESHOLD,
@@ -102,10 +104,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def atomic_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n")
-    temporary.replace(path)
+    atomic_write_json(path, payload)
 
 
 def require(condition: bool, message: str) -> None:

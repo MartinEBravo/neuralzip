@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
 import os
 import platform
 import statistics
@@ -31,6 +30,9 @@ import torch
 
 from neuralzip import Compressor
 from neuralzip.archive import serialized_codebooks_size
+from neuralzip.codec_protocol import measure_exponent_streams
+from neuralzip.experiment_io import atomic_write_json
+from neuralzip.tensors import bitwise_equal
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -66,16 +68,12 @@ def utc_now() -> str:
 
 
 def atomic_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True, default=str))
-    temporary.replace(path)
-
-
-def bitwise_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
-    left_bytes = left.detach().cpu().contiguous().view(torch.uint8)
-    right_bytes = right.detach().cpu().contiguous().view(torch.uint8)
-    return bool(torch.equal(left_bytes, right_bytes))
+    atomic_write_json(
+        path,
+        value,
+        sort_keys=True,
+        trailing_newline=False,
+    )
 
 
 def selected_mode_counts(codec) -> dict[str, int]:
@@ -90,9 +88,16 @@ def selected_mode_counts(codec) -> dict[str, int]:
 
 
 def exponent_metrics(codec, payloads) -> dict[str, object]:
-    raw_bytes = 0
+    payloads = tuple(
+        payload for payload in payloads if str(payload.dtype) == "bfloat16"
+    )
+    codebooks = tuple(codec.export_codebooks())
+    sizes = measure_exponent_streams(
+        payloads,
+        codebooks,
+        codebook_scope="stream",
+    )
     data_bytes = 0
-    group_metadata_bytes = 0
     local_chunks = 0
     shared_chunks = 0
     packed_chunks = 0
@@ -102,45 +107,31 @@ def exponent_metrics(codec, payloads) -> dict[str, object]:
     escapes = 0
 
     for payload in payloads:
-        for stream_id, group in enumerate(payload.groups):
-            # BF16 is the only dtype accepted by the general thesis runner.
-            # Under ZipNN's BF16 reorder, byte stream 1 is the exponent stream.
-            if payload.dtype != "bfloat16" or stream_id != 1:
-                continue
-            raw_bytes += int(group.symbol_count)
-            data_bytes += int(group.payload_bytes)
-            # Match the production result accounting rather than estimating
-            # metadata from the number of chunks.
-            from neuralzip.archive import serialized_group_size
+        if not payload.groups:
+            continue
+        group = payload.groups[int(payload.element_size) - 1]
+        data_bytes += int(group.payload_bytes)
+        local_chunks += int(group.local_huff0_chunks)
+        shared_chunks += int(group.shared_huff0_chunks)
+        packed_chunks += int(group.packed_ngram_chunks)
+        raw_chunks += int(group.raw_chunks)
+        zero_chunks += int(group.zero_chunks)
+        hits += int(group.ngram_hits)
+        escapes += int(group.ngram_escapes)
 
-            group_metadata_bytes += int(serialized_group_size(group) - group.payload_bytes)
-            local_chunks += int(group.local_huff0_chunks)
-            shared_chunks += int(group.shared_huff0_chunks)
-            packed_chunks += int(group.packed_ngram_chunks)
-            raw_chunks += int(group.raw_chunks)
-            zero_chunks += int(group.zero_chunks)
-            hits += int(group.ngram_hits)
-            escapes += int(group.ngram_escapes)
-
-    codebooks = codec.export_codebooks()
     # The archive serializer stores all codebook definitions together.  Report
     # both the exact total and the exponent-only definition bytes used by the
     # thesis tables.
     all_codebook_bytes = int(serialized_codebooks_size(codebooks))
-    exponent_codebook_bytes = sum(
-        int(codebook.metadata_bytes)
-        for codebook in codebooks
-        if str(codebook.dtype) == "bfloat16" and int(codebook.stream_id) == 1
-    )
-    compressed_bytes = data_bytes + group_metadata_bytes + exponent_codebook_bytes
+    group_metadata_bytes = sizes.group_bytes - data_bytes
     return {
-        "exponent_raw_bytes": raw_bytes,
+        "exponent_raw_bytes": sizes.raw_bytes,
         "exponent_data_bytes": data_bytes,
         "exponent_group_metadata_bytes": group_metadata_bytes,
-        "exponent_codebook_metadata_bytes": exponent_codebook_bytes,
+        "exponent_codebook_metadata_bytes": sizes.codebook_bytes,
         "all_codebook_metadata_bytes": all_codebook_bytes,
-        "exponent_compressed_bytes": compressed_bytes,
-        "exponent_ratio_pct": 100.0 * compressed_bytes / raw_bytes if raw_bytes else None,
+        "exponent_compressed_bytes": sizes.compressed_bytes,
+        "exponent_ratio_pct": sizes.ratio_pct if sizes.raw_bytes else None,
         "local_huff0_chunks": local_chunks,
         "shared_huff0_chunks": shared_chunks,
         "packed_ngram_chunks": packed_chunks,

@@ -1,177 +1,69 @@
 ZIPNN_METHOD = "HUFFMAN"
 
-MODEL_SUITE = [
-    {
-        "name": "Qwen2.5-1.5B",
-        "model_id": "Qwen/Qwen2.5-1.5B",
-        "parameters_b": 1.5,
-        "default_dtype": "bf16",
-        "access": "open",
-    },
-    {
-        "name": "Qwen2.5-3B",
-        "model_id": "Qwen/Qwen2.5-3B",
-        "parameters_b": 3.0,
-        "default_dtype": "bf16",
-        "access": "open",
-    },
-    {
-        "name": "Qwen2.5-7B",
-        "model_id": "Qwen/Qwen2.5-7B",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "Qwen2.5-14B",
-        "model_id": "Qwen/Qwen2.5-14B",
-        "parameters_b": 14.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "OLMo-2-1B",
-        "model_id": "allenai/Olmo-2-0425-1B",
-        "parameters_b": 1.0,
-        "default_dtype": "bf16",
-        "access": "open",
-    },
-    {
-        "name": "OLMo-2-7B",
-        "model_id": "allenai/OLMo-2-1124-7B",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "access": "open",
-    },
-    {
-        "name": "OLMo-2-1124-13B",
-        "model_id": "allenai/OLMo-2-1124-13B",
-        "parameters_b": 13.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "Mistral-7B",
-        "model_id": "mistralai/Mistral-7B-v0.3",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "access": "open",
-    },
-    {
-        "name": "Mistral-Nemo-Base-2407",
-        "model_id": "mistralai/Mistral-Nemo-Base-2407",
-        "parameters_b": 12.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "Llama-3.2-1B",
-        "model_id": "meta-llama/Llama-3.2-1B",
-        "parameters_b": 1.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "gated",
-    },
-    {
-        "name": "Llama-3.2-3B",
-        "model_id": "meta-llama/Llama-3.2-3B",
-        "parameters_b": 3.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "gated",
-    },
-    {
-        "name": "Llama-3.1-Nemotron-Nano-8B-v1",
-        "model_id": "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
-        "parameters_b": 8.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "Llama 3.3 70B Instruct",
-        "model_id": "meta-llama/Llama-3.3-70B-Instruct",
-        "parameters_b": 70.0,
-        "default_dtype": "bf16",
-        "access": "gated",
-        "local_subdir": "meta-llama__Llama-3.3-70B-Instruct",
-    },
-    {
-        "name": "Gemma 4 31B",
-        "model_id": "google/gemma-4-31B",
-        "parameters_b": 31.0,
-        "default_dtype": "bf16",
-        "access": "gated-or-token",
-        "local_subdir": "google__gemma-4-31B",
-    },
-    {
-        "name": "Gemma 3 1B PT",
-        "model_id": "google/gemma-3-1b-pt",
-        "parameters_b": 1.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "gated-or-token",
-    },
-    {
-        "name": "Gemma 3 4B PT",
-        "model_id": "google/gemma-3-4b-pt",
-        "parameters_b": 4.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "gated-or-token",
-    },
-    {
-        "name": "Gemma 3 12B PT",
-        "model_id": "google/gemma-3-12b-pt",
-        "parameters_b": 12.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "gated-or-token",
-    },
-    {
-        "name": "Phi-4 14B",
-        "model_id": "microsoft/phi-4",
-        "parameters_b": 14.0,
-        "default_dtype": "bf16",
-        "access": "open-or-token",
-        "local_subdir": "microsoft__phi-4",
-    },
-    {
-        "name": "Qwen3.5 27B",
-        "model_id": "Qwen/Qwen3.5-27B",
-        "parameters_b": 27.0,
-        "default_dtype": "bf16",
-        "access": "open-or-token",
-        "local_subdir": "Qwen__Qwen3.5-27B",
-    },
-    {
-        "name": "Qwen3.5-0.8B-Base",
-        "model_id": "Qwen/Qwen3.5-0.8B-Base",
-        "parameters_b": 0.8,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "Qwen3.5-2B-Base",
-        "model_id": "Qwen/Qwen3.5-2B-Base",
-        "parameters_b": 2.0,
-        "default_dtype": "bf16",
-        "category": "model-storing",
-        "access": "open",
-    },
-    {
-        "name": "LatamGPT-70B",
-        "model_id": "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
-        "parameters_b": 70.0,
-        "default_dtype": "bf16",
-        "access": "gated",
-        "local_subdir": "latam-gpt__Llama-3.1-70B-LatamGPT-SFT-1.0"
+try:
+    from .model_catalog import MODEL_SPECS
+except ImportError:  # Direct execution from the examples directory.
+    from model_catalog import MODEL_SPECS
+
+
+def _catalog_entry(spec, attributes):
+    """Project one canonical model spec to the legacy dictionary API."""
+    return {
+        "name": spec.label,
+        "model_id": spec.source,
+        "parameters_b": spec.parameters_b,
+        **attributes,
     }
+
+
+def _legacy_attributes(access, *, category=False, local_subdir=None):
+    attributes = {"default_dtype": "bf16"}
+    if category:
+        attributes["category"] = "model-storing"
+    attributes["access"] = access
+    if local_subdir is not None:
+        attributes["local_subdir"] = local_subdir
+    return attributes
+
+
+_MODEL_SUITE_LEGACY_ATTRIBUTES = {
+    key: _legacy_attributes(access, category=category, local_subdir=local_subdir)
+    for key, access, category, local_subdir in (
+        ("qwen25-15b", "open", False, None),
+        ("qwen25-3b", "open", False, None),
+        ("qwen25-7b", "open", True, None),
+        ("qwen25-14b", "open", True, None),
+        ("olmo2-1b", "open", False, None),
+        ("olmo2-7b", "open", False, None),
+        ("olmo2-13b", "open", True, None),
+        ("mistral7b", "open", False, None),
+        ("mistral-nemo-12b", "open", True, None),
+        ("llama32-1b", "gated", True, None),
+        ("llama32-3b", "gated", True, None),
+        ("llama31-nemotron-8b", "open", True, None),
+        ("llama33-70b", "gated", False, "meta-llama__Llama-3.3-70B-Instruct"),
+        ("gemma4-31b", "gated-or-token", False, "google__gemma-4-31B"),
+        ("gemma3-1b", "gated-or-token", True, None),
+        ("gemma3-4b", "gated-or-token", True, None),
+        ("gemma3-12b", "gated-or-token", True, None),
+        ("phi4-14b", "open-or-token", False, "microsoft__phi-4"),
+        ("qwen35-27b", "open-or-token", False, "Qwen__Qwen3.5-27B"),
+        ("qwen35-08b-base", "open", True, None),
+        ("qwen35-2b-base", "open", True, None),
+        (
+            "latamgpt-70b",
+            "gated",
+            False,
+            "latam-gpt__Llama-3.1-70B-LatamGPT-SFT-1.0",
+        ),
+    )
+}
+
+
+MODEL_SUITE = [
+    _catalog_entry(spec, _MODEL_SUITE_LEGACY_ATTRIBUTES[spec.key])
+    for spec in MODEL_SPECS
+    if "model-storing" in spec.suites and "vision" not in spec.suites
 ]
 
 COMPRESSOR_SUITE = [
@@ -186,88 +78,41 @@ COMPRESSOR_SUITE = [
     },
 ]
 
+_MOE_ACCESS_BY_KEY = {
+    "zaya1-8b": "open",
+    "lfm25-8b-a1b": "open",
+    "jetmoe-8b": "open",
+    "olmoe-1b-7b-0125": "open",
+    "qwen15-moe-a27b": "open",
+    "qwen3-30b-a3b": "open",
+    "qwen35-35b-a3b": "open",
+    "deepseek-moe-16b": "open",
+    "mixtral-8x7b": "open",
+    "gemma4-26b-a4b": "gated-or-token",
+}
+
+
 MOE_MODEL_SUITE = [
-    {
-        "name": "ZAYA1-8B",
-        "model_id": "Zyphra/ZAYA1-8B",
-        "parameters_b": 8.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Liquid AI LFM2.5-8B-A1B",
-        "model_id": "LiquidAI/LFM2.5-8B-A1B",
-        "parameters_b": 8.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "JetMoE-8B",
-        "model_id": "jetmoe/jetmoe-8b",
-        "parameters_b": 8.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "OLMoE-1B-7B-0125",
-        "model_id": "allenai/OLMoE-1B-7B-0125",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Qwen1.5-MoE-A2.7B",
-        "model_id": "Qwen/Qwen1.5-MoE-A2.7B",
-        "parameters_b": 14.3,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Qwen3-30B-A3B",
-        "model_id": "Qwen/Qwen3-30B-A3B",
-        "parameters_b": 30.5,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Qwen3.5-35B-A3B",
-        "model_id": "Qwen/Qwen3.5-35B-A3B",
-        "parameters_b": 35.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "DeepSeek-MoE-16B-Base",
-        "model_id": "deepseek-ai/deepseek-moe-16b-base",
-        "parameters_b": 16.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Mixtral-8x7B-v0.1",
-        "model_id": "mistralai/Mixtral-8x7B-v0.1",
-        "parameters_b": 46.7,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "open",
-    },
-    {
-        "name": "Gemma-4-26B-A4B",
-        "model_id": "google/gemma-4-26B-A4B",
-        "parameters_b": 26.0,
-        "default_dtype": "bf16",
-        "category": "moe",
-        "access": "gated-or-token",
-    },
+    _catalog_entry(
+        spec,
+        {
+            "default_dtype": "bf16",
+            "category": "moe",
+            "access": _MOE_ACCESS_BY_KEY[spec.key],
+        },
+    )
+    for spec in MODEL_SPECS
+    if "moe" in spec.suites
 ]
+
+
+_DISTILLED_ACCESS_BY_KEY = {
+    "deepseek-r1-distill-llama-8b": "open",
+    "deepseek-r1-distill-qwen-7b": "open",
+    "gemma2-9b-distilled": "open-or-token",
+    "qwen25-7b-distilled": "open",
+}
+
 
 LOSSY_LOSSLESS_MODEL_SUITE = [
     {
@@ -348,42 +193,19 @@ LOSSY_LOSSLESS_MODEL_SUITE = [
             "files": ("latamgpt-Q4_K_M.gguf",),
         },
     },
-    {
-        "name": "DeepSeek-R1-Distill-Llama-8B",
-        "model_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-        "parameters_b": 8.0,
-        "default_dtype": "bf16",
-        "representation": "distilled",
-        "category": "distilled",
-        "access": "open",
-    },
-    {
-        "name": "DeepSeek-R1-Distill-Qwen-7B",
-        "model_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "representation": "distilled",
-        "category": "distilled",
-        "access": "open",
-    },
-    {
-        "name": "Gemma-2-9B-Distilled",
-        "model_id": "kazuyamaa/gemma-2-9b-opd-Distill-v001",
-        "parameters_b": 9.0,
-        "default_dtype": "bf16",
-        "representation": "distilled",
-        "category": "distilled",
-        "access": "open-or-token",
-    },
-    {
-        "name": "Qwen2.5-7B-Instruct-Distilled",
-        "model_id": "RZ412/Qwen2.5-7B-Instruct-S1K-DeepSeek-Distilled",
-        "parameters_b": 7.0,
-        "default_dtype": "bf16",
-        "representation": "distilled",
-        "category": "distilled",
-        "access": "open",
-    },
+    *[
+        _catalog_entry(
+            spec,
+            {
+                "default_dtype": "bf16",
+                "representation": "distilled",
+                "category": "distilled",
+                "access": _DISTILLED_ACCESS_BY_KEY[spec.key],
+            },
+        )
+        for spec in MODEL_SPECS
+        if "distilled" in spec.suites
+    ],
 ]
 
 VISION_DIFFUSION_MODEL_SUITE = [

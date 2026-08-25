@@ -6,7 +6,6 @@ import gc
 import hashlib
 import io
 import json
-import math
 import os
 import platform
 import struct
@@ -26,6 +25,16 @@ except ModuleNotFoundError:  # Imported as examples.run_quantized_nibble_compres
     from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
 
 from neuralzip import huff0
+from neuralzip.experiment_io import atomic_write_json
+from neuralzip.hashing import (
+    canonical_digest as _shared_canonical_digest,
+    sha256_file as _shared_sha256_file,
+)
+from neuralzip.metrics import jensen_shannon_distance as _js_distance
+from neuralzip.payloads import (
+    RAW_CHUNK_METADATA_BYTES as CHUNK_HEADER_BYTES,
+    SHARED_CHUNK_METADATA_BYTES as SHARED_CHUNK_HEADER_BYTES,
+)
 
 
 DEFAULT_OUTPUT_DIR = Path(
@@ -34,8 +43,6 @@ DEFAULT_OUTPUT_DIR = Path(
 ALLOWED_ARTIFACT_EXTENSIONS = (".safetensors", ".gguf")
 RAW_CHUNK_BYTES = 256 << 10
 MAX_SAMPLE_BYTES_PER_FILE = 64 << 20
-CHUNK_HEADER_BYTES = 1 + 8 + 8
-SHARED_CHUNK_HEADER_BYTES = CHUNK_HEADER_BYTES + 8
 CODEBOOK_HEADER_BYTES = 8 + len("nibble".encode("utf-8")) + 8
 CLUSTER_JS_THRESHOLD = 0.05
 MAX_CLUSTER_SAMPLE_BYTES = 16 << 20
@@ -252,31 +259,15 @@ def _artifact_selector(spec: dict) -> dict:
 
 
 def _canonical_digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return _shared_canonical_digest(value, stringify_unknown=False)
 
 
 def _sha256_file(path: Path, *, block_bytes: int = 4 << 20) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            block = handle.read(block_bytes)
-            if not block:
-                break
-            digest.update(block)
-    return digest.hexdigest()
+    return _shared_sha256_file(path, block_bytes=block_bytes)
 
 
 def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
+    atomic_write_json(path, value, sort_keys=True)
 
 
 def _read_exact(handle, size: int) -> bytes:
@@ -681,22 +672,6 @@ def _distribution(counts: np.ndarray) -> np.ndarray:
     if total <= 0.0:
         return np.full(16, 1.0 / 16.0, dtype=np.float64)
     return counts / total
-
-
-def _js_distance(left: np.ndarray, right: np.ndarray) -> float:
-    left = np.asarray(left, dtype=np.float64)
-    right = np.asarray(right, dtype=np.float64)
-    middle = 0.5 * (left + right)
-    mask_left = left > 0
-    mask_right = right > 0
-    divergence = 0.0
-    divergence += 0.5 * np.sum(
-        left[mask_left] * np.log2(left[mask_left] / middle[mask_left])
-    )
-    divergence += 0.5 * np.sum(
-        right[mask_right] * np.log2(right[mask_right] / middle[mask_right])
-    )
-    return float(math.sqrt(max(divergence, 0.0)))
 
 
 def _nibble_source_chunks(data: bytes) -> tuple[tuple[bytes, bytes], ...]:

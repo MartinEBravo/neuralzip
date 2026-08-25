@@ -9,28 +9,17 @@ from pathlib import Path
 import torch
 
 from neuralzip import Compressor
+from neuralzip.codec_protocol import measure_compressor_exponents
 from run_thesis_model_suite import MODEL_SPECS, load_model
 
 
 def exponent_metrics(result):
-    raw_bytes = 0
-    compressed_bytes = 0
-    for row in result["tensor_results"]:
-        payload = row["payload"]
-        group = payload.groups[payload.element_size - 1]
-        raw_bytes += int(group.symbol_count)
-        compressed_bytes += int(group.compressed_bytes)
-    codebook_bytes = sum(
-        int(codebook.metadata_bytes)
-        for codebook in result.get("codebooks") or ()
-        if codebook.dtype == "bfloat16" and int(codebook.stream_id) == 1
-    )
-    compressed_bytes += codebook_bytes
+    report = measure_compressor_exponents(result, dtypes={"bfloat16"})
     return {
-        "raw_bytes": raw_bytes,
-        "compressed_bytes": compressed_bytes,
-        "codebook_metadata_bytes": codebook_bytes,
-        "ratio_pct": 100.0 * compressed_bytes / raw_bytes,
+        "raw_bytes": report.raw_bytes,
+        "compressed_bytes": report.compressed_bytes,
+        "codebook_metadata_bytes": report.codebook_bytes,
+        "ratio_pct": report.ratio_pct,
     }
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import json
 import re
 import time
@@ -10,6 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+
+from neuralzip.experiment_io import atomic_write_json
+from neuralzip.hashing import (
+    canonical_digest as _shared_canonical_digest,
+    sha256_file as _shared_sha256_file,
+)
 from huggingface_hub import snapshot_download
 from torchvision.models import (
     ResNet18_Weights,
@@ -29,7 +34,7 @@ from transformers import (
 )
 
 from neuralzip import Compressor
-from neuralzip.archive import serialized_codebooks_size, serialized_group_size
+from neuralzip.codec_protocol import measure_exponent_streams
 from neuralzip.zipnn_codec import ZipNNCodec
 
 
@@ -140,21 +145,11 @@ def parse_args():
 
 
 def _sha256_file(path: Path, *, block_bytes: int = 8 << 20) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while block := handle.read(block_bytes):
-            digest.update(block)
-    return digest.hexdigest()
+    return _shared_sha256_file(path, block_bytes=block_bytes)
 
 
 def _canonical_digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return _shared_canonical_digest(value, stringify_unknown=False)
 
 
 def _safe_snapshot_path(root: Path, value: object) -> Path:
@@ -496,49 +491,37 @@ def floating_parameters(model):
 
 
 def exponent_metrics(payloads, codebooks=()):
-    raw_symbols = 0
-    group_bytes = 0
+    payloads = tuple(payloads)
+    codebooks = tuple(codebooks)
+    sizes = measure_exponent_streams(payloads, codebooks)
     mode_symbols = {}
     mode_chunks = {}
-    referenced_codebooks = set()
     for payload in payloads:
-        group = payload.groups[-1]
-        raw_symbols += int(group.symbol_count)
-        group_bytes += int(serialized_group_size(group))
+        if not payload.groups:
+            continue
+        group = payload.groups[int(payload.element_size) - 1]
         for chunk in group.chunks:
             mode = str(chunk.mode)
             mode_symbols[mode] = mode_symbols.get(mode, 0) + int(chunk.symbol_count)
             mode_chunks[mode] = mode_chunks.get(mode, 0) + 1
-            if chunk.codebook_id is not None:
-                referenced_codebooks.add(int(chunk.codebook_id))
-
-    referenced_payloads = tuple(
-        codebook
-        for codebook in codebooks
-        if int(codebook.codebook_id) in referenced_codebooks
-    )
-    codebook_bytes = int(serialized_codebooks_size(referenced_payloads))
-    compressed_bytes = group_bytes + codebook_bytes
 
     def symbol_pct(modes):
         symbols = sum(mode_symbols.get(mode, 0) for mode in modes)
-        return 100.0 * symbols / raw_symbols if raw_symbols else 0.0
+        return 100.0 * symbols / sizes.raw_bytes if sizes.raw_bytes else 0.0
 
     return {
-        "raw_exponents": raw_symbols,
-        "compressed_exponent_bytes": compressed_bytes,
-        "compressed_exponent_group_bytes": group_bytes,
-        "exponent_codebook_metadata_bytes": codebook_bytes,
-        "exponent_pct": (
-            100.0 * compressed_bytes / raw_symbols if raw_symbols else 0.0
-        ),
+        "raw_exponents": sizes.raw_bytes,
+        "compressed_exponent_bytes": sizes.compressed_bytes,
+        "compressed_exponent_group_bytes": sizes.group_bytes,
+        "exponent_codebook_metadata_bytes": sizes.codebook_bytes,
+        "exponent_pct": sizes.ratio_pct,
         "shared_exponent_pct": symbol_pct(SHARED_MODES),
         "packed_exponent_pct": symbol_pct(PACKED_MODES),
         "local_exponent_pct": symbol_pct(LOCAL_MODES),
         "raw_exponent_pct": symbol_pct({"raw"}),
         "mode_symbols": mode_symbols,
         "mode_chunks": mode_chunks,
-        "referenced_codebooks": len(referenced_codebooks),
+        "referenced_codebooks": sizes.referenced_codebooks,
     }
 
 
@@ -822,9 +805,7 @@ def main():
         source_revision=args.source_revision,
         target_revision=args.target_revision,
     )
-    temporary = args.output.with_suffix(args.output.suffix + ".tmp")
-    temporary.write_text(json.dumps(result, indent=2) + "\n")
-    temporary.replace(args.output)
+    atomic_write_json(args.output, result)
     print(json.dumps(result, indent=2), flush=True)
 
 

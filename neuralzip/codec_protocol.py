@@ -14,6 +14,7 @@ from .archive import (
     serialized_group_size,
     serialized_tensor_size,
 )
+from .dtypes import dtype_name
 from .tensors import bitwise_equal
 
 
@@ -44,6 +45,8 @@ def is_current_codec_protocol(value):
 class SetupReport:
     precompute_seconds: float
     codebook_setup_seconds: float
+    clustering_seconds: float = 0.0
+    prepack_seconds: float = 0.0
 
     @property
     def total_setup_seconds(self):
@@ -63,6 +66,7 @@ class EncodedTensorBatch:
     materialization_active: bool
     materialization_bytes: int
     materialization_hits: int
+    tensor_encode_seconds: tuple = ()
 
     @property
     def encoder_path(self):
@@ -95,6 +99,22 @@ def named_tensor_items(tensors):
     return tuple(tensors)
 
 
+def _allocate_elapsed(elapsed, weights):
+    """Allocate one batch duration without changing its measured total."""
+
+    weights = tuple(int(weight) for weight in weights)
+    total_weight = sum(weights)
+    if not weights:
+        return ()
+    if total_weight <= 0:
+        allocations = [0.0] * len(weights)
+        allocations[-1] = float(elapsed)
+        return tuple(allocations)
+    allocations = [float(elapsed) * weight / total_weight for weight in weights]
+    allocations[-1] += float(elapsed) - sum(allocations)
+    return tuple(allocations)
+
+
 def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
     """Encode one named tensor batch under a stable timing/size contract."""
 
@@ -105,14 +125,21 @@ def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
     cache_hits_before = int(cache_stats.get("cache_hits", 0))
     materialization_bytes = int(getattr(codec, "prepacked_cache_bytes", 0))
 
-    started = time.perf_counter()
     if used_batch:
+        started = time.perf_counter()
         payloads = tuple(batch_encoder(named_tensors))
+        encode_seconds = time.perf_counter() - started
+        tensor_encode_seconds = None
     else:
-        payloads = tuple(
-            codec.compress_tensor(name, tensor) for name, tensor in named_tensors
-        )
-    encode_seconds = time.perf_counter() - started
+        payloads = []
+        tensor_encode_seconds = []
+        for name, tensor in named_tensors:
+            started = time.perf_counter()
+            payloads.append(codec.compress_tensor(name, tensor))
+            tensor_encode_seconds.append(time.perf_counter() - started)
+        payloads = tuple(payloads)
+        tensor_encode_seconds = tuple(tensor_encode_seconds)
+        encode_seconds = sum(tensor_encode_seconds)
     cache_stats = getattr(codec, "prepacked_cache_stats", {}) or {}
     materialization_hits = max(
         0,
@@ -128,9 +155,33 @@ def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
             "Codec changed tensor names or order: "
             f"expected {expected_names!r}, observed {payload_names!r}."
         )
+    for (name, tensor), payload in zip(named_tensors, payloads, strict=True):
+        expected_shape = tuple(int(dimension) for dimension in tensor.shape)
+        expected_dtype = dtype_name(tensor.dtype)
+        expected_raw_bytes = int(tensor.numel() * tensor.element_size())
+        if tuple(payload.shape) != expected_shape:
+            raise RuntimeError(
+                f"Codec changed tensor shape for {name!r}: "
+                f"expected {expected_shape!r}, observed {tuple(payload.shape)!r}."
+            )
+        if str(payload.dtype) != expected_dtype:
+            raise RuntimeError(
+                f"Codec changed tensor dtype for {name!r}: "
+                f"expected {expected_dtype!r}, observed {payload.dtype!r}."
+            )
+        if int(payload.raw_bytes) != expected_raw_bytes:
+            raise RuntimeError(
+                f"Codec changed raw tensor size for {name!r}: "
+                f"expected {expected_raw_bytes}, observed {payload.raw_bytes}."
+            )
 
     raw_bytes = sum(int(payload.raw_bytes) for payload in payloads)
     compressed_bytes = sum(serialized_tensor_size(payload) for payload in payloads)
+    if tensor_encode_seconds is None:
+        tensor_encode_seconds = _allocate_elapsed(
+            encode_seconds,
+            (payload.raw_bytes for payload in payloads),
+        )
     return EncodedTensorBatch(
         payloads=payloads,
         raw_bytes=raw_bytes,
@@ -146,23 +197,37 @@ def encode_tensor_batch(codec, tensors, *, protocol=DEFAULT_CODEC_PROTOCOL):
         materialization_active=materialization_hits > 0,
         materialization_bytes=materialization_bytes,
         materialization_hits=materialization_hits,
+        tensor_encode_seconds=tensor_encode_seconds,
     )
 
 
-def prepare_neuralzip_codec(codec, named_tensors):
+def prepare_neuralzip_codec(codec, named_tensors, *, materialize=False):
     """Fit clustering and codebooks while keeping both setup costs separate."""
 
     named_tensors = named_tensor_items(named_tensors)
     started = time.perf_counter()
     codec.prepare_clusters(named_tensors)
-    precompute_seconds = time.perf_counter() - started
+    clustering_seconds = time.perf_counter() - started
 
     started = time.perf_counter()
     codec.build_codebooks_and_select_modes(named_tensors)
     codebook_setup_seconds = time.perf_counter() - started
+
+    prepack_seconds = 0.0
+    materializer = getattr(codec, "materialize_precompute", None)
+    if (
+        materialize
+        and callable(materializer)
+        and getattr(codec, "enable_prepacked_cache", False)
+    ):
+        started = time.perf_counter()
+        materializer(named_tensors)
+        prepack_seconds = time.perf_counter() - started
     return SetupReport(
-        precompute_seconds=float(precompute_seconds),
+        precompute_seconds=float(clustering_seconds + prepack_seconds),
         codebook_setup_seconds=float(codebook_setup_seconds),
+        clustering_seconds=float(clustering_seconds),
+        prepack_seconds=float(prepack_seconds),
     )
 
 

@@ -55,6 +55,7 @@ class _BatchCodec:
         self.batch_calls = 0
         self.tensor_calls = 0
         self.prepared = []
+        self.enable_prepacked_cache = True
 
     def compress_tensors(self, named_tensors):
         self.batch_calls += 1
@@ -69,6 +70,9 @@ class _BatchCodec:
 
     def build_codebooks_and_select_modes(self, named_tensors):
         self.prepared.append(("codebooks", tuple(name for name, _ in named_tensors)))
+
+    def materialize_precompute(self, named_tensors):
+        self.prepared.append(("materialize", tuple(name for name, _ in named_tensors)))
 
 
 class _SequentialCodec:
@@ -106,6 +110,8 @@ class CodecProtocolTests(unittest.TestCase):
             tuple(payload.name for payload in result.payloads),
             tuple(self.tensors),
         )
+        self.assertEqual(len(result.tensor_encode_seconds), len(self.tensors))
+        self.assertEqual(sum(result.tensor_encode_seconds), result.encode_seconds)
 
     def test_sequential_fallback_preserves_payloads(self):
         batch = encode_tensor_batch(_BatchCodec(), self.tensors)
@@ -117,6 +123,19 @@ class CodecProtocolTests(unittest.TestCase):
         self.assertEqual(sequential_codec.tensor_calls, len(self.tensors))
         self.assertEqual(sequential.payloads, batch.payloads)
         self.assertEqual(sequential.compressed_bytes, batch.compressed_bytes)
+        self.assertEqual(
+            sum(sequential.tensor_encode_seconds),
+            sequential.encode_seconds,
+        )
+
+    def test_every_frontend_gets_the_same_payload_validation(self):
+        class ReorderedCodec(_BatchCodec):
+            def compress_tensors(self, named_tensors):
+                payloads = super().compress_tensors(named_tensors)
+                return tuple(reversed(payloads))
+
+        with self.assertRaisesRegex(RuntimeError, "changed tensor names or order"):
+            encode_tensor_batch(ReorderedCodec(), self.tensors)
 
     def test_exponent_metrics_use_the_archive_group_size(self):
         payload = _payload("weight", self.tensors["first"])
@@ -196,9 +215,23 @@ class CodecProtocolTests(unittest.TestCase):
         )
         self.assertGreaterEqual(report.precompute_seconds, 0.0)
         self.assertGreaterEqual(report.codebook_setup_seconds, 0.0)
+        self.assertEqual(report.precompute_seconds, report.clustering_seconds)
+        self.assertEqual(report.prepack_seconds, 0.0)
         self.assertEqual(
             report.total_setup_seconds,
             report.precompute_seconds + report.codebook_setup_seconds,
+        )
+
+        materialized = prepare_neuralzip_codec(
+            codec,
+            self.tensors,
+            materialize=True,
+        )
+        self.assertEqual(codec.prepared[-1], ("materialize", tuple(self.tensors)))
+        self.assertGreaterEqual(materialized.prepack_seconds, 0.0)
+        self.assertEqual(
+            materialized.precompute_seconds,
+            materialized.clustering_seconds + materialized.prepack_seconds,
         )
 
     def test_roundtrip_comparison_is_bitwise(self):

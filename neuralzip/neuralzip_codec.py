@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from . import huff0, huffman
+from .dtypes import dtype_name
 from .packed_exponents import (
     restore_2d_stream,
     topk_vocab,
@@ -29,7 +30,6 @@ from .utils import split_fields
 from .zipnn_codec import (
     DTYPE_BY_NAME,
     ZipNNCodec,
-    _dtype_name,
     _tensor_from_raw_bytes,
     _zipnn_dtype_config,
     _zipnn_reordered_bytes,
@@ -318,7 +318,7 @@ class NeuralZipCodec(ZipNNCodec):
         }
 
     def _codebook_key(self, name, tensor, stream_id):
-        return self.cluster_id(name), _dtype_name(tensor.dtype), int(stream_id)
+        return self.cluster_id(name), dtype_name(tensor.dtype), int(stream_id)
 
     @staticmethod
     def _is_exponent_stream(config, stream_id):
@@ -960,7 +960,7 @@ class NeuralZipCodec(ZipNNCodec):
         # Object identity is part of the contract.  A value-identical target
         # tensor must miss immediately rather than hashing/reading its contents
         # in the hot path (notably for direct family transfer).
-        return str(name), _dtype_name(tensor.dtype), id(tensor)
+        return str(name), dtype_name(tensor.dtype), id(tensor)
 
     @staticmethod
     def _prepacked_mode_signature(mode):
@@ -1264,7 +1264,7 @@ class NeuralZipCodec(ZipNNCodec):
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
-        return str(name), _dtype_name(tensor.dtype), int(stream_id)
+        return str(name), dtype_name(tensor.dtype), int(stream_id)
 
     def _compress_stream_with_mode(
         self,
@@ -1892,7 +1892,7 @@ class NeuralZipCodec(ZipNNCodec):
 
             original = tensor.detach().cpu().contiguous()
             config = _zipnn_dtype_config(original.dtype)
-            dtype = _dtype_name(original.dtype)
+            dtype = dtype_name(original.dtype)
             exponent_stream_id = int(config["element_size"]) - 1
             candidates = [
                 (cluster_id, centroid)
@@ -2640,7 +2640,7 @@ class NeuralZipCodec(ZipNNCodec):
             outputs[tensor_index] = TensorPayload(
                 name=spec["name"],
                 shape=tuple(int(dim) for dim in tensor.shape),
-                dtype=_dtype_name(tensor.dtype),
+                dtype=dtype_name(tensor.dtype),
                 element_size=int(config["element_size"]),
                 numel=int(tensor.numel()),
                 strategy="neuralzip",
@@ -2793,7 +2793,7 @@ class NeuralZipCodec(ZipNNCodec):
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=_dtype_name(tensor.dtype),
+            dtype=dtype_name(tensor.dtype),
             element_size=element_size,
             numel=int(tensor.numel()),
             strategy="neuralzip",
@@ -2846,7 +2846,7 @@ class NeuralZipCodec(ZipNNCodec):
             return TensorPayload(
                 name=name,
                 shape=tuple(int(dim) for dim in tensor.shape),
-                dtype=_dtype_name(tensor.dtype),
+                dtype=dtype_name(tensor.dtype),
                 element_size=element_size,
                 numel=int(tensor.numel()),
                 strategy="neuralzip",
@@ -2951,7 +2951,7 @@ class NeuralZipCodec(ZipNNCodec):
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=_dtype_name(tensor.dtype),
+            dtype=dtype_name(tensor.dtype),
             element_size=element_size,
             numel=int(tensor.numel()),
             strategy="neuralzip",

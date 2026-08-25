@@ -1,28 +1,6 @@
-import torch
 from transformers import AutoModel
 
-
-def resolve_torch_dtype(dtype):
-    if dtype is None or dtype == "auto":
-        return "auto"
-    if isinstance(dtype, torch.dtype):
-        return dtype
-
-    dtype_key = str(dtype).lower().replace("torch.", "").replace("-", "_")
-    dtype_map = {
-        "float16": torch.float16,
-        "fp16": torch.float16,
-        "f16": torch.float16,
-        "bfloat16": torch.bfloat16,
-        "bf16": torch.bfloat16,
-        "float32": torch.float32,
-        "fp32": torch.float32,
-        "f32": torch.float32,
-    }
-    if dtype_key not in dtype_map:
-        choices = ", ".join(("auto", *sorted(dtype_map)))
-        raise ValueError(f"Unsupported dtype {dtype!r}. Expected one of: {choices}.")
-    return dtype_map[dtype_key]
+from .dtypes import resolve_torch_dtype
 
 
 class HFModel:

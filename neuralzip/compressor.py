@@ -11,7 +11,10 @@ from .archive import (
     serialized_size,
     serialized_tensor_size,
 )
+from .codec_protocol import encode_tensor_batch, prepare_neuralzip_codec
+from .dtypes import dtype_name
 from .neuralzip_codec import NeuralZipCodec
+from .tensors import bitwise_equal
 from .zipnn_codec import ZipNNCodec
 
 if TYPE_CHECKING:
@@ -66,15 +69,6 @@ def _named_tensors(value, prefix=""):
 
 def _raw_tensor_bytes(tensor):
     return int(tensor.numel() * tensor.element_size())
-
-
-def _bitwise_equal(left, right):
-    if left.shape != right.shape or left.dtype != right.dtype:
-        return False
-    return torch.equal(
-        left.detach().cpu().contiguous().view(torch.uint8),
-        right.detach().cpu().contiguous().view(torch.uint8),
-    )
 
 
 def _stream_summaries(tensor_payloads):
@@ -282,7 +276,7 @@ class Compressor:
                 start = time.perf_counter()
                 restored = self.codec.decompress_delta_tensor(compressed, base)
                 decode_seconds = time.perf_counter() - start
-                tensor_roundtrip_ok = _bitwise_equal(target, restored)
+                tensor_roundtrip_ok = bitwise_equal(target, restored)
                 roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
                 total_decode_seconds += decode_seconds
 
@@ -383,73 +377,37 @@ class Compressor:
             self.codec.reset_compression()
         if hasattr(self.codec, "reset_decompression"):
             self.codec.reset_decompression()
-        if hasattr(self.codec, "prepare_clusters"):
-            start = time.perf_counter()
-            self.codec.prepare_clusters(parameters)
-            clustering_seconds = time.perf_counter() - start
-
-        if hasattr(self.codec, "build_codebooks_and_select_modes"):
-            start = time.perf_counter()
-            self.codec.build_codebooks_and_select_modes(parameters)
-            codebook_setup_seconds = time.perf_counter() - start
+        if (
+            hasattr(self.codec, "prepare_clusters")
+            and hasattr(self.codec, "build_codebooks_and_select_modes")
+        ):
+            setup_report = prepare_neuralzip_codec(
+                self.codec,
+                parameters,
+                materialize=True,
+            )
+            clustering_seconds = setup_report.clustering_seconds
+            prepack_seconds = setup_report.prepack_seconds
+            codebook_setup_seconds = setup_report.codebook_setup_seconds
             codebooks = self.codec.export_codebooks()
             codebook_metadata_bytes = serialized_codebooks_size(codebooks)
             total_shared_codebook_defs += len(codebooks)
-
-        if (
-            hasattr(self.codec, "materialize_precompute")
-            and getattr(self.codec, "enable_prepacked_cache", False)
-        ):
-            start = time.perf_counter()
-            self.codec.materialize_precompute(parameters)
-            prepack_seconds = time.perf_counter() - start
         precompute_seconds = clustering_seconds + prepack_seconds
 
-        batched_payloads = None
-        batched_encode_allocations = None
-        if hasattr(self.codec, "compress_tensors"):
-            start = time.perf_counter()
-            batched_payloads = tuple(self.codec.compress_tensors(parameters))
-            batched_encode_seconds = time.perf_counter() - start
-            if len(batched_payloads) != len(parameters):
-                raise RuntimeError(
-                    "Batch compression returned a different number of tensors."
-                )
-
-            # Packed work is shared across tensors, so an exact per-tensor wall
-            # time does not exist.  Allocate the measured model time by input
-            # bytes for diagnostics while preserving the exact measured total.
-            weights = [_raw_tensor_bytes(parameter) for _, parameter in parameters]
-            total_weight = sum(weights)
-            if total_weight:
-                batched_encode_allocations = [
-                    batched_encode_seconds * weight / total_weight
-                    for weight in weights
-                ]
-            else:
-                batched_encode_allocations = [0.0] * len(parameters)
-            if batched_encode_allocations:
-                batched_encode_allocations[-1] += (
-                    batched_encode_seconds - sum(batched_encode_allocations)
-                )
+        encoded_batch = encode_tensor_batch(self.codec, parameters)
+        compressed_payloads = list(encoded_batch.payloads)
+        total_encode_seconds = encoded_batch.encode_seconds
 
         for tensor_index, (name, parameter) in enumerate(parameters):
             raw_bytes = _raw_tensor_bytes(parameter)
             total_raw_bytes += raw_bytes
             total_numel += int(parameter.numel())
 
-            if batched_payloads is None:
-                start = time.perf_counter()
-                compressed = self.codec.compress_tensor(name, parameter)
-                encode_seconds = time.perf_counter() - start
-            else:
-                compressed = batched_payloads[tensor_index]
-                encode_seconds = batched_encode_allocations[tensor_index]
+            compressed = encoded_batch.payloads[tensor_index]
+            encode_seconds = encoded_batch.tensor_encode_seconds[tensor_index]
 
             compressed_bytes = serialized_tensor_size(compressed)
-            compressed_payloads.append(compressed)
             total_payload_bytes += compressed.payload_bytes
-            total_encode_seconds += encode_seconds
             total_huffman_groups += compressed.huffman_groups
             total_raw_groups += compressed.raw_groups
             total_zero_groups += compressed.zero_groups
@@ -476,7 +434,7 @@ class Compressor:
                 decompressed = self.codec.decompress_tensor(compressed)
                 decode_seconds = time.perf_counter() - start
                 original = parameter.detach().cpu().contiguous()
-                tensor_roundtrip_ok = _bitwise_equal(original, decompressed)
+                tensor_roundtrip_ok = bitwise_equal(original, decompressed)
                 roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
                 total_decode_seconds += decode_seconds
 
@@ -697,14 +655,14 @@ class Compressor:
                 start = time.perf_counter()
                 decompressed = decompressor.decompress(payload)
                 decode_seconds = time.perf_counter() - start
-                tensor_roundtrip_ok = _bitwise_equal(original, decompressed)
+                tensor_roundtrip_ok = bitwise_equal(original, decompressed)
                 roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
                 total_decode_seconds += decode_seconds
 
             result = {
                 "name": name,
                 "shape": tuple(int(dim) for dim in original.shape),
-                "dtype": str(original.dtype).replace("torch.", ""),
+                "dtype": dtype_name(original.dtype),
                 "numel": int(original.numel()),
                 "raw_bytes": raw_bytes,
                 "strategy": "zipnn-src",

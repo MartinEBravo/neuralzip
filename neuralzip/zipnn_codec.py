@@ -2,14 +2,11 @@ import numpy as np
 import torch
 
 from . import huff0, huffman
+from .dtypes import FLOAT_DTYPES_BY_NAME, dtype_name
 from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
 
-DTYPE_BY_NAME = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
-}
+DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
 
 ZIPNN_DTYPE_CONFIG = {
     torch.float32: {
@@ -33,8 +30,9 @@ ZIPNN_DTYPE_CONFIG = {
 }
 
 
-def _dtype_name(dtype):
-    return str(dtype).replace("torch.", "")
+# Compatibility alias for callers that historically imported this private
+# helper from ``zipnn_codec``.
+_dtype_name = dtype_name
 
 
 def _tensor_raw_bytes(tensor):
@@ -176,7 +174,7 @@ class ZipNNCodec:
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in target.shape),
-            dtype=_dtype_name(target.dtype),
+            dtype=dtype_name(target.dtype),
             element_size=int(target.element_size()),
             numel=int(target.numel()),
             strategy="delta",
@@ -341,7 +339,7 @@ class ZipNNCodec:
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=_dtype_name(tensor.dtype),
+            dtype=dtype_name(tensor.dtype),
             element_size=element_size,
             numel=int(tensor.numel()),
             strategy="zipnn",

@@ -1,41 +1,49 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import gc
-import hashlib
 import io
 import json
-import math
 import os
-import pickle
-import random
-import struct
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, Subset, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
-from neuralzip import Compressor  # noqa: E402
-from neuralzip.archive import (  # noqa: E402
-    serialized_codebooks_size,
-    serialized_group_size,
+from examples.checkpoint_common import (  # noqa: E402
+    atomic_torch_save,
+    checkpoint_files,
+    find_complete_local_checkpoint_dir,
+    find_external_checkpoint_dir,
+    limited,
+    read_csv,
+    restore_rng_state,
+    rng_state,
+    set_seed,
+    upsert_model_epoch_row,
 )
-from neuralzip import huff0  # noqa: E402
-from neuralzip.packed_exponents import tokenize_ngrams  # noqa: E402
-from neuralzip.zipnn_codec import (  # noqa: E402
-    _zipnn_dtype_config,
-    _zipnn_reordered_bytes,
+from neuralzip.experiment_io import atomic_write_json  # noqa: E402
+from examples.checkpoint_compression import (  # noqa: E402
+    BASE_RESULT_FIELDS,
+    CODEC_PROTOCOL_VERSION,
+    ENCODER_PATHS,
+    benchmark_neuralzip,
+    benchmark_zipnn_src,
+    is_current_codec_result,
+    load_codec_plan,
+    nonfloating_state,
+    save_codec_plan,
+    setup_neuralzip,
+    tensor_digest,
 )
 
 
@@ -45,36 +53,7 @@ DEFAULT_MODELS = (
     "convnext_tiny",
     "efficientnet_b0",
 )
-RESULT_FIELDS = (
-    "model",
-    "model_label",
-    "epoch",
-    "compressor",
-    "checkpoint_path",
-    "checkpoint_source",
-    "dtype",
-    "tensor_count",
-    "nonfloating_tensor_count",
-    "raw_bytes",
-    "compressed_bytes",
-    "full_ratio_pct",
-    "exponent_raw_bytes",
-    "exponent_compressed_bytes",
-    "exponent_ratio_pct",
-    "encode_seconds",
-    "codec_encode_seconds",
-    "input_copy_seconds",
-    "setup_seconds_once",
-    "mapping_seconds",
-    "mapped_tensors",
-    "roundtrip_exact",
-    "input_unchanged",
-    "threads",
-    "warmup_runs",
-    "measured_repetitions",
-    "ratio_scope",
-    "status",
-)
+RESULT_FIELDS = BASE_RESULT_FIELDS
 TRAINING_FIELDS = (
     "model",
     "model_label",
@@ -163,14 +142,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--smoke", action="store_true", help="Tiny synthetic code-path check; never thesis data.")
     return parser.parse_args()
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def build_model(slug: str, *, num_classes: int = 100) -> nn.Module:
@@ -304,106 +275,24 @@ def load_cifar100(args: argparse.Namespace) -> tuple[Dataset, Dataset, str]:
     )
 
 
-def limited(dataset: Dataset, limit: int | None) -> Dataset:
-    if limit is None or int(limit) >= len(dataset):
-        return dataset
-    return Subset(dataset, range(max(0, int(limit))))
-
-
-def atomic_write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(value)
-    temporary.replace(path)
-
-
-def atomic_write_json(path: Path, value) -> None:
-    atomic_write_text(path, json.dumps(value, indent=2, default=str) + "\n")
-
-
-def atomic_torch_save(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(value, temporary)
-    temporary.replace(path)
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def atomic_write_csv(path: Path, fields: Iterable[str], rows: Iterable[Mapping]) -> None:
-    fields = tuple(fields)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
-    temporary.replace(path)
-
-
 def upsert_result(path: Path, row: Mapping) -> None:
-    rows = [
-        existing
-        for existing in read_csv(path)
-        if not (
-            existing.get("model") == str(row["model"])
-            and int(existing.get("epoch", -1)) == int(row["epoch"])
-            and existing.get("compressor") == str(row["compressor"])
-        )
-    ]
-    rows.append(dict(row))
-    rows.sort(
-        key=lambda item: (
-            DEFAULT_MODELS.index(str(item["model"])),
-            int(item["epoch"]),
-            str(item["compressor"]),
-        )
+    upsert_model_epoch_row(
+        path,
+        row,
+        fields=RESULT_FIELDS,
+        model_order=DEFAULT_MODELS,
+        include_compressor=True,
     )
-    atomic_write_csv(path, RESULT_FIELDS, rows)
 
 
 def upsert_training(path: Path, row: Mapping) -> None:
-    rows = [
-        existing
-        for existing in read_csv(path)
-        if not (
-            existing.get("model") == str(row["model"])
-            and int(existing.get("epoch", -1)) == int(row["epoch"])
-        )
-    ]
-    rows.append(dict(row))
-    rows.sort(key=lambda item: (DEFAULT_MODELS.index(str(item["model"])), int(item["epoch"])))
-    atomic_write_csv(path, TRAINING_FIELDS, rows)
-
-
-def bitwise_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
-    return (
-        left.shape == right.shape
-        and left.dtype == right.dtype
-        and torch.equal(
-            left.detach().cpu().contiguous().view(torch.uint8),
-            right.detach().cpu().contiguous().view(torch.uint8),
-        )
+    upsert_model_epoch_row(
+        path,
+        row,
+        fields=TRAINING_FIELDS,
+        model_order=DEFAULT_MODELS,
+        include_compressor=False,
     )
-
-
-def tensor_digest(named_tensors: Iterable[tuple[str, torch.Tensor]]) -> str:
-    digest = hashlib.sha256()
-    for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
-        value = tensor.detach().cpu().contiguous()
-        digest.update(name.encode("utf-8"))
-        digest.update(str(value.dtype).encode("ascii"))
-        digest.update(struct.pack("<Q", value.ndim))
-        for dimension in value.shape:
-            digest.update(struct.pack("<Q", int(dimension)))
-        digest.update(value.view(torch.uint8).numpy().tobytes())
-    return digest.hexdigest()
 
 
 def checkpoint_state(checkpoint: Mapping) -> Mapping[str, torch.Tensor]:
@@ -426,36 +315,6 @@ def floating_state(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]
     return tensors
 
 
-def nonfloating_state(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    return {
-        str(name): tensor.detach().cpu().contiguous()
-        for name, tensor in state.items()
-        if torch.is_tensor(tensor) and not tensor.is_floating_point()
-    }
-
-
-def checkpoint_epoch(path: Path) -> int:
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    try:
-        return int(checkpoint.get("epoch", int(path.stem.rsplit("_", 1)[-1])))
-    finally:
-        del checkpoint
-
-
-def checkpoint_files(checkpoint_dir: Path, maximum_epoch: int) -> dict[int, Path]:
-    files = {}
-    for path in checkpoint_dir.glob("*.pt"):
-        if path.name.endswith("training_state.pt") or path.name.endswith("latest_state.pt"):
-            continue
-        try:
-            epoch = checkpoint_epoch(path)
-        except (ValueError, KeyError, RuntimeError):
-            continue
-        if 0 <= epoch <= int(maximum_epoch):
-            files[epoch] = path
-    return files
-
-
 def model_checkpoint_path(checkpoint_dir: Path, slug: str, epoch: int) -> Path:
     return checkpoint_dir / f"{slug}_cifar100_epoch_{int(epoch):03d}.pt"
 
@@ -469,373 +328,6 @@ def cpu_model_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return state
 
 
-def codebook_digest(codebooks) -> str:
-    return hashlib.sha256(pickle.dumps(tuple(codebooks), protocol=5)).hexdigest()
-
-
-def exponent_metrics(payloads, codebooks=()) -> dict[str, int | float]:
-    exponent_raw_bytes = 0
-    exponent_group_bytes = 0
-    referenced_codebooks: set[int] = set()
-    for payload in payloads:
-        exponent_group = payload.groups[int(payload.element_size) - 1]
-        exponent_raw_bytes += int(exponent_group.symbol_count)
-        exponent_group_bytes += int(serialized_group_size(exponent_group))
-        for chunk in exponent_group.chunks:
-            if chunk.codebook_id is not None:
-                referenced_codebooks.add(int(chunk.codebook_id))
-    referenced = tuple(
-        codebook
-        for codebook in codebooks
-        if int(codebook.codebook_id) in referenced_codebooks
-    )
-    codebook_bytes = int(serialized_codebooks_size(referenced))
-    exponent_compressed_bytes = exponent_group_bytes + codebook_bytes
-    return {
-        "exponent_raw_bytes": exponent_raw_bytes,
-        "exponent_compressed_bytes": exponent_compressed_bytes,
-        "exponent_group_bytes": exponent_group_bytes,
-        "exponent_codebook_bytes": codebook_bytes,
-        "exponent_ratio_pct": (
-            100.0 * exponent_compressed_bytes / exponent_raw_bytes
-            if exponent_raw_bytes
-            else 0.0
-        ),
-    }
-
-
-def zipnn_src_exponent_size(payload: bytes, tensor: torch.Tensor, chunk_size: int) -> tuple[int, int]:
-    """Return raw and stored exponent bytes from an official ZipNN payload.
-
-    ZipNN 0.5.4 stores, after its tensor header, one chunk-type byte and one
-    native ``size_t`` cumulative length per chunk and byte group, followed by
-    the groups' payloads. The exponent is the final byte group after ZipNN's
-    reversible sign/exponent reorder. We attribute only that group's metadata
-    and payload to the exponent field, matching NeuralZip's group-level scope.
-    """
-
-    from zipnn.util_torch import zipnn_unpack_shape
-
-    if tensor.dtype != torch.float32:
-        raise TypeError(f"Expected FP32 ZipNN payload, got {tensor.dtype}.")
-    view = memoryview(payload)
-    if len(view) < 33 or view[:2].tobytes() != b"ZN":
-        raise ValueError("Invalid ZipNN payload header.")
-    original_bytes = int.from_bytes(view[16:24], byteorder="little")
-    declared_bytes = int.from_bytes(view[24:32], byteorder="little")
-    if original_bytes != tensor.numel() * tensor.element_size():
-        raise ValueError(
-            f"ZipNN original length mismatch: {original_bytes} != "
-            f"{tensor.numel() * tensor.element_size()}."
-        )
-    if declared_bytes != len(view):
-        raise ValueError(f"ZipNN compressed length mismatch: {declared_bytes} != {len(view)}.")
-
-    _, shape_size = zipnn_unpack_shape(view[32:])
-    header_bytes = 32 + int(shape_size)
-    num_buffers = 4
-    num_chunks = max(1, math.ceil(original_bytes / int(chunk_size)))
-    type_bytes = num_buffers * num_chunks
-    size_width = struct.calcsize("P")
-    size_table_bytes = num_buffers * num_chunks * size_width
-    metadata_end = header_bytes + type_bytes + size_table_bytes
-    if metadata_end > len(view):
-        raise ValueError("ZipNN payload metadata is truncated.")
-
-    cumulative_offset = header_bytes + type_bytes
-    cumulative = np.frombuffer(
-        view[cumulative_offset:metadata_end],
-        dtype=np.uintp,
-        count=num_buffers * num_chunks,
-    ).reshape(num_buffers, num_chunks)
-    exponent_payload_bytes = int(cumulative[-1, -1])
-    all_payload_bytes = sum(int(row[-1]) for row in cumulative)
-    if metadata_end + all_payload_bytes != len(view):
-        raise ValueError(
-            "ZipNN group lengths do not reconstruct the payload size: "
-            f"{metadata_end + all_payload_bytes} != {len(view)}."
-        )
-    exponent_metadata_bytes = num_chunks * (1 + size_width)
-    return int(tensor.numel()), exponent_payload_bytes + exponent_metadata_bytes
-
-
-def setup_neuralzip(
-    named_tensors: list[tuple[str, torch.Tensor]],
-    *,
-    threads: int,
-) -> tuple[object, dict]:
-    codec = Compressor(
-        "neuralzip",
-        verify=False,
-        threads=threads,
-        compression_threshold=0.95,
-        enable_prepacked_cache=False,
-    ).codec
-    started = time.perf_counter()
-    codec.prepare_clusters(named_tensors)
-    clustering_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    codec.build_codebooks_and_select_modes(named_tensors)
-    codebook_seconds = time.perf_counter() - started
-    codec.clear_prepacked_cache()
-    codebooks = codec.export_codebooks()
-    return codec, {
-        "clustering_seconds": clustering_seconds,
-        "codebook_seconds": codebook_seconds,
-        "total_seconds": clustering_seconds + codebook_seconds,
-        "clusters": int(codec.cluster_count),
-        "codebooks": len(codebooks),
-        "codebook_digest": codebook_digest(codebooks),
-        "selected_modes": codec.selected_modes,
-        "epoch": 0,
-        "scope": "one frozen plan per training trajectory",
-    }
-
-
-def codec_source_samples(codec, named_tensors) -> dict[tuple, bytes]:
-    sample_parts: dict[tuple, list[bytes]] = {}
-    sample_sizes: dict[tuple, int] = {}
-    for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
-        original = tensor.detach().cpu().contiguous()
-        config = _zipnn_dtype_config(original.dtype)
-        reordered = _zipnn_reordered_bytes(original, config)
-        element_size = int(config["element_size"])
-        for stream_id in range(int(config["num_buffers"])):
-            is_exponent = codec._is_exponent_stream(config, stream_id)
-            stream = reordered[stream_id::element_size]
-            stream, _ = codec._apply_exponent_layout(original, stream, is_exponent)
-            key = codec._codebook_key(name, original, stream_id)
-            remaining = codec.max_codebook_sample_bytes - sample_sizes.get(key, 0)
-            if remaining <= 0:
-                continue
-            part = codec._bounded_stream_sample(stream, remaining)
-            if not part:
-                continue
-            sample_parts.setdefault(key, []).append(bytes(part))
-            sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
-    return {key: b"".join(parts) for key, parts in sample_parts.items()}
-
-
-def save_codec_plan(path: Path, codec, named_tensors) -> None:
-    """Persist a frozen plan while rebuilding native Huff0 handles on load."""
-
-    samples = codec_source_samples(codec, named_tensors)
-    replaced = []
-    for key, mode in codec._mode_by_key.items():
-        codebook = mode.get("codebook")
-        if codebook is None:
-            continue
-        sample = samples[key]
-        if mode["kind"] == "packed_huff0":
-            tokens, _, _, _, _ = tokenize_ngrams(
-                sample,
-                int(mode["ngram_n"]),
-                mode["vocab"],
-            )
-        else:
-            tokens = sample
-        dtype = str(key[1])
-        stream_id = int(key[2])
-        element_size = int(_zipnn_dtype_config(getattr(torch, dtype))["element_size"])
-        prior_count = (
-            codec.exponent_prior_count
-            if stream_id == element_size - 1
-            else codec.prior_count
-        )
-        marker = (
-            "frozen-huff0-codebook-v1",
-            bytes(tokens),
-            int(prior_count),
-            bytes(codebook.codebook),
-        )
-        replaced.append((mode, codebook))
-        mode["codebook"] = marker
-
-    decodebooks = codec._decode_codebooks
-    codec._decode_codebooks = {}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with temporary.open("wb") as handle:
-            pickle.dump(codec, handle, protocol=5)
-    finally:
-        codec._decode_codebooks = decodebooks
-        for mode, codebook in replaced:
-            mode["codebook"] = codebook
-    temporary.replace(path)
-
-
-def load_codec_plan(path: Path):
-    with path.open("rb") as handle:
-        codec = pickle.load(handle)
-
-    seen: set[int] = set()
-    mode_maps = (
-        codec._mode_by_key,
-        codec._mode_by_tensor_stream,
-        codec._transfer_mode_by_tensor_stream,
-    )
-    for mode_map in mode_maps:
-        for mode in mode_map.values():
-            if id(mode) in seen:
-                continue
-            seen.add(id(mode))
-            marker = mode.get("codebook")
-            if not (
-                isinstance(marker, tuple)
-                and len(marker) == 4
-                and marker[0] == "frozen-huff0-codebook-v1"
-            ):
-                continue
-            _, tokens, prior_count, expected_header = marker
-            codebook = huff0.build_codebook(tokens, prior_count=int(prior_count))
-            if codebook.codebook != expected_header:
-                raise RuntimeError("Rebuilt Huff0 codebook differs from the frozen plan.")
-            mode["codebook"] = codebook
-    codec.load_codebooks(codec.export_codebooks())
-    return codec
-
-
-def encode_neuralzip(codec, named_tensors: list[tuple[str, torch.Tensor]]):
-    codec.clear_prepacked_cache()
-    started = time.perf_counter()
-    payloads = codec.compress_tensors(named_tensors)
-    encode_seconds = time.perf_counter() - started
-    if codec.prepacked_cache_bytes != 0:
-        raise RuntimeError("NeuralZip unexpectedly retained an exact-target cache.")
-    return payloads, encode_seconds
-
-
-def verify_neuralzip(codec, named_tensors, payloads) -> bool:
-    expected = dict(named_tensors)
-    if len(payloads) != len(expected):
-        return False
-    for payload in payloads:
-        restored = codec.decompress_tensor(payload)
-        if payload.name not in expected or not bitwise_equal(expected[payload.name], restored):
-            return False
-    return True
-
-
-def benchmark_neuralzip(
-    codec,
-    named_tensors: list[tuple[str, torch.Tensor]],
-    *,
-    epoch: int,
-    setup: Mapping,
-) -> dict:
-    before = tensor_digest(named_tensors)
-    mapping_started = time.perf_counter()
-    transfer = codec.prepare_direct_transfer_target(named_tensors, require_full_match=True)
-    mapping_seconds = time.perf_counter() - mapping_started
-    if int(transfer["matched_tensors"]) != len(named_tensors):
-        raise RuntimeError(f"NeuralZip failed full checkpoint mapping at epoch {epoch}.")
-    if codebook_digest(codec.export_codebooks()) != str(setup["codebook_digest"]):
-        raise RuntimeError("NeuralZip changed the frozen epoch-0 codebooks.")
-
-    warmup, _ = encode_neuralzip(codec, named_tensors)
-    del warmup
-    gc.collect()
-    payloads, encode_seconds = encode_neuralzip(codec, named_tensors)
-    metrics = exponent_metrics(payloads, codec.export_codebooks())
-    roundtrip = verify_neuralzip(codec, named_tensors, payloads)
-    unchanged = tensor_digest(named_tensors) == before
-    if not roundtrip or not unchanged:
-        raise RuntimeError(
-            f"NeuralZip verification failed at epoch {epoch}: "
-            f"roundtrip={roundtrip}, input_unchanged={unchanged}."
-        )
-    raw_bytes = sum(int(tensor.numel() * tensor.element_size()) for _, tensor in named_tensors)
-    compressed_bytes = sum(int(payload.compressed_bytes) for payload in payloads)
-    compressed_bytes += int(serialized_codebooks_size(codec.export_codebooks()))
-    del payloads
-    gc.collect()
-    return {
-        "raw_bytes": raw_bytes,
-        "compressed_bytes": compressed_bytes,
-        "full_ratio_pct": 100.0 * compressed_bytes / raw_bytes if raw_bytes else 0.0,
-        "encode_seconds": encode_seconds,
-        "codec_encode_seconds": encode_seconds,
-        "input_copy_seconds": 0.0,
-        "setup_seconds_once": float(setup["total_seconds"]),
-        "mapping_seconds": mapping_seconds,
-        "mapped_tensors": int(transfer["matched_tensors"]),
-        "roundtrip_exact": roundtrip,
-        "input_unchanged": unchanged,
-        **metrics,
-    }
-
-
-def benchmark_zipnn_src(
-    tensors: Mapping[str, torch.Tensor],
-    *,
-    threads: int,
-    chunk_size: int = 256 << 10,
-) -> dict:
-    named_tensors = list(tensors.items())
-    before = tensor_digest(named_tensors)
-    warmup = Compressor(
-        "zipnn-src",
-        verify=False,
-        keep_payloads=False,
-        threads=threads,
-        zipnn_method="HUFFMAN",
-        chunk_size=chunk_size,
-        compression_threshold=0.95,
-    ).compress(tensors)
-    del warmup
-    gc.collect()
-
-    result = Compressor(
-        "zipnn-src",
-        verify=True,
-        keep_payloads=True,
-        threads=threads,
-        zipnn_method="HUFFMAN",
-        chunk_size=chunk_size,
-        compression_threshold=0.95,
-    ).compress(tensors)
-    exponent_raw_bytes = 0
-    exponent_compressed_bytes = 0
-    for tensor_result in result["tensor_results"]:
-        name = str(tensor_result["name"])
-        raw, compressed = zipnn_src_exponent_size(
-            tensor_result["payload"], tensors[name], chunk_size
-        )
-        exponent_raw_bytes += raw
-        exponent_compressed_bytes += compressed
-    unchanged = tensor_digest(named_tensors) == before
-    roundtrip = result["roundtrip_ok"] is True
-    if not unchanged or not roundtrip:
-        raise RuntimeError(
-            "ZipNN src must receive a dedicated clone and preserve the checkpoint: "
-            f"roundtrip={roundtrip}, input_unchanged={unchanged}."
-        )
-    output = {
-        "raw_bytes": int(result["raw_bytes"]),
-        "compressed_bytes": int(result["compressed_bytes"]),
-        "full_ratio_pct": 100.0 * float(result["compression_ratio"]),
-        "exponent_raw_bytes": exponent_raw_bytes,
-        "exponent_compressed_bytes": exponent_compressed_bytes,
-        "exponent_ratio_pct": (
-            100.0 * exponent_compressed_bytes / exponent_raw_bytes
-            if exponent_raw_bytes
-            else 0.0
-        ),
-        "encode_seconds": float(result["encode_seconds"]),
-        "codec_encode_seconds": float(result.get("codec_encode_seconds", result["encode_seconds"])),
-        "input_copy_seconds": float(result.get("input_copy_seconds", 0.0)),
-        "setup_seconds_once": 0.0,
-        "mapping_seconds": 0.0,
-        "mapped_tensors": len(named_tensors),
-        "roundtrip_exact": roundtrip,
-        "input_unchanged": unchanged,
-    }
-    del result
-    gc.collect()
-    return output
-
-
 def completed_methods(result_path: Path, slug: str, epoch: int) -> set[str]:
     return {
         str(row["compressor"])
@@ -845,6 +337,7 @@ def completed_methods(result_path: Path, slug: str, epoch: int) -> set[str]:
         and row.get("status") == "ok"
         and row.get("roundtrip_exact", "").lower() == "true"
         and row.get("input_unchanged", "").lower() == "true"
+        and is_current_codec_result(row)
     }
 
 
@@ -854,7 +347,7 @@ def benchmark_checkpoint(
     epoch: int,
     path: Path,
     checkpoint_source: str,
-    codec,
+    plan,
     setup: Mapping,
     args: argparse.Namespace,
     result_path: Path,
@@ -892,7 +385,7 @@ def benchmark_checkpoint(
     }
     if "NeuralZip" not in done:
         metrics = benchmark_neuralzip(
-            codec,
+            plan,
             named_tensors,
             epoch=epoch,
             setup=setup,
@@ -982,25 +475,6 @@ def train_one_epoch(model, loader, optimizer, scaler, criterion, device, *, amp_
         correct += int(logits.argmax(dim=1).eq(labels).sum().item())
         examples += batch
     return loss_total / max(examples, 1), correct / max(examples, 1)
-
-
-def rng_state(loader_generator: torch.Generator) -> dict:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        "loader_generator": loader_generator.get_state(),
-    }
-
-
-def restore_rng_state(state: Mapping, loader_generator: torch.Generator) -> None:
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    if torch.cuda.is_available() and state.get("cuda") is not None:
-        torch.cuda.set_rng_state_all(state["cuda"])
-    loader_generator.set_state(state["loader_generator"])
 
 
 def train_model(
@@ -1173,29 +647,11 @@ def train_model(
 
 
 def external_checkpoint_dir(root: Path | None, spec: ModelSpec, epochs: int) -> Path | None:
-    if root is None:
-        return None
-    candidates = (
-        root / spec.slug / "checkpoints",
-        root / spec.slug,
-    )
-    for candidate in candidates:
-        if not candidate.is_dir():
-            continue
-        files = checkpoint_files(candidate, epochs)
-        if all(epoch in files for epoch in range(int(epochs) + 1)):
-            return candidate
-    return None
+    return find_external_checkpoint_dir(root, spec.slug, epochs)
 
 
 def complete_local_checkpoint_dir(output_dir: Path, spec: ModelSpec, epochs: int) -> Path | None:
-    candidate = output_dir / spec.slug / "checkpoints"
-    if not candidate.is_dir():
-        return None
-    files = checkpoint_files(candidate, epochs)
-    if all(epoch in files for epoch in range(int(epochs) + 1)):
-        return candidate
-    return None
+    return find_complete_local_checkpoint_dir(output_dir, spec.slug, epochs)
 
 
 def frozen_codec_for_trajectory(
@@ -1225,12 +681,12 @@ def frozen_codec_for_trajectory(
                 f"threads={setup.get('threads')}, not {args.threads}. Use a fresh "
                 "output directory for a different timing configuration."
             )
-        codec = load_codec_plan(plan_path)
-        if codebook_digest(codec.export_codebooks()) != setup["codebook_digest"]:
+        plan = load_codec_plan(plan_path)
+        if plan.digest != setup["codebook_digest"]:
             raise RuntimeError(f"Frozen NeuralZip plan is corrupt: {plan_path}.")
         print(f"[{spec.slug}] loaded frozen epoch-0 NeuralZip plan", flush=True)
     else:
-        codec, setup = setup_neuralzip(list(tensors.items()), threads=args.threads)
+        plan, setup = setup_neuralzip(list(tensors.items()), threads=args.threads)
         setup = {
             **setup,
             "model": spec.slug,
@@ -1240,7 +696,7 @@ def frozen_codec_for_trajectory(
             "threads": args.threads,
             "enable_prepacked_cache": False,
         }
-        save_codec_plan(plan_path, codec, list(tensors.items()))
+        save_codec_plan(plan_path, plan, list(tensors.items()))
         atomic_write_json(setup_path, setup)
     print(
         f"[{spec.slug}] epoch-0 NeuralZip setup={setup['total_seconds']:.3f}s",
@@ -1248,7 +704,7 @@ def frozen_codec_for_trajectory(
     )
     del checkpoint, tensors
     gc.collect()
-    return codec, setup, files
+    return plan, setup, files
 
 
 def process_trajectory(
@@ -1260,7 +716,7 @@ def process_trajectory(
 ) -> None:
     model_dir = args.output_dir / spec.slug
     model_dir.mkdir(parents=True, exist_ok=True)
-    codec, setup, files = frozen_codec_for_trajectory(spec, checkpoint_dir, model_dir, args)
+    plan, setup, files = frozen_codec_for_trajectory(spec, checkpoint_dir, model_dir, args)
     missing = [epoch for epoch in range(int(args.epochs) + 1) if epoch not in files]
     if missing:
         raise FileNotFoundError(
@@ -1273,12 +729,12 @@ def process_trajectory(
             epoch=epoch,
             path=files[epoch],
             checkpoint_source=checkpoint_source,
-            codec=codec,
+            plan=plan,
             setup=setup,
             args=args,
             result_path=result_path,
         )
-    del codec
+    del plan
     gc.collect()
 
 
@@ -1296,6 +752,7 @@ def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | No
         frame["status"].eq("ok")
         & frame["roundtrip_exact"].eq(True)  # noqa: E712
         & frame["input_unchanged"].eq(True)  # noqa: E712
+        & frame.apply(is_current_codec_result, axis=1)
     ].copy()
     if frame.empty:
         return None
@@ -1385,6 +842,7 @@ def validate_complete_results(
         ~observed_rows["status"].eq("ok")
         | ~observed_rows["roundtrip_exact"].eq(True)  # noqa: E712
         | ~observed_rows["input_unchanged"].eq(True)  # noqa: E712
+        | ~observed_rows.apply(is_current_codec_result, axis=1)
     ]
     if missing or duplicates or not invalid.empty:
         raise RuntimeError(
@@ -1408,6 +866,8 @@ def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:
             "checkpoint_schedule": "epoch 0 and the end of every epoch",
             "compression_schedule": "post-hoc isolated CPU benchmark of every saved epoch",
             "compressors": ["ZipNN src 0.5.4", "NeuralZip frozen epoch-0 plan"],
+            "codec_protocol_version": CODEC_PROTOCOL_VERSION,
+            "encoder_paths": ENCODER_PATHS,
             "ratio_scope": "exponent symbols + raw fallback + metadata",
             "timing": {
                 "threads": args.threads,
@@ -1456,6 +916,11 @@ def main() -> None:
     except RuntimeError:
         pass
     if args.render_only:
+        validate_complete_results(
+            args.output_dir / "checkpoint_results.csv",
+            models=args.models,
+            epochs=args.epochs,
+        )
         rendered = render_figure(args.output_dir / "checkpoint_results.csv", args.output_dir)
         print(f"rendered={rendered}", flush=True)
         return

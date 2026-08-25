@@ -9,35 +9,44 @@ must not be launched concurrently against the same output directory.
 from __future__ import annotations
 
 import argparse
-import csv
 import gc
 import hashlib
 import json
 import math
 import os
-import random
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
-from examples.run_final_checkpoint_suite import (  # noqa: E402
-    RESULT_FIELDS as BASE_RESULT_FIELDS,
+from examples.checkpoint_common import (  # noqa: E402
     atomic_torch_save,
-    atomic_write_json,
+    checkpoint_files,
+    find_complete_local_checkpoint_dir,
+    find_external_checkpoint_dir,
+    limited,
+    read_csv,
+    restore_rng_state,
+    rng_state,
+    set_seed,
+    upsert_model_epoch_row,
+)
+from neuralzip.experiment_io import atomic_write_json  # noqa: E402
+from examples.checkpoint_compression import (  # noqa: E402
+    BASE_RESULT_FIELDS,
+    CODEC_PROTOCOL_VERSION,
     benchmark_neuralzip,
     benchmark_zipnn_src,
-    codebook_digest,
+    is_current_codec_result,
     load_codec_plan,
     nonfloating_state,
     save_codec_plan,
@@ -188,71 +197,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def atomic_write_csv(path: Path, fields: Iterable[str], rows: Iterable[Mapping]) -> None:
-    fields = tuple(fields)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
-    temporary.replace(path)
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
 def upsert_result(path: Path, row: Mapping) -> None:
-    rows = [
-        existing
-        for existing in read_csv(path)
-        if not (
-            existing.get("model") == str(row["model"])
-            and int(existing.get("epoch", -1)) == int(row["epoch"])
-            and existing.get("compressor") == str(row["compressor"])
-        )
-    ]
-    rows.append(dict(row))
-    rows.sort(
-        key=lambda item: (
-            DEFAULT_MODELS.index(str(item["model"])),
-            int(item["epoch"]),
-            str(item["compressor"]),
-        )
+    upsert_model_epoch_row(
+        path,
+        row,
+        fields=RESULT_FIELDS,
+        model_order=DEFAULT_MODELS,
+        include_compressor=True,
+        lineterminator="\n",
     )
-    atomic_write_csv(path, RESULT_FIELDS, rows)
 
 
 def upsert_training(path: Path, row: Mapping) -> None:
-    rows = [
-        existing
-        for existing in read_csv(path)
-        if not (
-            existing.get("model") == str(row["model"])
-            and int(existing.get("epoch", -1)) == int(row["epoch"])
-        )
-    ]
-    rows.append(dict(row))
-    rows.sort(
-        key=lambda item: (
-            DEFAULT_MODELS.index(str(item["model"])),
-            int(item["epoch"]),
-        )
+    upsert_model_epoch_row(
+        path,
+        row,
+        fields=TRAINING_FIELDS,
+        model_order=DEFAULT_MODELS,
+        include_compressor=False,
+        lineterminator="\n",
     )
-    atomic_write_csv(path, TRAINING_FIELDS, rows)
 
 
 def update_progress(path: Path, **updates) -> None:
@@ -415,7 +379,8 @@ def training_protocol(
 
 def compression_protocol(args: argparse.Namespace) -> dict:
     protocol = {
-        "version": 1,
+        "version": 2,
+        "codec_protocol_version": CODEC_PROTOCOL_VERSION,
         "threads": int(args.threads),
         "warmup_runs": 1,
         "measured_repetitions": 1,
@@ -470,12 +435,6 @@ class TokenBlockDataset(Dataset):
             "input_ids": self.input_ids[int(index)],
             "special_tokens_mask": self.special_tokens_mask[int(index)],
         }
-
-
-def limited(dataset: Dataset, limit: int | None) -> Dataset:
-    if limit is None or int(limit) >= len(dataset):
-        return dataset
-    return Subset(dataset, range(max(0, int(limit))))
 
 
 def find_wikitext2_parquet(data_dir: Path) -> tuple[Path, Path] | None:
@@ -840,49 +799,8 @@ def run_epoch(
     return loss_total / max(tokens, 1), correct / max(tokens, 1), tokens
 
 
-def rng_state(loader_generator: torch.Generator) -> dict:
-    return {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        "loader_generator": loader_generator.get_state(),
-    }
-
-
-def restore_rng_state(state: Mapping, loader_generator: torch.Generator) -> None:
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    if torch.cuda.is_available() and state.get("cuda") is not None:
-        torch.cuda.set_rng_state_all(state["cuda"])
-    loader_generator.set_state(state["loader_generator"])
-
-
 def model_checkpoint_path(checkpoint_dir: Path, slug: str, epoch: int) -> Path:
     return checkpoint_dir / f"{slug}_wikitext2_epoch_{int(epoch):03d}.pt"
-
-
-def checkpoint_epoch(path: Path) -> int:
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    try:
-        return int(checkpoint.get("epoch", int(path.stem.rsplit("_", 1)[-1])))
-    finally:
-        del checkpoint
-
-
-def checkpoint_files(checkpoint_dir: Path, maximum_epoch: int) -> dict[int, Path]:
-    files = {}
-    for path in checkpoint_dir.glob("*.pt"):
-        if path.name.endswith("training_state.pt") or path.name.endswith("latest_state.pt"):
-            continue
-        try:
-            epoch = checkpoint_epoch(path)
-        except (ValueError, KeyError, RuntimeError):
-            continue
-        if 0 <= epoch <= int(maximum_epoch):
-            files[epoch] = path
-    return files
 
 
 def make_optimizer(spec: LanguageModelSpec, model: nn.Module):
@@ -1157,6 +1075,7 @@ def completed_methods(
         and row.get("checkpoint_tensor_digest") == checkpoint_tensor_digest
         and row.get("epoch0_plan_digest") == epoch0_plan_digest
         and row.get("compression_protocol_digest") == compression_protocol_digest
+        and is_current_codec_result(row)
     }
 
 
@@ -1190,7 +1109,7 @@ def benchmark_checkpoint(
     epoch: int,
     path: Path,
     checkpoint_source: str,
-    codec,
+    plan,
     setup: Mapping,
     args: argparse.Namespace,
     result_path: Path,
@@ -1258,7 +1177,7 @@ def benchmark_checkpoint(
     if "NeuralZip" not in done:
         metrics = add_alias_manifest_to_metrics(
             benchmark_neuralzip(
-                codec,
+                plan,
                 named_tensors,
                 epoch=epoch,
                 setup=setup,
@@ -1333,12 +1252,12 @@ def frozen_codec_for_trajectory(
                 f"Frozen plan in {plan_path} used threads={setup.get('threads')}, "
                 f"not {args.threads}; use a fresh output directory."
             )
-        codec = load_codec_plan(plan_path)
-        if codebook_digest(codec.export_codebooks()) != setup["codebook_digest"]:
+        plan = load_codec_plan(plan_path)
+        if plan.digest != setup["codebook_digest"]:
             raise RuntimeError(f"Frozen NeuralZip plan is corrupt: {plan_path}.")
         print(f"[{spec.slug}] loaded frozen epoch-0 NeuralZip plan", flush=True)
     else:
-        codec, setup = setup_neuralzip(list(floating.items()), threads=args.threads)
+        plan, setup = setup_neuralzip(list(floating.items()), threads=args.threads)
         setup = {
             **setup,
             "model": spec.slug,
@@ -1351,7 +1270,7 @@ def frozen_codec_for_trajectory(
             "enable_prepacked_cache": False,
             "unique_storage_compression": True,
         }
-        save_codec_plan(plan_path, codec, list(floating.items()))
+        save_codec_plan(plan_path, plan, list(floating.items()))
         atomic_write_json(setup_path, setup)
     print(
         f"[{spec.slug}] epoch-0 NeuralZip setup={setup['total_seconds']:.3f}s",
@@ -1359,7 +1278,7 @@ def frozen_codec_for_trajectory(
     )
     del checkpoint, canonical, aliases, floating
     gc.collect()
-    return codec, setup, files
+    return plan, setup, files
 
 
 def process_trajectory(
@@ -1372,7 +1291,7 @@ def process_trajectory(
     model_dir = args.output_dir / spec.slug
     progress_path = model_dir / "progress.json"
     model_dir.mkdir(parents=True, exist_ok=True)
-    codec, setup, files = frozen_codec_for_trajectory(spec, checkpoint_dir, model_dir, args)
+    plan, setup, files = frozen_codec_for_trajectory(spec, checkpoint_dir, model_dir, args)
     missing = [epoch for epoch in range(int(args.epochs) + 1) if epoch not in files]
     if missing:
         raise FileNotFoundError(
@@ -1385,7 +1304,7 @@ def process_trajectory(
             epoch=epoch,
             path=files[epoch],
             checkpoint_source=checkpoint_source,
-            codec=codec,
+            plan=plan,
             setup=setup,
             args=args,
             result_path=result_path,
@@ -1398,7 +1317,7 @@ def process_trajectory(
             requested_epochs=args.epochs,
             compression_protocol_digest=compression_protocol(args)["digest"],
         )
-    del codec
+    del plan
     gc.collect()
 
 
@@ -1407,15 +1326,7 @@ def external_checkpoint_dir(
     spec: LanguageModelSpec,
     epochs: int,
 ) -> Path | None:
-    if root is None:
-        return None
-    for candidate in (root / spec.slug / "checkpoints", root / spec.slug):
-        if not candidate.is_dir():
-            continue
-        files = checkpoint_files(candidate, epochs)
-        if all(epoch in files for epoch in range(int(epochs) + 1)):
-            return candidate
-    return None
+    return find_external_checkpoint_dir(root, spec.slug, epochs)
 
 
 def complete_local_checkpoint_dir(
@@ -1423,13 +1334,7 @@ def complete_local_checkpoint_dir(
     spec: LanguageModelSpec,
     epochs: int,
 ) -> Path | None:
-    candidate = output_dir / spec.slug / "checkpoints"
-    if not candidate.is_dir():
-        return None
-    files = checkpoint_files(candidate, epochs)
-    if all(epoch in files for epoch in range(int(epochs) + 1)):
-        return candidate
-    return None
+    return find_complete_local_checkpoint_dir(output_dir, spec.slug, epochs)
 
 
 def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | None:
@@ -1446,6 +1351,7 @@ def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | No
         frame["status"].eq("ok")
         & frame["roundtrip_exact"].eq(True)  # noqa: E712
         & frame["input_unchanged"].eq(True)  # noqa: E712
+        & frame.apply(is_current_codec_result, axis=1)
     ].copy()
     if frame.empty:
         return None
@@ -1530,6 +1436,7 @@ def validate_complete_results(
             row.get("status") != "ok"
             or row.get("roundtrip_exact", "").lower() != "true"
             or row.get("input_unchanged", "").lower() != "true"
+            or not is_current_codec_result(row)
         )
     ]
     if expected - observed or len(keys) != len(observed) or invalid:
@@ -1643,6 +1550,7 @@ def main() -> None:
 
     result_path = args.output_dir / "checkpoint_results.csv"
     if args.render_only:
+        validate_complete_results(result_path, models=args.models, epochs=args.epochs)
         rendered = render_figure(result_path, args.output_dir)
         print(f"rendered={rendered}", flush=True)
         return

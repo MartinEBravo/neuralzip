@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+
+from neuralzip.metrics import shannon_entropy_from_counts as _entropy_from_counts
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 
@@ -37,15 +39,6 @@ TARGET_LANGUAGE_MODELS = {
     "Qwen3.5 27B",
     "LatamGPT-70B",
 }
-
-
-def _entropy_from_counts(counts):
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    if total == 0.0:
-        return 0.0
-    probabilities = counts[counts > 0] / total
-    return float(-(probabilities * np.log2(probabilities)).sum())
 
 
 def _stream_metrics_from_tensors(named_tensors, *, dtype, chunk_size, layout):

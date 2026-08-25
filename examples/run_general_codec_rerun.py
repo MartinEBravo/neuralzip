@@ -20,12 +20,10 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
-import math
 import os
 import platform
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import time
@@ -37,6 +35,9 @@ from typing import Iterable
 import torch
 
 from neuralzip import Compressor
+from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
+from neuralzip.hashing import canonical_digest, sha256_file
+from neuralzip.zipnn_source import parse_zipnn_streams
 
 
 METHODS = ("zipnn-src", "neuralzip")
@@ -49,514 +50,20 @@ DEFAULT_CHUNK_SIZE = 256 << 10
 DEFAULT_COMPRESSION_THRESHOLD = 0.95
 MIN_PARAMETER_COVERAGE = 0.70
 CODE_SUFFIXES = {".py", ".so", ".pyd", ".dylib", ".dll"}
-MODEL_STORAGE_FAMILY_ORDER = {
-    "ResNet": 0,
-    "ConvNeXt": 1,
-    "EfficientNet": 2,
-    "Qwen2.5": 3,
-    "OLMo 2": 4,
-    "Mistral": 5,
-    "Stable Diffusion": 6,
-    "Phi 4": 7,
-    "Qwen 3.5": 8,
-    "Gemma 3": 9,
-    "Gemma 4": 9,
-    "Llama 3": 10,
-    "Llama 3 / derivatives": 10,
-    "Llama 3 / LatamGPT": 11,
-}
-
-
-@dataclass(frozen=True)
-class ModelSpec:
-    key: str
-    label: str
-    family: str
-    suites: tuple[str, ...]
-    backend: str
-    source: str
-    parameters_b: float | None = None
-    constructor: str | None = None
-    subfolder: str | None = None
-    weight_file: str | None = None
-    preferred_host: str = "relela-06"
-
-
-MODEL_SPECS = (
-    ModelSpec(
-        "gpt2", "GPT-2", "GPT-2", ("phenomenon",), "hf", "gpt2", 0.124
-    ),
-    ModelSpec(
-        "bert-base",
-        "BERT Base",
-        "BERT",
-        ("phenomenon",),
-        "hf",
-        "google-bert/bert-base-uncased",
-        0.109,
-    ),
-    ModelSpec(
-        "resnet18",
-        "ResNet-18",
-        "ResNet",
-        ("phenomenon", "vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.resnet18",
-        0.012,
-        constructor="resnet18",
-    ),
-    ModelSpec(
-        "resnet34",
-        "ResNet-34",
-        "ResNet",
-        ("phenomenon", "vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.resnet34",
-        0.022,
-        constructor="resnet34",
-    ),
-    ModelSpec(
-        "resnet50",
-        "ResNet-50",
-        "ResNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.resnet50",
-        0.026,
-        constructor="resnet50",
-    ),
-    ModelSpec(
-        "resnet101",
-        "ResNet-101",
-        "ResNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.resnet101",
-        0.045,
-        constructor="resnet101",
-    ),
-    ModelSpec(
-        "resnet152",
-        "ResNet-152",
-        "ResNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.resnet152",
-        0.060,
-        constructor="resnet152",
-    ),
-    ModelSpec(
-        "qwen25-15b",
-        "Qwen2.5-1.5B",
-        "Qwen2.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen2.5-1.5B",
-        1.5,
-    ),
-    ModelSpec(
-        "qwen25-3b",
-        "Qwen2.5-3B",
-        "Qwen2.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen2.5-3B",
-        3.0,
-    ),
-    ModelSpec(
-        "qwen25-7b",
-        "Qwen2.5-7B",
-        "Qwen2.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen2.5-7B",
-        7.0,
-    ),
-    ModelSpec(
-        "qwen25-14b",
-        "Qwen2.5-14B",
-        "Qwen2.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen2.5-14B",
-        14.0,
-    ),
-    ModelSpec(
-        "olmo2-1b",
-        "OLMo-2-1B",
-        "OLMo 2",
-        ("model-storing",),
-        "hf",
-        "allenai/Olmo-2-0425-1B",
-        1.0,
-    ),
-    ModelSpec(
-        "olmo2-7b",
-        "OLMo-2-7B",
-        "OLMo 2",
-        ("model-storing",),
-        "hf",
-        "allenai/OLMo-2-1124-7B",
-        7.0,
-    ),
-    ModelSpec(
-        "olmo2-13b",
-        "OLMo-2-1124-13B",
-        "OLMo 2",
-        ("model-storing",),
-        "hf",
-        "allenai/OLMo-2-1124-13B",
-        13.0,
-    ),
-    ModelSpec(
-        "mistral7b",
-        "Mistral-7B",
-        "Mistral",
-        ("model-storing",),
-        "hf",
-        "mistralai/Mistral-7B-v0.3",
-        7.0,
-    ),
-    ModelSpec(
-        "mistral-nemo-12b",
-        "Mistral-Nemo-Base-2407",
-        "Mistral",
-        ("model-storing",),
-        "hf",
-        "mistralai/Mistral-Nemo-Base-2407",
-        12.0,
-    ),
-    ModelSpec(
-        "llama32-1b",
-        "Llama-3.2-1B",
-        "Llama 3",
-        ("model-storing",),
-        "hf",
-        "meta-llama/Llama-3.2-1B",
-        1.0,
-    ),
-    ModelSpec(
-        "llama32-3b",
-        "Llama-3.2-3B",
-        "Llama 3",
-        ("model-storing",),
-        "hf",
-        "meta-llama/Llama-3.2-3B",
-        3.0,
-    ),
-    ModelSpec(
-        "llama31-nemotron-8b",
-        "Llama-3.1-Nemotron-Nano-8B-v1",
-        "Llama 3 / derivatives",
-        ("model-storing",),
-        "hf",
-        "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
-        8.0,
-    ),
-    ModelSpec(
-        "llama33-70b",
-        "Llama 3.3 70B Instruct",
-        "Llama 3",
-        ("model-storing",),
-        "hf",
-        "meta-llama/Llama-3.3-70B-Instruct",
-        70.0,
-        preferred_host="godel",
-    ),
-    ModelSpec(
-        "gemma4-31b",
-        "Gemma 4 31B",
-        "Gemma 4",
-        ("model-storing",),
-        "hf",
-        "google/gemma-4-31B",
-        31.0,
-    ),
-    ModelSpec(
-        "gemma3-1b",
-        "Gemma 3 1B PT",
-        "Gemma 3",
-        ("model-storing",),
-        "hf",
-        "google/gemma-3-1b-pt",
-        1.0,
-    ),
-    ModelSpec(
-        "gemma3-4b",
-        "Gemma 3 4B PT",
-        "Gemma 3",
-        ("model-storing",),
-        "hf",
-        "google/gemma-3-4b-pt",
-        4.0,
-    ),
-    ModelSpec(
-        "gemma3-12b",
-        "Gemma 3 12B PT",
-        "Gemma 3",
-        ("model-storing",),
-        "hf",
-        "google/gemma-3-12b-pt",
-        12.0,
-    ),
-    ModelSpec(
-        "phi4-14b",
-        "Phi-4 14B",
-        "Phi 4",
-        ("model-storing",),
-        "hf",
-        "microsoft/phi-4",
-        14.0,
-    ),
-    ModelSpec(
-        "qwen35-27b",
-        "Qwen3.5 27B",
-        "Qwen 3.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen3.5-27B",
-        27.0,
-    ),
-    ModelSpec(
-        "qwen35-08b-base",
-        "Qwen3.5-0.8B-Base",
-        "Qwen 3.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen3.5-0.8B-Base",
-        0.8,
-    ),
-    ModelSpec(
-        "qwen35-2b-base",
-        "Qwen3.5-2B-Base",
-        "Qwen 3.5",
-        ("model-storing",),
-        "hf",
-        "Qwen/Qwen3.5-2B-Base",
-        2.0,
-    ),
-    ModelSpec(
-        "latamgpt-70b",
-        "LatamGPT-70B",
-        "Llama 3 / LatamGPT",
-        ("model-storing",),
-        "hf",
-        "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
-        70.0,
-        preferred_host="godel",
-    ),
-    ModelSpec(
-        "convnext-tiny",
-        "ConvNeXt-Tiny",
-        "ConvNeXt",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.convnext_tiny",
-        0.029,
-        constructor="convnext_tiny",
-    ),
-    ModelSpec(
-        "convnext-small",
-        "ConvNeXt-Small",
-        "ConvNeXt",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.convnext_small",
-        0.050,
-        constructor="convnext_small",
-    ),
-    ModelSpec(
-        "convnext-base",
-        "ConvNeXt-Base",
-        "ConvNeXt",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.convnext_base",
-        0.089,
-        constructor="convnext_base",
-    ),
-    ModelSpec(
-        "convnext-large",
-        "ConvNeXt-Large",
-        "ConvNeXt",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.convnext_large",
-        0.198,
-        constructor="convnext_large",
-    ),
-    ModelSpec(
-        "efficientnet-b0",
-        "EfficientNet-B0",
-        "EfficientNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.efficientnet_b0",
-        0.005,
-        constructor="efficientnet_b0",
-    ),
-    ModelSpec(
-        "efficientnet-b3",
-        "EfficientNet-B3",
-        "EfficientNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.efficientnet_b3",
-        0.012,
-        constructor="efficientnet_b3",
-    ),
-    ModelSpec(
-        "efficientnet-b7",
-        "EfficientNet-B7",
-        "EfficientNet",
-        ("vision", "model-storing"),
-        "torchvision",
-        "torchvision.models.efficientnet_b7",
-        0.066,
-        constructor="efficientnet_b7",
-    ),
-    ModelSpec(
-        "sd15-unet",
-        "Stable Diffusion v1.5 UNet",
-        "Stable Diffusion",
-        ("vision", "model-storing"),
-        "hf",
-        "stable-diffusion-v1-5/stable-diffusion-v1-5",
-        0.860,
-        subfolder="unet",
-        weight_file="unet/diffusion_pytorch_model.safetensors",
-    ),
-    ModelSpec(
-        "zaya1-8b",
-        "ZAYA1-8B",
-        "ZAYA",
-        ("moe",),
-        "hf",
-        "Zyphra/ZAYA1-8B",
-        8.0,
-    ),
-    ModelSpec(
-        "lfm25-8b-a1b",
-        "Liquid AI LFM2.5-8B-A1B",
-        "LFM",
-        ("moe",),
-        "hf",
-        "LiquidAI/LFM2.5-8B-A1B",
-        8.0,
-    ),
-    ModelSpec(
-        "jetmoe-8b",
-        "JetMoE-8B",
-        "JetMoE",
-        ("moe",),
-        "hf",
-        "jetmoe/jetmoe-8b",
-        8.0,
-    ),
-    ModelSpec(
-        "olmoe-1b-7b-0125",
-        "OLMoE-1B-7B-0125",
-        "OLMoE",
-        ("moe",),
-        "hf",
-        "allenai/OLMoE-1B-7B-0125",
-        7.0,
-    ),
-    ModelSpec(
-        "qwen15-moe-a27b",
-        "Qwen1.5-MoE-A2.7B",
-        "Qwen 1.5 MoE",
-        ("moe",),
-        "hf",
-        "Qwen/Qwen1.5-MoE-A2.7B",
-        14.3,
-    ),
-    ModelSpec(
-        "qwen3-30b-a3b",
-        "Qwen3-30B-A3B",
-        "Qwen 3 MoE",
-        ("moe",),
-        "hf",
-        "Qwen/Qwen3-30B-A3B",
-        30.5,
-    ),
-    ModelSpec(
-        "qwen35-35b-a3b",
-        "Qwen3.5-35B-A3B",
-        "Qwen 3.5 MoE",
-        ("moe",),
-        "hf",
-        "Qwen/Qwen3.5-35B-A3B",
-        35.0,
-        preferred_host="godel",
-    ),
-    ModelSpec(
-        "deepseek-moe-16b",
-        "DeepSeek-MoE-16B-Base",
-        "DeepSeek MoE",
-        ("moe",),
-        "hf",
-        "deepseek-ai/deepseek-moe-16b-base",
-        16.0,
-    ),
-    ModelSpec(
-        "mixtral-8x7b",
-        "Mixtral-8x7B-v0.1",
-        "Mixtral",
-        ("moe",),
-        "hf",
-        "mistralai/Mixtral-8x7B-v0.1",
-        46.7,
-        preferred_host="godel",
-    ),
-    ModelSpec(
-        "gemma4-26b-a4b",
-        "Gemma-4-26B-A4B",
-        "Gemma 4 MoE",
-        ("moe",),
-        "hf",
-        "google/gemma-4-26B-A4B",
-        26.0,
-    ),
-    ModelSpec(
-        "deepseek-r1-distill-llama-8b",
-        "DeepSeek-R1-Distill-Llama-8B",
-        "DeepSeek R1 distilled",
-        ("distilled",),
-        "hf",
-        "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-        8.0,
-    ),
-    ModelSpec(
-        "deepseek-r1-distill-qwen-7b",
-        "DeepSeek-R1-Distill-Qwen-7B",
-        "DeepSeek R1 distilled",
-        ("distilled",),
-        "hf",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        7.0,
-    ),
-    ModelSpec(
-        "gemma2-9b-distilled",
-        "Gemma-2-9B-Distilled",
-        "Gemma 2 distilled",
-        ("distilled",),
-        "hf",
-        "kazuyamaa/gemma-2-9b-opd-Distill-v001",
-        9.0,
-    ),
-    ModelSpec(
-        "qwen25-7b-distilled",
-        "Qwen2.5-7B-Instruct-Distilled",
-        "Qwen 2.5 distilled",
-        ("distilled",),
-        "hf",
-        "RZ412/Qwen2.5-7B-Instruct-S1K-DeepSeek-Distilled",
-        7.0,
-    ),
-)
-
-SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
+try:
+    from .model_catalog import (
+        MODEL_SPECS,
+        MODEL_STORAGE_FAMILY_ORDER,
+        SPECS_BY_KEY,
+        ModelSpec,
+    )
+except ImportError:  # Direct execution from the examples directory.
+    from model_catalog import (
+        MODEL_SPECS,
+        MODEL_STORAGE_FAMILY_ORDER,
+        SPECS_BY_KEY,
+        ModelSpec,
+    )
 
 
 @dataclass
@@ -640,24 +147,6 @@ def package_version(name: str) -> str | None:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None
-
-
-def canonical_digest(payload: object) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(8 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 _ARTIFACT_CACHE: dict[tuple[str, int, int], dict[str, object]] = {}
@@ -1329,34 +818,22 @@ def resolve_weight_provenance(
 def parse_zipnn_bf16_exponent(payload: bytes, parser) -> tuple[int, int, int]:
     """Return exponent payload, exponent-group metadata, and chunk count."""
 
-    header_bytes = int(parser._retrieve_header(payload))
-    original_bytes = int(parser.original_len)
-    chunk_bytes = int(parser.compression_chunk)
-    if original_bytes % 2:
-        raise ValueError("BF16 ZipNN payload has an odd original byte length.")
-    chunk_count = math.ceil(original_bytes / chunk_bytes)
-    entry_count = 2 * chunk_count
-    offsets_start = header_bytes + entry_count
-    payload_start = offsets_start + 8 * entry_count
-    if payload_start > len(payload):
-        raise ValueError("ZipNN payload is shorter than its chunk metadata.")
-    offsets = struct.unpack_from(
-        f"<{entry_count}Q",
+    parser_header_bytes = int(parser._retrieve_header(payload))
+    layout = parse_zipnn_streams(
         payload,
-        offsets_start,
+        element_size=2,
+        expected_raw_bytes=int(parser.original_len),
     )
-    low_bytes = int(offsets[chunk_count - 1]) if chunk_count else 0
-    exponent_bytes = int(offsets[-1]) if chunk_count else 0
-    data_bytes = len(payload) - payload_start
-    if low_bytes + exponent_bytes != data_bytes:
-        raise ValueError(
-            "Unsupported ZipNN archive layout: byte-stream sizes do not match."
-        )
-    # Count only the exponent byte group's chunk-type and cumulative-size
-    # entries.  The common tensor header and the low-byte group's entries are
-    # outside the exponent-only scope, matching NeuralZip group accounting.
-    metadata_bytes = chunk_count * (1 + struct.calcsize("P"))
-    return exponent_bytes, metadata_bytes, chunk_count
+    if (
+        layout.header_bytes != parser_header_bytes
+        or layout.chunk_bytes != int(parser.compression_chunk)
+    ):
+        raise ValueError("ZipNN parser disagrees with the archive layout.")
+    if layout.byte_reorder != 10 or layout.bit_reorder != 1:
+        raise ValueError("Expected a BF16 ZipNN byte-reordered archive.")
+
+    exponent = layout.exponent_stream
+    return exponent.payload_bytes, exponent.metadata_bytes, layout.chunk_count
 
 
 def zipnn_src_pass(
@@ -1532,10 +1009,7 @@ def run_pass(
 
 
 def atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, default=str))
-    temporary.replace(path)
+    _atomic_write_json(path, payload, trailing_newline=False)
 
 
 def worker(

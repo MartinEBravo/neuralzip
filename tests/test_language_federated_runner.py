@@ -1,4 +1,5 @@
 import gc
+import struct
 import sys
 from pathlib import Path
 
@@ -24,7 +25,38 @@ from examples.run_final_federated_language_suite import (
     _tokenize_partition,
     _unique_floating_state,
 )
-from examples.run_final_federated_suite import SuspendAutomaticGC
+from examples import federated_common
+from examples import run_final_federated_language_suite as language_runner
+from examples import run_final_federated_suite as vision_runner
+
+SuspendAutomaticGC = federated_common.SuspendAutomaticGC
+
+
+def _zipnn_fp32_frame(*, byte_reorder: int = 220, bit_reorder: int = 1) -> bytes:
+    original_bytes = 128
+    chunk_exponent = 5
+    stream_totals = (5, 7, 9, 17)
+    chunk_count = original_bytes // (1 << chunk_exponent)
+
+    header = bytearray(32)
+    header[:2] = b"ZN"
+    header[5] = int(byte_reorder)
+    header[6] = int(bit_reorder)
+    header[8] = 2
+    header[14] = chunk_exponent
+    header[16:24] = original_bytes.to_bytes(8, "little")
+    shape = bytes((1, 2, 4, 0))
+    types = bytes(4 * chunk_count)
+    cumulative_sizes = b"".join(
+        ((total * (chunk + 1)) // chunk_count).to_bytes(
+            struct.calcsize("P"), sys.byteorder
+        )
+        for total in stream_totals
+        for chunk in range(chunk_count)
+    )
+    payload = header + shape + types + cumulative_sizes + bytes(sum(stream_totals))
+    payload[24:32] = len(payload).to_bytes(8, "little")
+    return bytes(payload)
 
 
 class _TiedToyModel(torch.nn.Module):
@@ -34,6 +66,49 @@ class _TiedToyModel(torch.nn.Module):
         self.output = torch.nn.Linear(8, 16, bias=False)
         self.output.weight = self.embedding.weight
         self.register_buffer("counter", torch.tensor(0, dtype=torch.int64))
+
+
+def test_federated_runners_share_one_codec_and_reporting_implementation():
+    shared_names = (
+        "COMPRESSOR_NEURALZIP",
+        "COMPRESSOR_SRC",
+        "DTYPE_NAME",
+        "NeuralZipStateCodec",
+        "ZipNNSrcStateCodec",
+        "_assert_same_tensors",
+        "_clone_tensor_map",
+        "_encoded_metrics",
+        "_write_csv_atomic",
+        "_write_json_atomic",
+    )
+    for name in shared_names:
+        shared = getattr(federated_common, name)
+        assert getattr(vision_runner, name) is shared
+        assert getattr(language_runner, name) is shared
+
+
+def test_federated_zipnn_wrapper_preserves_fp32_exponent_accounting():
+    raw_bytes, compressed_bytes = (
+        federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(
+            _zipnn_fp32_frame()
+        )
+    )
+
+    assert raw_bytes == 32
+    assert compressed_bytes == 17 + 4 * (1 + struct.calcsize("P"))
+
+
+def test_federated_zipnn_wrapper_rejects_non_fp32_reorder_layouts():
+    for payload in (
+        _zipnn_fp32_frame(byte_reorder=10),
+        _zipnn_fp32_frame(bit_reorder=0),
+    ):
+        try:
+            federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(payload)
+        except ValueError as error:
+            assert "FP32 byte/bit-reorder layout" in str(error)
+        else:
+            raise AssertionError("The federated ZipNN adapter accepted a wrong layout.")
 
 
 class _BertTokenizerWithoutLegacyBuilder:

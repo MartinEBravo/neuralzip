@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
-import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -29,6 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
+
+from neuralzip.hashing import canonical_digest, sha256_file
+from neuralzip.experiment_io import atomic_write_text as atomic_text
 
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
@@ -109,31 +111,6 @@ MODEL_ORDER = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while block := handle.read(8 << 20):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def canonical_digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def atomic_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(text)
-    temporary.replace(path)
 
 
 def package_version(name: str) -> str | None:

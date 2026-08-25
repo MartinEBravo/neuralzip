@@ -28,6 +28,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from neuralzip.experiment_io import atomic_write_json
+
 from examples.run_general_codec_rerun import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COMPRESSION_THRESHOLD,
@@ -241,13 +243,6 @@ def parse_args() -> argparse.Namespace:
         help="Compare checkpoint tensor names without loading tensor data.",
     )
     return parser.parse_args()
-
-
-def atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, default=str) + "\n")
-    temporary.replace(path)
 
 
 def runner_sha256() -> str:

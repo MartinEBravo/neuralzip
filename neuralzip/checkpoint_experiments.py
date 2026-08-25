@@ -318,5 +318,3 @@ def compress_training_checkpoints(
     )
     summary.to_csv(summary_path, index=False)
     return result_df, summary
-
-

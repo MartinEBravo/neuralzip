@@ -268,7 +268,7 @@ class CodecProtocolTests(unittest.TestCase):
         compressor = mock.Mock()
         compressor.compress.return_value = result
         with mock.patch(
-            "neuralzip.experiment_scenarios.Compressor",
+            "neuralzip.model_experiments.Compressor",
             return_value=compressor,
         ):
             rows = _compress_mapping(
@@ -293,7 +293,7 @@ class CodecProtocolTests(unittest.TestCase):
         compressor = mock.Mock()
         compressor.compress.return_value = result
         with mock.patch(
-            "neuralzip.experiment_scenarios.Compressor",
+            "neuralzip.model_experiments.Compressor",
             return_value=compressor,
         ):
             row = _compress_mapping(

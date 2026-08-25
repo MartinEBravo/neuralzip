@@ -73,6 +73,7 @@ def test_federated_runners_share_one_codec_and_reporting_implementation():
         "COMPRESSOR_NEURALZIP",
         "COMPRESSOR_SRC",
         "DTYPE_NAME",
+        "FederatedCodecProtocol",
         "NeuralZipStateCodec",
         "ZipNNSrcStateCodec",
         "_assert_same_tensors",
@@ -80,6 +81,9 @@ def test_federated_runners_share_one_codec_and_reporting_implementation():
         "_encoded_metrics",
         "_write_csv_atomic",
         "_write_json_atomic",
+        "build_round_rows",
+        "build_summary_rows",
+        "new_cumulative_metrics",
     )
     for name in shared_names:
         shared = getattr(federated_common, name)
@@ -271,3 +275,112 @@ def test_encode_gc_guard_restores_the_callers_gc_state():
         assert not gc.isenabled()
     finally:
         gc.enable()
+
+
+class _IdentityStateCodec:
+    def __init__(self, encode_seconds: float):
+        self.encode_seconds = encode_seconds
+
+    def encode(self, tensors):
+        return federated_common.EncodedState(
+            payloads={name: tensor.clone() for name, tensor in tensors.items()},
+            encode_seconds=self.encode_seconds,
+            exponent_raw_bytes=100,
+            exponent_compressed_bytes=40,
+            archive_bytes=400,
+            raw_floating_bytes=400,
+        )
+
+    def decode(self, encoded):
+        return {name: tensor.clone() for name, tensor in encoded.payloads.items()}
+
+
+def _identity_protocol():
+    protocol = federated_common.FederatedCodecProtocol.__new__(
+        federated_common.FederatedCodecProtocol
+    )
+    protocol.codecs = {
+        federated_common.COMPRESSOR_SRC: _IdentityStateCodec(0.2),
+        federated_common.COMPRESSOR_NEURALZIP: _IdentityStateCodec(0.1),
+    }
+    protocol.setup_seconds = {
+        federated_common.COMPRESSOR_SRC: 0.0,
+        federated_common.COMPRESSOR_NEURALZIP: 3.0,
+    }
+    protocol.setup_bytes = {
+        federated_common.COMPRESSOR_SRC: 0,
+        federated_common.COMPRESSOR_NEURALZIP: 8,
+    }
+    return protocol
+
+
+def test_shared_federated_protocol_alternates_and_discards_verified_payloads():
+    protocol = _identity_protocol()
+    tensors = {"weight": torch.arange(8, dtype=torch.float32)}
+
+    assert protocol.encoding_order(1) == (
+        federated_common.COMPRESSOR_SRC,
+        federated_common.COMPRESSOR_NEURALZIP,
+    )
+    assert protocol.encoding_order(2) == (
+        federated_common.COMPRESSOR_NEURALZIP,
+        federated_common.COMPRESSOR_SRC,
+    )
+    assert protocol.encoding_order(2, client_index=1) == protocol.encoding_order(1)
+
+    measurements, decoded = protocol.encode_verified(
+        tensors,
+        order=protocol.encoding_order(1),
+        context="toy round 1",
+        phase="uplink",
+    )
+
+    assert torch.equal(decoded["weight"], tensors["weight"])
+    assert all(not encoded.payloads for encoded in measurements.values())
+
+
+def test_shared_federated_rows_use_one_accumulator_and_setup_accounting():
+    protocol = _identity_protocol()
+    tensors = {"weight": torch.arange(8, dtype=torch.float32)}
+    downlinks, _ = protocol.encode_verified(
+        tensors,
+        order=protocol.encoding_order(1),
+        context="toy round 1",
+        phase="downlink",
+    )
+    uplink, _ = protocol.encode_verified(
+        tensors,
+        order=protocol.encoding_order(1),
+        context="toy round 1 client 0",
+        phase="uplink",
+    )
+    cumulative = federated_common.new_cumulative_metrics()
+
+    rows = federated_common.build_round_rows(
+        prefix={"architecture": "toy", "dtype": "float32"},
+        suffix={"roundtrip_ok": True},
+        downlinks=downlinks,
+        uplinks={name: [encoded] for name, encoded in uplink.items()},
+        clients=1,
+        cumulative=cumulative,
+        setup_seconds=protocol.setup_seconds,
+        setup_bytes=protocol.setup_bytes,
+    )
+    summaries = federated_common.build_summary_rows(
+        prefix={"architecture": "toy"},
+        dimensions={"completed_rounds": 1},
+        clients=1,
+        cumulative=cumulative,
+        setup_seconds=protocol.setup_seconds,
+        setup_bytes=protocol.setup_bytes,
+    )
+
+    assert [row["compressor"] for row in rows] == list(
+        federated_common.COMPRESSORS
+    )
+    assert rows[0]["encoding_critical_seconds"] == 0.4
+    assert rows[1]["encoding_critical_seconds"] == 0.2
+    neuralzip = summaries[1]
+    assert neuralzip["exponent_compressed_bytes"] == 80
+    assert neuralzip["exponent_compressed_plus_setup_bytes"] == 88
+    assert neuralzip["exponent_ratio_with_setup_pct"] == 44.0

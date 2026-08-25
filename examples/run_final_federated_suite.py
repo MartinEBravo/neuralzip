@@ -43,6 +43,7 @@ try:
         COMPRESSOR_NEURALZIP,
         COMPRESSOR_SRC,
         DTYPE_NAME,
+        FederatedCodecProtocol,
         NeuralZipStateCodec,
         ZipNNSrcStateCodec,
         _assert_same_tensors,
@@ -50,12 +51,16 @@ try:
         _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
+        build_round_rows,
+        build_summary_rows,
+        new_cumulative_metrics,
     )
 except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
     from federated_common import (  # type: ignore
         COMPRESSOR_NEURALZIP,
         COMPRESSOR_SRC,
         DTYPE_NAME,
+        FederatedCodecProtocol,
         NeuralZipStateCodec,
         ZipNNSrcStateCodec,
         _assert_same_tensors,
@@ -63,6 +68,9 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
         _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
+        build_round_rows,
+        build_summary_rows,
+        new_cumulative_metrics,
     )
 
 
@@ -334,53 +342,19 @@ def _run_architecture(
     del initial_model
     initial_floating = _floating_state(server_state)
 
-    src_codec = ZipNNSrcStateCodec(
+    protocol = FederatedCodecProtocol(
         threads=args.threads,
         chunk_size=args.chunk_size,
         threshold=args.compression_threshold,
     )
-    neuralzip_codec = NeuralZipStateCodec(
-        threads=args.threads,
-        chunk_size=args.chunk_size,
-        threshold=args.compression_threshold,
-    )
-    neuralzip_codec.prepare_once(initial_floating)
-    codecs = {
-        COMPRESSOR_SRC: src_codec,
-        COMPRESSOR_NEURALZIP: neuralzip_codec,
-    }
-    setup_seconds = {
-        COMPRESSOR_SRC: 0.0,
-        COMPRESSOR_NEURALZIP: neuralzip_codec.setup_seconds,
-    }
-    setup_bytes = {
-        COMPRESSOR_SRC: 0,
-        COMPRESSOR_NEURALZIP: neuralzip_codec.setup_bytes,
-    }
+    protocol.prepare_once(initial_floating)
+    codecs = protocol.codecs
+    setup_seconds = protocol.setup_seconds
+    setup_bytes = protocol.setup_bytes
 
     # Warm both complete encode/decode paths on the same initial model after
     # NeuralZip setup.  This is intentionally outside every reported round.
-    warmup_input_reference = _clone_tensor_map(initial_floating)
-    warmup_decoded = {}
-    for name in (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP):
-        warmup_encoded = codecs[name].encode(initial_floating)
-        _assert_same_tensors(
-            warmup_input_reference,
-            initial_floating,
-            context=f"{architecture} {name} warmup input immutability",
-        )
-        warmup_decoded[name] = codecs[name].decode(warmup_encoded)
-        _assert_same_tensors(
-            initial_floating,
-            warmup_decoded[name],
-            context=f"{architecture} {name} warmup",
-        )
-    _assert_same_tensors(
-        warmup_decoded[COMPRESSOR_SRC],
-        warmup_decoded[COMPRESSOR_NEURALZIP],
-        context=f"{architecture} cross-codec warmup",
-    )
-    del warmup_decoded, warmup_encoded, warmup_input_reference
+    protocol.warmup(initial_floating, context=architecture)
 
     streams = _client_streams(
         dataset,
@@ -436,50 +410,19 @@ def _run_architecture(
     }
     _write_json_atomic(metadata_path, metadata)
 
-    cumulative = {
-        name: {
-            "encoding_seconds": 0.0,
-            "exponent_raw_bytes": 0,
-            "exponent_compressed_bytes": 0,
-            "archive_bytes": 0,
-            "raw_floating_bytes": 0,
-        }
-        for name in codecs
-    }
+    cumulative = new_cumulative_metrics()
 
     for round_index in range(1, int(args.rounds) + 1):
         floating_server = _floating_state(server_state)
-        floating_server_reference = _clone_tensor_map(floating_server)
-        downlinks = {}
-        decoded_downlinks = {}
-        order = (
-            [COMPRESSOR_SRC, COMPRESSOR_NEURALZIP]
-            if round_index % 2
-            else [COMPRESSOR_NEURALZIP, COMPRESSOR_SRC]
-        )
-        for name in order:
-            downlinks[name] = codecs[name].encode(floating_server)
-            _assert_same_tensors(
-                floating_server_reference,
-                floating_server,
-                context=(
-                    f"{architecture} round {round_index} {name} "
-                    "downlink input immutability"
-                ),
-            )
-            decoded_downlinks[name] = codecs[name].decode(downlinks[name])
-            _assert_same_tensors(
-                floating_server,
-                decoded_downlinks[name],
-                context=f"{architecture} round {round_index} {name} downlink",
-            )
-        _assert_same_tensors(
-            decoded_downlinks[COMPRESSOR_SRC],
-            decoded_downlinks[COMPRESSOR_NEURALZIP],
-            context=f"{architecture} round {round_index} cross-codec downlink",
+        order = protocol.encoding_order(round_index)
+        downlinks, decoded_floating_server = protocol.encode_verified(
+            floating_server,
+            order=order,
+            context=f"{architecture} round {round_index}",
+            phase="downlink",
         )
         decoded_server_state = _merge_decoded_state(
-            server_state, decoded_downlinks[COMPRESSOR_NEURALZIP]
+            server_state, decoded_floating_server
         )
 
         uplinks = {name: [] for name in codecs}
@@ -495,149 +438,69 @@ def _run_architecture(
             )
             client_losses.append(client_loss)
             floating_client = _floating_state(client_state)
-            floating_client_reference = _clone_tensor_map(floating_client)
-            decoded_uplinks = {}
-            client_order = (
-                order if client_index % 2 == 0 else list(reversed(order))
-            )
-            for name in client_order:
-                encoded = codecs[name].encode(floating_client)
-                _assert_same_tensors(
-                    floating_client_reference,
-                    floating_client,
-                    context=(
-                        f"{architecture} round {round_index} client "
-                        f"{client_index} {name} uplink input immutability"
-                    ),
-                )
-                uplinks[name].append(encoded)
-                decoded_uplinks[name] = codecs[name].decode(encoded)
-                _assert_same_tensors(
-                    floating_client,
-                    decoded_uplinks[name],
-                    context=(
-                        f"{architecture} round {round_index} client "
-                        f"{client_index} {name} uplink"
-                    ),
-                )
-            _assert_same_tensors(
-                decoded_uplinks[COMPRESSOR_SRC],
-                decoded_uplinks[COMPRESSOR_NEURALZIP],
-                context=(
-                    f"{architecture} round {round_index} client "
-                    f"{client_index} cross-codec uplink"
+            client_measurements, decoded_floating_client = protocol.encode_verified(
+                floating_client,
+                order=protocol.encoding_order(
+                    round_index,
+                    client_index=client_index,
                 ),
+                context=(
+                    f"{architecture} round {round_index} client {client_index}"
+                ),
+                phase="uplink",
             )
+            for name, encoded in client_measurements.items():
+                uplinks[name].append(encoded)
             decoded_client_states.append(
                 _merge_decoded_state(
-                    client_state, decoded_uplinks[COMPRESSOR_NEURALZIP]
+                    client_state, decoded_floating_client
                 )
             )
-            del (
-                client_state,
-                floating_client,
-                floating_client_reference,
-                decoded_uplinks,
-            )
+            del client_state, floating_client, decoded_floating_client
 
         server_state = _average_decoded_states(decoded_client_states)
-        del decoded_client_states, decoded_downlinks, floating_server_reference
+        del decoded_client_states, decoded_floating_server
 
-        round_rows = []
-        for name in (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP):
-            metrics = _encoded_metrics(
-                downlinks[name], uplinks[name], clients=args.clients
-            )
-            totals = cumulative[name]
-            totals["encoding_seconds"] += float(
-                metrics["encoding_critical_seconds"]
-            )
-            for field in (
-                "exponent_raw_bytes",
-                "exponent_compressed_bytes",
-                "archive_bytes",
-                "raw_floating_bytes",
-            ):
-                totals[field] += int(metrics[field])
-            round_rows.append(
-                {
-                    "architecture": architecture,
-                    "dataset": DATASET_NAME,
-                    "round": round_index,
-                    "clients": int(args.clients),
-                    "local_batches": int(args.local_batches),
-                    "batch_size": int(args.batch_size),
-                    "dtype": DTYPE_NAME,
-                    "compressor": name,
-                    "setup_seconds_once": setup_seconds[name],
-                    "setup_bytes_once": setup_bytes[name],
-                    "downlink_encode_seconds": downlinks[name].encode_seconds,
-                    "uplink_encode_max_seconds": max(
-                        encoded.encode_seconds for encoded in uplinks[name]
-                    ),
-                    "encoding_critical_seconds": metrics[
-                        "encoding_critical_seconds"
-                    ],
-                    "encoding_critical_cumulative_seconds": totals[
-                        "encoding_seconds"
-                    ],
-                    "exponent_raw_bytes": metrics["exponent_raw_bytes"],
-                    "exponent_compressed_bytes": metrics[
-                        "exponent_compressed_bytes"
-                    ],
-                    "exponent_ratio_pct": metrics["exponent_ratio_pct"],
-                    "archive_bytes": metrics["archive_bytes"],
-                    "raw_floating_bytes": metrics["raw_floating_bytes"],
-                    "train_loss_mean": sum(client_losses) / len(client_losses),
-                    "roundtrip_ok": True,
-                }
-            )
+        round_rows = build_round_rows(
+            prefix={
+                "architecture": architecture,
+                "dataset": DATASET_NAME,
+                "round": round_index,
+                "clients": int(args.clients),
+                "local_batches": int(args.local_batches),
+                "batch_size": int(args.batch_size),
+                "dtype": DTYPE_NAME,
+            },
+            suffix={
+                "train_loss_mean": sum(client_losses) / len(client_losses),
+                "roundtrip_ok": True,
+            },
+            downlinks=downlinks,
+            uplinks=uplinks,
+            clients=args.clients,
+            cumulative=cumulative,
+            setup_seconds=setup_seconds,
+            setup_bytes=setup_bytes,
+        )
         _append_csv(round_path, round_rows)
 
-        summary_rows = []
-        for name in (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP):
-            totals = cumulative[name]
-            raw_exponent = int(totals["exponent_raw_bytes"])
-            compressed_exponent = int(totals["exponent_compressed_bytes"])
-            setup_communication_bytes = int(setup_bytes[name]) * int(args.clients)
-            compressed_with_setup = (
-                compressed_exponent + setup_communication_bytes
-            )
-            summary_rows.append(
-                {
-                    "architecture": architecture,
-                    "dataset": DATASET_NAME,
-                    "compressor": name,
-                    "completed_rounds": round_index,
-                    "clients": int(args.clients),
-                    "local_batches": int(args.local_batches),
-                    "batch_size": int(args.batch_size),
-                    "dtype": DTYPE_NAME,
-                    "setup_seconds_once": setup_seconds[name],
-                    "setup_bytes_once": setup_bytes[name],
-                    "encoding_critical_seconds": totals["encoding_seconds"],
-                    "encoding_plus_setup_seconds": (
-                        totals["encoding_seconds"] + setup_seconds[name]
-                    ),
-                    "exponent_raw_bytes": raw_exponent,
-                    "exponent_compressed_bytes": compressed_exponent,
-                    "exponent_ratio_pct": (
-                        100.0 * compressed_exponent / raw_exponent
-                        if raw_exponent
-                        else 0.0
-                    ),
-                    "setup_communication_bytes": setup_communication_bytes,
-                    "exponent_compressed_plus_setup_bytes": compressed_with_setup,
-                    "exponent_ratio_with_setup_pct": (
-                        100.0 * compressed_with_setup / raw_exponent
-                        if raw_exponent
-                        else 0.0
-                    ),
-                    "archive_bytes": totals["archive_bytes"],
-                    "raw_floating_bytes": totals["raw_floating_bytes"],
-                    "roundtrip_ok": True,
-                }
-            )
+        summary_rows = build_summary_rows(
+            prefix={
+                "architecture": architecture,
+                "dataset": DATASET_NAME,
+            },
+            dimensions={
+                "completed_rounds": round_index,
+                "clients": int(args.clients),
+                "local_batches": int(args.local_batches),
+                "batch_size": int(args.batch_size),
+                "dtype": DTYPE_NAME,
+            },
+            clients=args.clients,
+            cumulative=cumulative,
+            setup_seconds=setup_seconds,
+            setup_bytes=setup_bytes,
+        )
         _write_csv_atomic(summary_path, summary_rows)
         print(
             f"{architecture} round={round_index}/{args.rounds} "

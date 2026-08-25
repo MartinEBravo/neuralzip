@@ -1,0 +1,25 @@
+warmup=sd15-unet:zipnn-src
+steady-warmup=sd15-unet:zipnn-src:run-1
+steady-warmup=sd15-unet:zipnn-src:run-2
+measure=sd15-unet:zipnn-src:repeat-1
+measure=sd15-unet:zipnn-src:repeat-2
+measure=sd15-unet:zipnn-src:repeat-3
+measure=sd15-unet:zipnn-src:repeat-4
+measure=sd15-unet:zipnn-src:repeat-5
+measure=sd15-unet:zipnn-src:repeat-6
+measure=sd15-unet:zipnn-src:repeat-7
+measure=sd15-unet:zipnn-src:repeat-8
+measure=sd15-unet:zipnn-src:repeat-9
+setup=sd15-unet:neuralzip
+steady-warmup=sd15-unet:neuralzip:run-1
+steady-warmup=sd15-unet:neuralzip:run-2
+measure=sd15-unet:neuralzip:repeat-1
+measure=sd15-unet:neuralzip:repeat-2
+measure=sd15-unet:neuralzip:repeat-3
+measure=sd15-unet:neuralzip:repeat-4
+measure=sd15-unet:neuralzip:repeat-5
+measure=sd15-unet:neuralzip:repeat-6
+measure=sd15-unet:neuralzip:repeat-7
+measure=sd15-unet:neuralzip:repeat-8
+measure=sd15-unet:neuralzip:repeat-9
+complete=sd15-unet speedup=4.6557x

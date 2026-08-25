@@ -1,0 +1,19 @@
+warmup=olmo2-1b:zipnn-src
+steady-warmup=olmo2-1b:zipnn-src:run-1
+steady-warmup=olmo2-1b:zipnn-src:run-2
+measure=olmo2-1b:zipnn-src:repeat-1
+measure=olmo2-1b:zipnn-src:repeat-2
+measure=olmo2-1b:zipnn-src:repeat-3
+measure=olmo2-1b:zipnn-src:repeat-4
+measure=olmo2-1b:zipnn-src:repeat-5
+setup=olmo2-1b:neuralzip
+steady-warmup=olmo2-1b:neuralzip:run-1
+steady-warmup=olmo2-1b:neuralzip:run-2
+steady-warmup=olmo2-1b:neuralzip:run-3
+steady-warmup=olmo2-1b:neuralzip:run-4
+measure=olmo2-1b:neuralzip:repeat-1
+measure=olmo2-1b:neuralzip:repeat-2
+measure=olmo2-1b:neuralzip:repeat-3
+measure=olmo2-1b:neuralzip:repeat-4
+measure=olmo2-1b:neuralzip:repeat-5
+complete=olmo2-1b speedup=3.1066x

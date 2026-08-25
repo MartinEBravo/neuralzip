@@ -1,0 +1,25 @@
+warmup=efficientnet-b0:zipnn-src
+steady-warmup=efficientnet-b0:zipnn-src:run-1
+steady-warmup=efficientnet-b0:zipnn-src:run-2
+measure=efficientnet-b0:zipnn-src:repeat-1
+measure=efficientnet-b0:zipnn-src:repeat-2
+measure=efficientnet-b0:zipnn-src:repeat-3
+measure=efficientnet-b0:zipnn-src:repeat-4
+measure=efficientnet-b0:zipnn-src:repeat-5
+measure=efficientnet-b0:zipnn-src:repeat-6
+measure=efficientnet-b0:zipnn-src:repeat-7
+measure=efficientnet-b0:zipnn-src:repeat-8
+measure=efficientnet-b0:zipnn-src:repeat-9
+setup=efficientnet-b0:neuralzip
+steady-warmup=efficientnet-b0:neuralzip:run-1
+steady-warmup=efficientnet-b0:neuralzip:run-2
+measure=efficientnet-b0:neuralzip:repeat-1
+measure=efficientnet-b0:neuralzip:repeat-2
+measure=efficientnet-b0:neuralzip:repeat-3
+measure=efficientnet-b0:neuralzip:repeat-4
+measure=efficientnet-b0:neuralzip:repeat-5
+measure=efficientnet-b0:neuralzip:repeat-6
+measure=efficientnet-b0:neuralzip:repeat-7
+measure=efficientnet-b0:neuralzip:repeat-8
+measure=efficientnet-b0:neuralzip:repeat-9
+complete=efficientnet-b0 speedup=18.8090x

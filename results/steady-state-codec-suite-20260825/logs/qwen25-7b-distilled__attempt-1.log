@@ -1,0 +1,18 @@
+warmup=qwen25-7b-distilled:zipnn-src
+steady-warmup=qwen25-7b-distilled:zipnn-src:run-1
+steady-warmup=qwen25-7b-distilled:zipnn-src:run-2
+measure=qwen25-7b-distilled:zipnn-src:repeat-1
+measure=qwen25-7b-distilled:zipnn-src:repeat-2
+measure=qwen25-7b-distilled:zipnn-src:repeat-3
+measure=qwen25-7b-distilled:zipnn-src:repeat-4
+measure=qwen25-7b-distilled:zipnn-src:repeat-5
+setup=qwen25-7b-distilled:neuralzip
+steady-warmup=qwen25-7b-distilled:neuralzip:run-1
+steady-warmup=qwen25-7b-distilled:neuralzip:run-2
+steady-warmup=qwen25-7b-distilled:neuralzip:run-3
+measure=qwen25-7b-distilled:neuralzip:repeat-1
+measure=qwen25-7b-distilled:neuralzip:repeat-2
+measure=qwen25-7b-distilled:neuralzip:repeat-3
+measure=qwen25-7b-distilled:neuralzip:repeat-4
+measure=qwen25-7b-distilled:neuralzip:repeat-5
+complete=qwen25-7b-distilled speedup=1.1441x

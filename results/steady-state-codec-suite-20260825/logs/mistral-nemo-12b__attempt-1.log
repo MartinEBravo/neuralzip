@@ -1,0 +1,18 @@
+warmup=mistral-nemo-12b:zipnn-src
+steady-warmup=mistral-nemo-12b:zipnn-src:run-1
+steady-warmup=mistral-nemo-12b:zipnn-src:run-2
+measure=mistral-nemo-12b:zipnn-src:repeat-1
+measure=mistral-nemo-12b:zipnn-src:repeat-2
+measure=mistral-nemo-12b:zipnn-src:repeat-3
+measure=mistral-nemo-12b:zipnn-src:repeat-4
+measure=mistral-nemo-12b:zipnn-src:repeat-5
+setup=mistral-nemo-12b:neuralzip
+steady-warmup=mistral-nemo-12b:neuralzip:run-1
+steady-warmup=mistral-nemo-12b:neuralzip:run-2
+steady-warmup=mistral-nemo-12b:neuralzip:run-3
+measure=mistral-nemo-12b:neuralzip:repeat-1
+measure=mistral-nemo-12b:neuralzip:repeat-2
+measure=mistral-nemo-12b:neuralzip:repeat-3
+measure=mistral-nemo-12b:neuralzip:repeat-4
+measure=mistral-nemo-12b:neuralzip:repeat-5
+complete=mistral-nemo-12b speedup=1.4613x

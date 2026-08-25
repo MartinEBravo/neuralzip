@@ -1,0 +1,25 @@
+warmup=resnet101:zipnn-src
+steady-warmup=resnet101:zipnn-src:run-1
+steady-warmup=resnet101:zipnn-src:run-2
+measure=resnet101:zipnn-src:repeat-1
+measure=resnet101:zipnn-src:repeat-2
+measure=resnet101:zipnn-src:repeat-3
+measure=resnet101:zipnn-src:repeat-4
+measure=resnet101:zipnn-src:repeat-5
+measure=resnet101:zipnn-src:repeat-6
+measure=resnet101:zipnn-src:repeat-7
+measure=resnet101:zipnn-src:repeat-8
+measure=resnet101:zipnn-src:repeat-9
+setup=resnet101:neuralzip
+steady-warmup=resnet101:neuralzip:run-1
+steady-warmup=resnet101:neuralzip:run-2
+measure=resnet101:neuralzip:repeat-1
+measure=resnet101:neuralzip:repeat-2
+measure=resnet101:neuralzip:repeat-3
+measure=resnet101:neuralzip:repeat-4
+measure=resnet101:neuralzip:repeat-5
+measure=resnet101:neuralzip:repeat-6
+measure=resnet101:neuralzip:repeat-7
+measure=resnet101:neuralzip:repeat-8
+measure=resnet101:neuralzip:repeat-9
+complete=resnet101 speedup=12.2783x

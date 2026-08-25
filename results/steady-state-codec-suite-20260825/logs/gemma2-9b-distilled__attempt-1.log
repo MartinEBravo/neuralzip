@@ -1,0 +1,18 @@
+warmup=gemma2-9b-distilled:zipnn-src
+steady-warmup=gemma2-9b-distilled:zipnn-src:run-1
+steady-warmup=gemma2-9b-distilled:zipnn-src:run-2
+measure=gemma2-9b-distilled:zipnn-src:repeat-1
+measure=gemma2-9b-distilled:zipnn-src:repeat-2
+measure=gemma2-9b-distilled:zipnn-src:repeat-3
+measure=gemma2-9b-distilled:zipnn-src:repeat-4
+measure=gemma2-9b-distilled:zipnn-src:repeat-5
+setup=gemma2-9b-distilled:neuralzip
+steady-warmup=gemma2-9b-distilled:neuralzip:run-1
+steady-warmup=gemma2-9b-distilled:neuralzip:run-2
+steady-warmup=gemma2-9b-distilled:neuralzip:run-3
+measure=gemma2-9b-distilled:neuralzip:repeat-1
+measure=gemma2-9b-distilled:neuralzip:repeat-2
+measure=gemma2-9b-distilled:neuralzip:repeat-3
+measure=gemma2-9b-distilled:neuralzip:repeat-4
+measure=gemma2-9b-distilled:neuralzip:repeat-5
+complete=gemma2-9b-distilled speedup=5.1790x

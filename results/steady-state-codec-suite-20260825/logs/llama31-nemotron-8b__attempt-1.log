@@ -1,0 +1,20 @@
+warmup=llama31-nemotron-8b:zipnn-src
+steady-warmup=llama31-nemotron-8b:zipnn-src:run-1
+steady-warmup=llama31-nemotron-8b:zipnn-src:run-2
+steady-warmup=llama31-nemotron-8b:zipnn-src:run-3
+measure=llama31-nemotron-8b:zipnn-src:repeat-1
+measure=llama31-nemotron-8b:zipnn-src:repeat-2
+measure=llama31-nemotron-8b:zipnn-src:repeat-3
+measure=llama31-nemotron-8b:zipnn-src:repeat-4
+measure=llama31-nemotron-8b:zipnn-src:repeat-5
+setup=llama31-nemotron-8b:neuralzip
+steady-warmup=llama31-nemotron-8b:neuralzip:run-1
+steady-warmup=llama31-nemotron-8b:neuralzip:run-2
+steady-warmup=llama31-nemotron-8b:neuralzip:run-3
+steady-warmup=llama31-nemotron-8b:neuralzip:run-4
+steady-warmup=llama31-nemotron-8b:neuralzip:run-5
+steady-warmup=llama31-nemotron-8b:neuralzip:run-6
+Traceback (most recent call last):
+  File "/data/mbravo/neuralzip-steady-20260824/Codebase/examples/run_steady_state_codec_suite.py", line 608, in worker
+    raise RuntimeError("NeuralZip steady warm-up did not converge")
+RuntimeError: NeuralZip steady warm-up did not converge

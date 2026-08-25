@@ -1,0 +1,19 @@
+warmup=qwen3-30b-a3b:zipnn-src
+steady-warmup=qwen3-30b-a3b:zipnn-src:run-1
+steady-warmup=qwen3-30b-a3b:zipnn-src:run-2
+measure=qwen3-30b-a3b:zipnn-src:repeat-1
+measure=qwen3-30b-a3b:zipnn-src:repeat-2
+measure=qwen3-30b-a3b:zipnn-src:repeat-3
+measure=qwen3-30b-a3b:zipnn-src:repeat-4
+measure=qwen3-30b-a3b:zipnn-src:repeat-5
+setup=qwen3-30b-a3b:neuralzip
+steady-warmup=qwen3-30b-a3b:neuralzip:run-1
+steady-warmup=qwen3-30b-a3b:neuralzip:run-2
+steady-warmup=qwen3-30b-a3b:neuralzip:run-3
+steady-warmup=qwen3-30b-a3b:neuralzip:run-4
+measure=qwen3-30b-a3b:neuralzip:repeat-1
+measure=qwen3-30b-a3b:neuralzip:repeat-2
+measure=qwen3-30b-a3b:neuralzip:repeat-3
+measure=qwen3-30b-a3b:neuralzip:repeat-4
+measure=qwen3-30b-a3b:neuralzip:repeat-5
+complete=qwen3-30b-a3b speedup=5.4517x

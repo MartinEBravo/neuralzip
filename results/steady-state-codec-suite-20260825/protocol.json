@@ -1,0 +1,76 @@
+{
+  "chunk_size": 262144,
+  "code": {
+    "digest": "9ec79ace1d557ff0f0a1c945a7739d9c607618dc85f3d122e395a0b777d17d31",
+    "files": {
+      "examples/run_general_codec_rerun.py": "0acba3da67cf5cc67e259a79c716429116ddd583a73dc1f40979a95516090717",
+      "examples/run_latency_profile_probe.py": "9ae6fab90606dfa16828f664971715a51cccaed84374f974ab951ce1f64f30ec",
+      "examples/run_steady_state_codec_suite.py": "5e9465db3cd41a4416fd2137793004110f6f2f9880af23544466687e8d64ffc0",
+      "external/zipnn/__init__.py": "40a02b691e6b8e822c5563036c096a82dff856a911f22769996df692fa36bafd",
+      "external/zipnn/util_header.py": "5cfef22309aebeb24a7dae02568d54f31c8653fd583dbbe28260f3689f541471",
+      "external/zipnn/util_patch.py": "12a40b11705cacd2504df6e546d02c2e1533235f829e72e65c3ce1f1e54f152d",
+      "external/zipnn/util_safetensors.py": "4efa43ed2036e1d72b508620a70d4fb55ba47fae14cbe43e5fa128d9e45b0267",
+      "external/zipnn/util_torch.py": "5447d9b7728d1caf1214ef90782481b233f4f7d0586e62c54e96e2c38f2ed579",
+      "external/zipnn/zipnn.py": "c3367ec3719fcde2f575cbbd73f80d44dac9b4c2739c71d6ef0e198ba1f008f2",
+      "external/zipnn_core/zipnn_core.cpython-311-x86_64-linux-gnu.so": "6e8680bf7e3d974c5a2b33dad9851fe32ee5e0d347ee656c1691ee7452158a07",
+      "neuralzip/_huff0_cpp.cpp": "017cce0edf1d971e82e84c130a364d0b7751f7cb30c350f9068412be182abeb1",
+      "neuralzip/_huff0_cpp.cpython-311-x86_64-linux-gnu.so": "f02a0091479f4c3ae8829f1843241545c5ec90bbf01ca4b772aab222ec9ae0c6",
+      "neuralzip/archive.py": "f9ced64c93e7a57bef6510dd499857be58f243a760d56bcf49e84ce05899050e",
+      "neuralzip/compressor.py": "d3c4aaff8323452e877a62de2bbbdbba26f8fa89e15704e16bf5ab42e30be33b",
+      "neuralzip/huff0.py": "7ecfe99ad771c5503e707f525c0530842875df733d77bf5d8a523d02af26d844",
+      "neuralzip/neuralzip_codec.py": "c35111802f2f5bf044dc5453c1c378387572e623e7ee483c08d6dacc81f72cad"
+    },
+    "packages": {
+      "neuralzip": "0.1.0",
+      "torch": "2.12.1",
+      "torchvision": "0.27.1",
+      "zipnn": "0.5.4"
+    },
+    "runtime_versions": {
+      "python": "3.11.2",
+      "torch": "2.12.1+cu130"
+    }
+  },
+  "compression_threshold": 0.95,
+  "cpu_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "decode_in_encode": false,
+  "direct_batch_mib": 512,
+  "dtype": "bfloat16",
+  "exact_target_cache": false,
+  "fingerprint": "e224c49202997d7cdc33ae44610c0777940c7e8dbf4bab81765d7bd0b25f8763",
+  "measurement_order": "independent warmed phases: ZipNN warmup and repetitions, then NeuralZip setup, warmup, and repetitions",
+  "metrics_in_encode": false,
+  "neuralzip_time": "compress_tensors on the same setup and codec",
+  "profiles": [
+    "full"
+  ],
+  "regime": "post-setup repeated direct encoding",
+  "repetitions": 5,
+  "setup_in_encode": false,
+  "small_bf16_gib": 2.0,
+  "small_repetitions": 9,
+  "small_steady_warmup_absolute_ms": 20.0,
+  "small_steady_warmup_relative_tolerance": 0.2,
+  "steady_warmup_absolute_ms": 1.0,
+  "steady_warmup_max_runs": 6,
+  "steady_warmup_relative_tolerance": 0.05,
+  "summary_statistic": "median",
+  "threads": 12,
+  "version": 1,
+  "warmup_roundtrip_verified": true,
+  "warmup_runs": 1,
+  "zipnn_time": "input clone plus official codec encode"
+}

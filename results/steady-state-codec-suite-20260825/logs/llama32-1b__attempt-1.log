@@ -1,0 +1,18 @@
+warmup=llama32-1b:zipnn-src
+steady-warmup=llama32-1b:zipnn-src:run-1
+steady-warmup=llama32-1b:zipnn-src:run-2
+measure=llama32-1b:zipnn-src:repeat-1
+measure=llama32-1b:zipnn-src:repeat-2
+measure=llama32-1b:zipnn-src:repeat-3
+measure=llama32-1b:zipnn-src:repeat-4
+measure=llama32-1b:zipnn-src:repeat-5
+setup=llama32-1b:neuralzip
+steady-warmup=llama32-1b:neuralzip:run-1
+steady-warmup=llama32-1b:neuralzip:run-2
+steady-warmup=llama32-1b:neuralzip:run-3
+measure=llama32-1b:neuralzip:repeat-1
+measure=llama32-1b:neuralzip:repeat-2
+measure=llama32-1b:neuralzip:repeat-3
+measure=llama32-1b:neuralzip:repeat-4
+measure=llama32-1b:neuralzip:repeat-5
+complete=llama32-1b speedup=2.6747x

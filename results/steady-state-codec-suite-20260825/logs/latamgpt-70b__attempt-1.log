@@ -1,0 +1,19 @@
+warmup=latamgpt-70b:zipnn-src
+steady-warmup=latamgpt-70b:zipnn-src:run-1
+steady-warmup=latamgpt-70b:zipnn-src:run-2
+measure=latamgpt-70b:zipnn-src:repeat-1
+measure=latamgpt-70b:zipnn-src:repeat-2
+measure=latamgpt-70b:zipnn-src:repeat-3
+measure=latamgpt-70b:zipnn-src:repeat-4
+measure=latamgpt-70b:zipnn-src:repeat-5
+setup=latamgpt-70b:neuralzip
+steady-warmup=latamgpt-70b:neuralzip:run-1
+steady-warmup=latamgpt-70b:neuralzip:run-2
+steady-warmup=latamgpt-70b:neuralzip:run-3
+steady-warmup=latamgpt-70b:neuralzip:run-4
+measure=latamgpt-70b:neuralzip:repeat-1
+measure=latamgpt-70b:neuralzip:repeat-2
+measure=latamgpt-70b:neuralzip:repeat-3
+measure=latamgpt-70b:neuralzip:repeat-4
+measure=latamgpt-70b:neuralzip:repeat-5
+complete=latamgpt-70b speedup=1.5489x

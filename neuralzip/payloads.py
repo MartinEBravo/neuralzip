@@ -1,20 +1,14 @@
 from dataclasses import dataclass
 
-
-RAW_CHUNK_METADATA_BYTES = 1 + 8 + 8
-SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + 8
-PACKED_CHUNK_METADATA_BYTES = SHARED_CHUNK_METADATA_BYTES + 8 + 1 + 8 + 8
-
-
-def stream_chunk_metadata_bytes(mode, code_lengths_bytes=0):
-    """Return the serialized metadata overhead for one stream chunk."""
-    if mode == "huffman":
-        return SHARED_CHUNK_METADATA_BYTES + int(code_lengths_bytes)
-    if mode in {"shared_huffman", "shared_huff0"}:
-        return SHARED_CHUNK_METADATA_BYTES
-    if mode == "packed_huff0":
-        return PACKED_CHUNK_METADATA_BYTES
-    return RAW_CHUNK_METADATA_BYTES
+from .serialization import (
+    PACKED_CHUNK_METADATA_BYTES,
+    RAW_CHUNK_METADATA_BYTES,
+    SHARED_CHUNK_METADATA_BYTES,
+    serialized_codebook_size,
+    serialized_group_size,
+    serialized_tensor_size,
+    stream_chunk_metadata_bytes,
+)
 
 
 @dataclass(frozen=True)
@@ -32,19 +26,7 @@ class CodebookPayload:
 
     @property
     def metadata_bytes(self):
-        strings = (self.cluster_id, self.dtype, self.codec, self.mode)
-        return (
-            8
-            + 4
-            + 1
-            + sum(4 + len(value.encode("utf-8")) for value in strings)
-            + 8
-            + len(self.code_lengths)
-            + 8
-            + len(self.codebook)
-            + 8
-            + len(self.vocab)
-        )
+        return serialized_codebook_size(self)
 
 
 @dataclass(frozen=True)
@@ -86,17 +68,11 @@ class ByteGroupPayload:
 
     @property
     def metadata_bytes(self):
-        return (
-            4
-            + len(self.stream_kind.encode("utf-8"))
-            + 8
-            + 8
-            + sum(chunk.metadata_bytes for chunk in self.chunks)
-        )
+        return serialized_group_size(self) - self.payload_bytes
 
     @property
     def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
+        return serialized_group_size(self)
 
     @property
     def huffman_chunks(self):
@@ -179,22 +155,7 @@ class TensorPayload:
 
     @property
     def metadata_bytes(self):
-        strings = (
-            self.name,
-            self.dtype,
-            self.strategy,
-            self.cluster_id or "",
-            self.exponent_layout,
-        )
-        return (
-            sum(4 + len(value.encode("utf-8")) for value in strings)
-            + 32
-            + 8 * len(self.shape)
-            + 8
-            + len(self.remainder_payload)
-            + 8
-            + sum(group.metadata_bytes for group in self.groups)
-        )
+        return serialized_tensor_size(self) - self.payload_bytes
 
     @property
     def payload_bytes(self):
@@ -202,7 +163,7 @@ class TensorPayload:
 
     @property
     def compressed_bytes(self):
-        return self.metadata_bytes + self.payload_bytes
+        return serialized_tensor_size(self)
 
     @property
     def huffman_groups(self):

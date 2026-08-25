@@ -3,32 +3,20 @@ import struct
 from pathlib import Path
 
 from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayload
+from .serialization import (
+    CHUNK_MODE_IDS,
+    CHUNK_MODES,
+    serialized_codebook_size,
+    serialized_codebooks_size,
+    serialized_group_size,
+    serialized_size,
+    serialized_tensor_size,
+)
 
 
 MAGIC = b"NZP1"
 VERSION = 2
 SUPPORTED_VERSIONS = {1, VERSION}
-
-CHUNK_MODE_IDS = {
-    "raw": 0,
-    "zero": 1,
-    "huffman": 2,
-    "shared_huffman": 3,
-    "shared_huff0": 4,
-    "packed_huff0": 5,
-    "local_huff0": 6,
-}
-CHUNK_MODES = {value: key for key, value in CHUNK_MODE_IDS.items()}
-
-
-class _CountingWriter:
-    def __init__(self):
-        self.count = 0
-
-    def write(self, data):
-        self.count += len(data)
-        return len(data)
-
 
 def _write_struct(handle, fmt, *values):
     handle.write(struct.pack("<" + fmt, *values))
@@ -133,31 +121,6 @@ def _write_archive(handle, method, codebooks, tensors):
     _write_struct(handle, "Q", len(tensors))
     for tensor in tensors:
         _write_tensor(handle, tensor)
-
-
-def serialized_size(method, codebooks, tensors):
-    counter = _CountingWriter()
-    _write_archive(counter, method, tuple(codebooks), tuple(tensors))
-    return counter.count
-
-
-def serialized_codebooks_size(codebooks):
-    counter = _CountingWriter()
-    for codebook in codebooks:
-        _write_codebook(counter, codebook)
-    return counter.count
-
-
-def serialized_tensor_size(tensor):
-    counter = _CountingWriter()
-    _write_tensor(counter, tensor)
-    return counter.count
-
-
-def serialized_group_size(group):
-    counter = _CountingWriter()
-    _write_group(counter, group)
-    return counter.count
 
 
 def dump(compressed_model, target):

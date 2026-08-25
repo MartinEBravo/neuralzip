@@ -25,6 +25,7 @@ except ModuleNotFoundError:  # Imported as examples.run_quantized_nibble_compres
     from examples.config import LOSSY_LOSSLESS_MODEL_SUITE
 
 from neuralzip import huff0
+from neuralzip.checkpoint_loading import resolve_weight_map
 from neuralzip.experiment_io import atomic_write_json
 from neuralzip.hashing import (
     canonical_digest as _shared_canonical_digest,
@@ -407,18 +408,15 @@ def _hf_model_files(
             block_size=1 << 20,
         ) as handle:
             index = json.load(handle)
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError(
-                f"Authoritative index has no weight_map: {model_id}/{index_path}"
-            )
-        selected_paths = sorted(
-            {_safe_repository_path(path) for path in weight_map.values()}
+        resolved = resolve_weight_map(
+            index.get("weight_map"),
+            available_files={
+                path: int(item.get("size") or 0)
+                for path, item in repository_files.items()
+            },
+            allowed_suffixes=(".safetensors",),
         )
-        if any(not path.endswith(".safetensors") for path in selected_paths):
-            raise ValueError(
-                f"Safetensors index references a non-safetensors file: {selected_paths}"
-            )
+        selected_paths = list(resolved.files)
     else:
         selected_paths = list(selector["files"])
 

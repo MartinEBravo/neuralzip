@@ -9,6 +9,7 @@ from neuralzip.checkpoint_loading import (
     download_safetensors_snapshot,
     iter_safetensors_shards,
     load_torch_checkpoint,
+    resolve_weight_map,
     select_safetensors_weights,
 )
 from neuralzip.model_experiments import _load_safetensors_mapping
@@ -60,8 +61,48 @@ def test_snapshot_selection_rejects_unsafe_or_missing_index_shards(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {"weight": "missing.safetensors"}})
     )
-    with pytest.raises(FileNotFoundError, match="missing or empty shards"):
+    with pytest.raises(FileNotFoundError, match="missing shard"):
         select_safetensors_weights(tmp_path)
+
+
+def test_weight_map_resolver_is_strict_and_format_agnostic():
+    resolved = resolve_weight_map(
+        {
+            "b.weight": "nested/model-00002-of-00002.bin",
+            "a.weight": "nested/model-00001-of-00002.bin",
+        },
+        available_files={
+            "nested/model-00001-of-00002.bin": 10,
+            "nested/model-00002-of-00002.bin": 20,
+            "unrelated.bin": 30,
+        },
+        allowed_suffixes=(".bin",),
+    )
+
+    assert resolved.files == (
+        "nested/model-00001-of-00002.bin",
+        "nested/model-00002-of-00002.bin",
+    )
+    assert resolved.expected_keys == frozenset({"a.weight", "b.weight"})
+
+    with pytest.raises(ValueError, match="Unsafe checkpoint shard path"):
+        resolve_weight_map(
+            {"weight": "../outside.bin"},
+            available_files={"../outside.bin": 10},
+            allowed_suffixes=(".bin",),
+        )
+    with pytest.raises(ValueError, match="allowed suffix"):
+        resolve_weight_map(
+            {"weight": "model.pt"},
+            available_files={"model.pt": 10},
+            allowed_suffixes=(".bin",),
+        )
+    with pytest.raises(ValueError, match="empty shard"):
+        resolve_weight_map(
+            {"weight": "model.bin"},
+            available_files={"model.bin": 0},
+            allowed_suffixes=(".bin",),
+        )
 
 
 def test_snapshot_download_uses_one_strict_selector(tmp_path, monkeypatch):

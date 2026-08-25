@@ -40,7 +40,12 @@ def _spec(repo_id: str = "owner/model") -> ModelSpec:
     )
 
 
-def _write_indexed_checkpoint(snapshot: Path, *, complete: bool = True) -> None:
+def _write_indexed_checkpoint(
+    snapshot: Path,
+    *,
+    complete: bool = True,
+    empty: bool = False,
+) -> None:
     index = {
         "weight_map": {
             "a.weight": "model-00001-of-00002.safetensors",
@@ -50,7 +55,9 @@ def _write_indexed_checkpoint(snapshot: Path, *, complete: bool = True) -> None:
     (snapshot / "model.safetensors.index.json").write_text(json.dumps(index))
     (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"first")
     if complete:
-        (snapshot / "model-00002-of-00002.safetensors").write_bytes(b"second")
+        (snapshot / "model-00002-of-00002.safetensors").write_bytes(
+            b"" if empty else b"second"
+        )
 
 
 def test_offline_snapshot_uses_cached_canonical_index_without_snapshot_download(
@@ -123,7 +130,20 @@ def test_offline_snapshot_rejects_an_index_with_a_missing_cached_shard(tmp_path)
     snapshot = _snapshot(tmp_path, repo_id, "a" * 40, ref="main")
     _write_indexed_checkpoint(snapshot, complete=False)
 
-    with pytest.raises(FileNotFoundError, match="references missing shards"):
+    with pytest.raises(FileNotFoundError, match="references missing shard"):
+        snapshot_weight_files(
+            _spec(repo_id),
+            cache_dir=tmp_path,
+            allow_download=False,
+        )
+
+
+def test_offline_snapshot_rejects_an_empty_indexed_shard(tmp_path):
+    repo_id = "owner/model"
+    snapshot = _snapshot(tmp_path, repo_id, "a" * 40, ref="main")
+    _write_indexed_checkpoint(snapshot, empty=True)
+
+    with pytest.raises(ValueError, match="references empty shard"):
         snapshot_weight_files(
             _spec(repo_id),
             cache_dir=tmp_path,

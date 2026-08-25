@@ -11,8 +11,8 @@ from __future__ import annotations
 import gc
 import json
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterator, Mapping
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable, Iterator, Mapping
 
 import torch
 
@@ -26,11 +26,93 @@ class SnapshotSelection:
     expected_keys: frozenset[str] | None = None
 
 
-def _safe_snapshot_path(root: Path, value: object) -> Path:
-    relative = Path(str(value))
-    if relative.is_absolute() or ".." in relative.parts:
+@dataclass(frozen=True)
+class WeightMapSelection:
+    """Validated repository-relative artifacts declared by a weight map."""
+
+    files: tuple[str, ...]
+    expected_keys: frozenset[str]
+
+
+def _safe_weight_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
         raise ValueError(f"Unsafe checkpoint shard path: {value!r}")
-    return root / relative
+    if "\\" in value:
+        raise ValueError(f"Unsafe checkpoint shard path: {value!r}")
+    posix_path = PurePosixPath(value)
+    windows_path = PureWindowsPath(value)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or ".." in posix_path.parts
+        or posix_path.as_posix() in {"", "."}
+        or value.endswith("/")
+    ):
+        raise ValueError(f"Unsafe checkpoint shard path: {value!r}")
+    return posix_path.as_posix()
+
+
+def resolve_weight_map(
+    weight_map: object,
+    *,
+    available_files: Mapping[str, int],
+    allowed_suffixes: Iterable[str],
+) -> WeightMapSelection:
+    """Purely validate and resolve an indexed checkpoint's ``weight_map``.
+
+    ``available_files`` is a repository-relative path-to-size catalog supplied
+    by either a local snapshot or a remote repository listing.  Keeping I/O
+    outside this function gives every frontend the same path, format, presence,
+    non-empty-file, and expected-key rules.
+    """
+
+    if not isinstance(weight_map, Mapping) or not weight_map:
+        raise ValueError("Checkpoint index has no weight_map.")
+
+    suffixes = tuple(sorted({str(value).lower() for value in allowed_suffixes}))
+    if not suffixes or any(not suffix.startswith(".") for suffix in suffixes):
+        raise ValueError("allowed_suffixes must contain file extensions.")
+
+    expected_keys = set()
+    referenced_files = set()
+    for key, value in weight_map.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"Invalid checkpoint tensor key: {key!r}")
+        relative_path = _safe_weight_path(value)
+        if not relative_path.lower().endswith(suffixes):
+            allowed = ", ".join(suffixes)
+            raise ValueError(
+                f"Checkpoint shard {relative_path!r} does not use an allowed "
+                f"suffix ({allowed})."
+            )
+        if relative_path not in available_files:
+            raise FileNotFoundError(
+                f"Checkpoint index references missing shard: {relative_path}"
+            )
+        try:
+            size = int(available_files[relative_path])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Checkpoint shard {relative_path!r} has an invalid size."
+            ) from error
+        if size <= 0:
+            raise ValueError(f"Checkpoint index references empty shard: {relative_path}")
+        expected_keys.add(key)
+        referenced_files.add(relative_path)
+
+    return WeightMapSelection(
+        files=tuple(sorted(referenced_files)),
+        expected_keys=frozenset(expected_keys),
+    )
+
+
+def _local_file_sizes(root: Path) -> dict[str, int]:
+    return {
+        path.relative_to(root).as_posix(): int(path.stat().st_size)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 def select_safetensors_weights(
@@ -65,27 +147,20 @@ def select_safetensors_weights(
             )
 
         index = json.loads(index_path.read_text())
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError(f"Checkpoint index has no weight_map: {index_path}")
-        shard_names = sorted({str(value) for value in weight_map.values()})
-        if any(not name.endswith(".safetensors") for name in shard_names):
-            raise ValueError(
-                f"Safetensors index references a non-safetensors shard: {index_path}"
+        try:
+            resolved = resolve_weight_map(
+                index.get("weight_map"),
+                available_files=_local_file_sizes(index_path.parent),
+                allowed_suffixes=(".safetensors",),
             )
-        files = tuple(_safe_snapshot_path(path, name) for name in shard_names)
-        missing = [
-            file for file in files if not file.is_file() or file.stat().st_size <= 0
-        ]
-        if missing:
-            raise FileNotFoundError(
-                "Checkpoint index references missing or empty shards: "
-                + ", ".join(str(file) for file in missing)
-            )
+        except (FileNotFoundError, ValueError) as error:
+            error_type = type(error)
+            raise error_type(f"{error} ({index_path})") from error
+        files = tuple(index_path.parent / name for name in resolved.files)
         return SnapshotSelection(
             files=files,
             index_path=index_path,
-            expected_keys=frozenset(str(key) for key in weight_map),
+            expected_keys=resolved.expected_keys,
         )
 
     canonical = path / "model.safetensors"

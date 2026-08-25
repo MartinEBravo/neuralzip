@@ -235,7 +235,7 @@ def test_family_snapshot_rejects_an_index_with_a_missing_shard(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
     (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"first")
 
-    with pytest.raises(FileNotFoundError, match="missing or empty shards"):
+    with pytest.raises(FileNotFoundError, match="missing shard"):
         select_snapshot_weights(tmp_path)
 
 
@@ -393,7 +393,29 @@ def test_quantized_index_rejects_non_safetensors_weight_artifact():
         {"model.safetensors.index.json": json.dumps(index).encode()},
     )
 
-    with pytest.raises(ValueError, match="safetensors or GGUF"):
+    with pytest.raises(ValueError, match="allowed suffix"):
+        _hf_model_files(fs, spec, "c" * 40)
+
+
+def test_quantized_index_rejects_an_empty_remote_shard():
+    spec = {
+        "model_id": "owner/model",
+        "artifact_selector": {
+            "kind": "safetensors-index",
+            "index": "model.safetensors.index.json",
+        },
+    }
+    index = {"weight_map": {"a.weight": "model.safetensors"}}
+    fs = _FakeHfFileSystem(
+        spec["model_id"],
+        {
+            "model.safetensors.index.json": 100,
+            "model.safetensors": 0,
+        },
+        {"model.safetensors.index.json": json.dumps(index).encode()},
+    )
+
+    with pytest.raises(ValueError, match="references empty shard"):
         _hf_model_files(fs, spec, "c" * 40)
 
 

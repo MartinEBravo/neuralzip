@@ -33,6 +33,7 @@ from typing import Iterable
 import torch
 
 from neuralzip import Compressor
+from neuralzip.checkpoint_loading import resolve_weight_map
 from neuralzip.experiment_io import atomic_write_json as _atomic_write_json
 from neuralzip.hashing import canonical_digest, sha256_bytes, sha256_file
 from neuralzip.system import host_facts, package_version, parse_cpu_set
@@ -547,23 +548,30 @@ def snapshot_weight_files(
                 + ", ".join(path.name for path in index_paths)
             )
         index = json.loads(preferred_index.read_text())
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError(f"Checkpoint index has no weight map: {preferred_index}.")
-        shard_names = sorted(set(str(name) for name in weight_map.values()))
-        files = [preferred_index.parent / name for name in shard_names]
-        missing = [path for path in files if not path.is_file()]
-        if missing:
-            raise FileNotFoundError(
-                "Checkpoint index references missing shards: "
-                + ", ".join(str(path) for path in missing)
+        allowed_suffixes = (
+            (".safetensors",)
+            if preferred_index.name.endswith(".safetensors.index.json")
+            else (".bin",)
+        )
+        available_files = {
+            path.relative_to(preferred_index.parent).as_posix(): int(
+                path.stat().st_size
             )
+            for path in preferred_index.parent.rglob("*")
+            if path.is_file()
+        }
+        resolved = resolve_weight_map(
+            index.get("weight_map"),
+            available_files=available_files,
+            allowed_suffixes=allowed_suffixes,
+        )
+        files = [preferred_index.parent / name for name in resolved.files]
         return CheckpointSelection(
             files=tuple(files),
             snapshot=snapshot,
             revision=snapshot.name,
             index_path=preferred_index,
-            expected_keys=frozenset(str(key) for key in weight_map),
+            expected_keys=resolved.expected_keys,
         )
 
     preferred_files = (

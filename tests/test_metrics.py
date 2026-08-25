@@ -1,6 +1,6 @@
+import math
 import unittest
 
-import math
 import numpy as np
 
 from neuralzip.metrics import (

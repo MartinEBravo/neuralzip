@@ -19,13 +19,11 @@ class Huff0Codebook:
 @dataclass(frozen=True)
 class Huff0Decodebook:
     handle: object
-    codebook: bytes
 
 
 @dataclass(frozen=True)
 class Huff0NGramPayload:
     payload: bytes
-    codebook: bytes
     symbol_count: int
     escape_bytes: bytes
     tail: bytes
@@ -63,7 +61,6 @@ def _ngram_payload(result, codebook):
     encoded, symbol_count, escape_bytes, tail, hits, misses = result
     return Huff0NGramPayload(
         payload=encoded,
-        codebook=codebook.codebook,
         symbol_count=symbol_count,
         escape_bytes=escape_bytes,
         tail=tail,
@@ -84,10 +81,9 @@ def compress(data, *, min_saving_bytes=0, prior_count=0):
 
     codebook = build_codebook(data, prior_count=prior_count)
     result = encode_with_codebook(data, codebook)
-    if (
-        result is None
-        or len(result.payload) + len(result.codebook) + min_saving_bytes >= len(data)
-    ):
+    if result is None or len(result.payload) + len(
+        result.codebook
+    ) + min_saving_bytes >= len(data):
         return None
     return result
 
@@ -250,14 +246,9 @@ def build_codebook(data, *, prior_count=0):
     return Huff0Codebook(handle=handle, codebook=codebook)
 
 
-def codebook_memory_bytes(codebook):
-    """Return native CTable plus serialized-header bytes, excluding Python."""
-    return int(_huff0_cpp.codebook_memory_bytes(codebook.handle))
-
-
 def build_decodebook(codebook):
     handle = _huff0_cpp.build_decodebook(codebook)
-    return Huff0Decodebook(handle=handle, codebook=codebook)
+    return Huff0Decodebook(handle=handle)
 
 
 def encode_with_codebook(
@@ -368,34 +359,6 @@ def _encode_many_with_codebook(
         min_saving_bytes=int(min_saving_bytes),
         compression_threshold=float(compression_threshold),
         metadata_bytes=int(metadata_bytes),
-        threads=int(threads),
-    )
-
-
-def encode_many_pretokenized_with_codebook_4x(
-    token_chunks,
-    codebook,
-    max_output_bytes,
-    *,
-    threads=0,
-):
-    """Encode materialized token blocks with exact per-block payload budgets.
-
-    This function neither tokenizes nor applies a raw/local fallback.  Each
-    result is the encoded payload bytes, or ``None`` when the four-stream frame
-    cannot fit its corresponding limit.  Callers remain responsible for
-    accounting for metadata, escapes, and tails when computing those limits.
-    A limit of ``-1`` means unlimited.
-    """
-    normalized = [
-        chunk if isinstance(chunk, (bytes, bytearray, memoryview)) else bytes(chunk)
-        for chunk in token_chunks
-    ]
-    limits = [int(value) for value in max_output_bytes]
-    return _huff0_cpp.encode_many_pretokenized_with_codebook_4x(
-        normalized,
-        codebook.handle,
-        limits,
         threads=int(threads),
     )
 
@@ -576,9 +539,7 @@ def decompress_ngram_with_decodebook_4x(payload, decodebook, vocab, *, n):
 
 
 def _decompress_ngram_with_decodebook(payload, decodebook, vocab, *, n, frame_4x):
-    return _native_variant(
-        "decompress_ngram_with_decodebook", frame_4x=frame_4x
-    )(
+    return _native_variant("decompress_ngram_with_decodebook", frame_4x=frame_4x)(
         payload.payload,
         decodebook.handle,
         payload.symbol_count,

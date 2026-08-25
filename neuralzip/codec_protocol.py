@@ -5,18 +5,16 @@ defines the timing and byte-accounting boundary used by experiment runners so
 that two frontends cannot silently benchmark different NeuralZip paths.
 """
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-import time
 
-from .archive import (
+from .dtypes import dtype_name
+from .serialization import (
     serialized_codebooks_size,
     serialized_group_size,
     serialized_tensor_size,
 )
-from .dtypes import dtype_name
-from .tensors import bitwise_equal
-
 
 CODEC_PROTOCOL_VERSION = 1
 
@@ -46,11 +44,7 @@ class EncodedTensorBatch:
     raw_bytes: int
     compressed_bytes: int
     encode_seconds: float
-    huffman_chunks: int
-    raw_chunks: int
-    shared_codebook_refs: int
     used_batch: bool
-    tensor_encode_seconds: tuple = ()
 
     @property
     def encoder_path(self):
@@ -83,22 +77,6 @@ def named_tensor_items(tensors):
     return tuple(tensors)
 
 
-def _allocate_elapsed(elapsed, weights):
-    """Allocate one batch duration without changing its measured total."""
-
-    weights = tuple(int(weight) for weight in weights)
-    total_weight = sum(weights)
-    if not weights:
-        return ()
-    if total_weight <= 0:
-        allocations = [0.0] * len(weights)
-        allocations[-1] = float(elapsed)
-        return tuple(allocations)
-    allocations = [float(elapsed) * weight / total_weight for weight in weights]
-    allocations[-1] += float(elapsed) - sum(allocations)
-    return tuple(allocations)
-
-
 def encode_tensor_batch(codec, tensors):
     """Encode one named tensor batch under a stable timing/size contract."""
 
@@ -106,21 +84,14 @@ def encode_tensor_batch(codec, tensors):
     batch_encoder = getattr(codec, "compress_tensors", None)
     used_batch = callable(batch_encoder)
 
+    started = time.perf_counter()
     if used_batch:
-        started = time.perf_counter()
         payloads = tuple(batch_encoder(named_tensors))
-        encode_seconds = time.perf_counter() - started
-        tensor_encode_seconds = None
     else:
-        payloads = []
-        tensor_encode_seconds = []
-        for name, tensor in named_tensors:
-            started = time.perf_counter()
-            payloads.append(codec.compress_tensor(name, tensor))
-            tensor_encode_seconds.append(time.perf_counter() - started)
-        payloads = tuple(payloads)
-        tensor_encode_seconds = tuple(tensor_encode_seconds)
-        encode_seconds = sum(tensor_encode_seconds)
+        payloads = tuple(
+            codec.compress_tensor(name, tensor) for name, tensor in named_tensors
+        )
+    encode_seconds = time.perf_counter() - started
     if len(payloads) != len(named_tensors):
         raise RuntimeError("Codec returned a different number of tensor payloads.")
     expected_names = tuple(str(name) for name, _ in named_tensors)
@@ -152,24 +123,12 @@ def encode_tensor_batch(codec, tensors):
 
     raw_bytes = sum(int(payload.raw_bytes) for payload in payloads)
     compressed_bytes = sum(serialized_tensor_size(payload) for payload in payloads)
-    if tensor_encode_seconds is None:
-        tensor_encode_seconds = _allocate_elapsed(
-            encode_seconds,
-            (payload.raw_bytes for payload in payloads),
-        )
     return EncodedTensorBatch(
         payloads=payloads,
         raw_bytes=raw_bytes,
         compressed_bytes=int(compressed_bytes),
         encode_seconds=float(encode_seconds),
-        huffman_chunks=sum(int(payload.huffman_chunks) for payload in payloads),
-        raw_chunks=sum(int(payload.raw_chunks) for payload in payloads),
-        shared_codebook_refs=sum(
-            int(getattr(payload, "shared_codebook_refs", 0))
-            for payload in payloads
-        ),
         used_batch=used_batch,
-        tensor_encode_seconds=tensor_encode_seconds,
     )
 
 
@@ -195,10 +154,7 @@ def decode_tensor_batch(codec, payloads):
     """Decode payloads and return the exact decode-call wall time."""
 
     started = time.perf_counter()
-    tensors = {
-        payload.name: codec.decompress_tensor(payload)
-        for payload in payloads
-    }
+    tensors = {payload.name: codec.decompress_tensor(payload) for payload in payloads}
     return tensors, float(time.perf_counter() - started)
 
 
@@ -282,28 +238,10 @@ def measure_compressor_exponents(result, *, dtypes=None, codebook_scope="stream"
         row.get("payload")
         for row in result.get("tensor_results", ())
         if row.get("payload") is not None
-        and (
-            accepted is None
-            or str(row["payload"].dtype) in accepted
-        )
+        and (accepted is None or str(row["payload"].dtype) in accepted)
     )
     return measure_exponent_streams(
         payloads,
         result.get("codebooks") or (),
         codebook_scope=codebook_scope,
     )
-
-
-def assert_tensor_roundtrip(expected, decoded, *, method, checkpoint):
-    """Require a bitwise-identical named tensor mapping."""
-
-    if expected.keys() != decoded.keys():
-        raise AssertionError(
-            f"{method} changed the tensor names for checkpoint {checkpoint}."
-        )
-    for name, tensor in expected.items():
-        restored = decoded[name]
-        if not bitwise_equal(tensor, restored):
-            raise AssertionError(
-                f"{method} failed bitwise roundtrip for {checkpoint}:{name}."
-            )

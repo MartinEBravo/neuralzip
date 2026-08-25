@@ -7,7 +7,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.run_final_language_checkpoint_suite import (
+import examples.run_checkpoint_language as language_runner
+import examples.run_checkpoint_vision as vision_runner
+from examples import checkpoint_common, checkpoint_compression
+from examples.run_checkpoint_language import (
     MODEL_SPECS,
     apply_mlm_mask,
     build_model,
@@ -16,10 +19,6 @@ from examples.run_final_language_checkpoint_suite import (
     smoke_token_blocks,
     unique_cpu_model_state,
 )
-import examples.checkpoint_common as checkpoint_common
-import examples.checkpoint_compression as checkpoint_compression
-import examples.run_final_checkpoint_suite as vision_runner
-import examples.run_final_language_checkpoint_suite as language_runner
 
 
 class _TiedToyModel(torch.nn.Module):
@@ -37,7 +36,7 @@ def test_checkpoint_runner_upserts_preserve_schemas_keys_and_csv_dialects(tmp_pa
     language_results = tmp_path / "language-results.csv"
     language_training = tmp_path / "language-training.csv"
 
-    for compressor, value in (("ZipNN src", 1), ("NeuralZip", 2), ("ZipNN src", 3)):
+    for compressor, value in (("ZipNN", 1), ("NeuralZip", 2), ("ZipNN", 3)):
         vision_runner.upsert_result(
             vision_results,
             {
@@ -65,25 +64,29 @@ def test_checkpoint_runner_upserts_preserve_schemas_keys_and_csv_dialects(tmp_pa
         {"model": "gpt2", "epoch": 0, "train_loss": 1.0},
     )
 
-    assert vision_results.read_bytes().splitlines()[0] == ",".join(
-        vision_runner.RESULT_FIELDS
-    ).encode()
-    assert vision_training.read_bytes().splitlines()[0] == ",".join(
-        vision_runner.TRAINING_FIELDS
-    ).encode()
-    assert language_results.read_bytes().splitlines()[0] == ",".join(
-        language_runner.RESULT_FIELDS
-    ).encode()
-    assert language_training.read_bytes().splitlines()[0] == ",".join(
-        language_runner.TRAINING_FIELDS
-    ).encode()
+    assert (
+        vision_results.read_bytes().splitlines()[0]
+        == ",".join(vision_runner.RESULT_FIELDS).encode()
+    )
+    assert (
+        vision_training.read_bytes().splitlines()[0]
+        == ",".join(vision_runner.TRAINING_FIELDS).encode()
+    )
+    assert (
+        language_results.read_bytes().splitlines()[0]
+        == ",".join(language_runner.RESULT_FIELDS).encode()
+    )
+    assert (
+        language_training.read_bytes().splitlines()[0]
+        == ",".join(language_runner.TRAINING_FIELDS).encode()
+    )
     assert b"\r\n" in vision_results.read_bytes()
     assert b"\r\n" not in language_results.read_bytes()
 
     vision_rows = checkpoint_common.read_csv(vision_results)
     assert [(row["compressor"], row["raw_bytes"]) for row in vision_rows] == [
         ("NeuralZip", "2"),
-        ("ZipNN src", "3"),
+        ("ZipNN", "3"),
     ]
     assert checkpoint_common.read_csv(vision_training)[0]["train_loss"] == "0.5"
 
@@ -99,9 +102,10 @@ def test_vision_checkpoint_resume_rejects_legacy_encoder_rows(tmp_path):
         "input_unchanged": True,
     }
     vision_runner.upsert_result(result_path, base)
-    assert checkpoint_compression.completed_checkpoint_methods(
-        result_path, "resnet18", 0
-    ) == set()
+    assert (
+        checkpoint_compression.completed_checkpoint_methods(result_path, "resnet18", 0)
+        == set()
+    )
     assert not checkpoint_compression.is_current_codec_result(
         checkpoint_common.read_csv(result_path)[0]
     )

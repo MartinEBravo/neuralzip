@@ -1,4 +1,4 @@
-# Checkpoint Compression Experiments
+# NeuralZip
 
 Install the project in editable mode before running experiments:
 
@@ -44,14 +44,13 @@ when selected with `exponent_layout="transpose2d"`; the default layout is
 header and referenced by chunks.
 
 Once modes and codebooks are available, a fused native pipeline reads each
-target tensor, performs ZipNN
-reordering and stream extraction, tokenizes packed exponents, applies Huff0 and
-its local/raw fallback, and returns only the final payload. Reordered streams
-and tokens are transient. Tensors are submitted through input-size-windowed
-native batches whose jobs share one queue per window. The default threshold is
-128 MiB; an individual larger tensor forms its own window. Encoding a new
-checkpoint therefore does not retain a second transformed copy of its
-floating-point parameters in memory.
+target tensor, performs ZipNN reordering and stream extraction, tokenizes packed
+exponents, applies Huff0 and its local/raw fallback, and returns only the final
+payload. Reordered streams and tokens are transient. Tensors are submitted
+through input-size-windowed native batches whose jobs share one queue per
+window. The default threshold is 128 MiB; an individual larger tensor forms its
+own window. Encoding a new checkpoint therefore does not retain a second
+transformed copy of its floating-point parameters in memory.
 
 Mode selection is time-aware. Among modes within `speed_ratio_tolerance`
 (default 3% relative compressed bytes) of the best estimated ratio, it chooses
@@ -63,7 +62,7 @@ as a coverage cap.
 Timing is reported as `setup_seconds`, `encode_seconds`, and `total_seconds`.
 The setup is also split into `clustering_seconds` and
 `codebook_setup_seconds`; encoding includes all target-dependent work. Results
-also record selected modes, packed chunks, escape rate, and round-trip status.
+also record selected modes, packed chunks, escape counts, and round-trip status.
 
 ```python
 compressed = Compressor(
@@ -75,7 +74,7 @@ Compressor.save(compressed, "model.nzip")
 restored = Compressor("neuralzip").decompress_file("model.nzip")
 ```
 
-Direct family transfer reuses only the structural family plan:
+Direct family transfer reuses only the source setup:
 
 ```python
 codec = Compressor("neuralzip").codec
@@ -91,8 +90,32 @@ histograms, perform JS matching or mode probing, or retain target data.
 The `compressed_bytes` metric is the exact size of this versioned archive, not
 an entropy estimate or a sum that omits container metadata.
 
-Experiment entrypoints live under `examples/` and share the model catalog in
-`examples/model_catalog.py`.
+The implementation is centered on `neuralzip/compressor.py` (public facade),
+`neuralzip/neuralzip_codec.py` (setup and direct codec), and
+`neuralzip/archive.py` (versioned representation). The experiment helpers in
+`examples/model_loading.py`, `examples/direct_compression.py`,
+`examples/checkpoint_common.py`, `examples/checkpoint_compression.py`, and
+`examples/federated_common.py` keep model loading, timing, metrics, and
+trajectory handling out of the runners. The fixed-checkpoint, setup-transfer,
+phenomenon, clustering, and quantized entrypoints share
+`examples/model_catalog.py`:
+
+| Thesis result | Entrypoint |
+| --- | --- |
+| Field entropy, JS heatmaps, packed entropy, component isolation, deferred methods, and ZipNN implementations | `run_thesis_model_suite.py` |
+| Clustering agreement | `run_clustering_ablation.py` |
+| Direct encoding, model storage, MoE, and distilled models | `run_fixed_model_suite.py` |
+| Setup transfer between family members | `run_setup_transfer_suite.py`, then `summarize_setup_transfer_suite.py` |
+| Quantized weights | `run_quantized_nibble_compression.py` |
+| Training checkpoints | `run_checkpoint_vision.py`, `run_checkpoint_language.py`, then `render_four_model_training_suite.py` |
+| Federated training | `run_federated_vision.py`, `run_federated_language.py`, then `render_four_model_training_suite.py` |
+
+`run_fixed_model_suite.py` uses the versioned checkpoint revisions and weight
+fingerprints in `examples/fixed_model_manifest.json`. Hugging Face snapshots
+must already exist below the cache passed with `--cache-root`; the runner never
+silently substitutes a newer revision. The deferred-method phase of
+`run_thesis_model_suite.py` additionally expects external MM-RePair and TurboRC
+installations.
 
 Generated checkpoints, logs, tables, and figures are intentionally not
-versioned. Runners create them locally under `results/` or `examples/outputs/`.
+versioned. Runners create them locally under `results/`.

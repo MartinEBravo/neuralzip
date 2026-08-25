@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from neuralzip.dtypes import dtype_name, resolve_torch_dtype
-from neuralzip.model import resolve_torch_dtype as model_resolve_torch_dtype
 
 
 def test_dtype_name_is_canonical():
@@ -25,7 +24,6 @@ def test_dtype_name_is_canonical():
 )
 def test_resolve_torch_dtype_preserves_supported_aliases(value, expected):
     assert resolve_torch_dtype(value) == expected
-    assert model_resolve_torch_dtype(value) == expected
 
 
 def test_resolve_torch_dtype_rejects_unknown_values():

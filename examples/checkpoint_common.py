@@ -1,8 +1,8 @@
-"""Task-independent plumbing for the final checkpoint runners.
+"""Task-independent plumbing for checkpoint experiments.
 
 Model construction and training remain explicit in the vision and language
-runners. Persistence, frozen-plan lifecycle, compression trajectories,
-validation, and rendering live here so the two protocols cannot drift.
+runners. Persistence, reusable-setup lifecycle, compression trajectories, and
+validation live here so the two protocols cannot drift.
 """
 
 from __future__ import annotations
@@ -11,20 +11,19 @@ import gc
 import json
 import random
 from argparse import BooleanOptionalAction, Namespace
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
+from neuralzip.checkpoint_loading import load_torch_checkpoint
 from neuralzip.experiment_io import (
-    atomic_write_json,
     atomic_write_csv,
+    atomic_write_json,
     read_csv,
 )
-
-from neuralzip.checkpoint_loading import load_torch_checkpoint
 
 
 def set_seed(seed: int) -> None:
@@ -80,18 +79,15 @@ def add_checkpoint_run_arguments(
     )
     parser.add_argument("--train-only", action="store_true")
     parser.add_argument("--compression-only", action="store_true")
-    parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--no-amp", action="store_true")
 
 
 def initialize_checkpoint_run(args: Namespace) -> Path:
     """Validate common modes and initialize paths and CPU timing controls."""
 
-    modes = (args.train_only, args.compression_only, args.render_only)
+    modes = (args.train_only, args.compression_only)
     if sum(map(bool, modes)) > 1:
-        raise ValueError(
-            "--train-only, --compression-only, and --render-only are mutually exclusive."
-        )
+        raise ValueError("--train-only and --compression-only are mutually exclusive.")
     args.output_dir = args.output_dir.resolve()
     args.data_dir = args.data_dir.resolve()
     if args.existing_checkpoint_root is not None:
@@ -185,7 +181,9 @@ def checkpoint_epoch(path: Path) -> int:
 def checkpoint_files(checkpoint_dir: Path, maximum_epoch: int) -> dict[int, Path]:
     files = {}
     for path in checkpoint_dir.glob("*.pt"):
-        if path.name.endswith("training_state.pt") or path.name.endswith("latest_state.pt"):
+        if path.name.endswith("training_state.pt") or path.name.endswith(
+            "latest_state.pt"
+        ):
             continue
         try:
             epoch = checkpoint_epoch(path)
@@ -251,7 +249,6 @@ def run_checkpoint_models(
     local_source: str,
     train_trajectory: Callable,
     process_trajectory: Callable,
-    render_figure: Callable,
     validate_results: Callable,
 ) -> None:
     """Reuse, train, and compress each requested checkpoint trajectory."""
@@ -289,13 +286,9 @@ def run_checkpoint_models(
             print(f"[{slug}] train-only complete: {checkpoint_dir}", flush=True)
             continue
         process_trajectory(spec, checkpoint_dir, source, args, result_path)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"[{slug}] rendered={rendered}", flush=True)
 
     if not args.train_only:
         validate_results(result_path, models=args.models, epochs=args.epochs)
-        rendered = render_figure(result_path, args.output_dir)
-        print(f"final_rendered={rendered}", flush=True)
     print(f"results={result_path}", flush=True)
 
 
@@ -308,11 +301,11 @@ def load_or_fit_frozen_codec(
     threads: int,
     prepare_epoch_zero: Callable[[Mapping], tuple[Sequence, Mapping, Mapping]],
 ):
-    """Load or fit the one epoch-0 codec plan used by a trajectory.
+    """Load or fit the one epoch-0 codec setup used by a trajectory.
 
     ``prepare_epoch_zero`` returns ``(named_tensors, identity, metadata)``.
-    Identity fields are checked when resuming an existing plan, while metadata
-    is recorded only to describe a newly fitted plan.
+    Identity fields are checked when resuming an existing setup, while metadata
+    is recorded only to describe a newly fitted setup.
     """
 
     from examples.checkpoint_compression import setup_neuralzip
@@ -322,28 +315,30 @@ def load_or_fit_frozen_codec(
     if 0 not in files:
         raise FileNotFoundError(f"Missing epoch-0 checkpoint in {checkpoint_dir}.")
 
-    plan_path = model_dir / "neuralzip_epoch0_plan.pkl"
+    setup_state_path = model_dir / "neuralzip_epoch0_setup.pkl"
     setup_path = model_dir / "neuralzip_epoch0_setup.json"
     checkpoint = load_torch_checkpoint(files[0])
     named_tensors, identity, metadata = prepare_epoch_zero(checkpoint)
     named_tensors = list(named_tensors)
 
-    if plan_path.is_file() and setup_path.is_file():
+    if setup_state_path.is_file() and setup_path.is_file():
         setup = json.loads(setup_path.read_text())
         for key, expected in identity.items():
             if setup.get(key) != expected:
                 raise RuntimeError(
-                    f"Frozen plan in {plan_path} has a different {key}."
+                    f"Reusable setup in {setup_state_path} has a different {key}."
                 )
         if int(setup.get("threads", -1)) != int(threads):
             raise RuntimeError(
-                f"Frozen plan in {plan_path} used threads={setup.get('threads')}, "
+                f"Reusable setup in {setup_state_path} used threads={setup.get('threads')}, "
                 f"not {threads}; use a fresh output directory."
             )
-        plan = NeuralZipPlan.load(plan_path)
+        plan = NeuralZipPlan.load(setup_state_path)
         if plan.digest != setup["codebook_digest"]:
-            raise RuntimeError(f"Frozen NeuralZip plan is corrupt: {plan_path}.")
-        print(f"[{slug}] loaded frozen epoch-0 NeuralZip plan", flush=True)
+            raise RuntimeError(
+                f"Reusable NeuralZip setup is corrupt: {setup_state_path}."
+            )
+        print(f"[{slug}] loaded reusable epoch-0 NeuralZip setup", flush=True)
     else:
         plan, setup = setup_neuralzip(named_tensors, threads=threads)
         setup = {
@@ -355,7 +350,7 @@ def load_or_fit_frozen_codec(
             "threads": threads,
             **dict(metadata),
         }
-        plan.save(plan_path, named_tensors)
+        plan.save(setup_state_path, named_tensors)
         atomic_write_json(setup_path, setup)
 
     print(
@@ -411,102 +406,6 @@ def run_checkpoint_trajectory(
     gc.collect()
 
 
-def render_checkpoint_figure(
-    result_path: Path,
-    output_dir: Path,
-    *,
-    models: Sequence[str],
-    model_labels: Mapping[str, str],
-    output_stem: str,
-    figure_size: tuple[float, float],
-    is_current_result: Callable[[Mapping], bool],
-    legend_from_any_axis: bool = False,
-) -> tuple[Path, Path] | None:
-    """Render the shared ratio/time checkpoint figure."""
-
-    if not result_path.is_file():
-        return None
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import pandas as pd
-
-    frame = pd.read_csv(result_path)
-    frame = frame[
-        frame["status"].eq("ok")
-        & frame["roundtrip_exact"].eq(True)  # noqa: E712
-        & frame["input_unchanged"].eq(True)  # noqa: E712
-        & frame.apply(is_current_result, axis=1)
-    ].copy()
-    if frame.empty:
-        return None
-
-    colors = {"ZipNN src": "#4C78A8", "NeuralZip": "#E45756"}
-    markers = {"ZipNN src": "o", "NeuralZip": "s"}
-    fig, axes = plt.subplots(
-        2,
-        len(models),
-        figsize=figure_size,
-        sharex="col",
-        squeeze=False,
-    )
-    for column, slug in enumerate(models):
-        subset = frame[frame["model"].eq(slug)].sort_values("epoch")
-        ratio_axis = axes[0, column]
-        time_axis = axes[1, column]
-        ratio_axis.set_title(model_labels[slug], fontsize=11)
-        if subset.empty:
-            for axis in (ratio_axis, time_axis):
-                axis.text(
-                    0.5,
-                    0.5,
-                    "Pending",
-                    ha="center",
-                    va="center",
-                    transform=axis.transAxes,
-                )
-        for method in ("ZipNN src", "NeuralZip"):
-            group = subset[subset["compressor"].eq(method)]
-            if group.empty:
-                continue
-            style = {
-                "color": colors[method],
-                "marker": markers[method],
-                "markersize": 2.8,
-                "markevery": max(1, len(group) // 10),
-                "linewidth": 1.5,
-                "label": method,
-            }
-            ratio_axis.plot(group["epoch"], group["exponent_ratio_pct"], **style)
-            time_axis.plot(group["epoch"], group["encode_seconds"], **style)
-        for axis in (ratio_axis, time_axis):
-            axis.grid(True, axis="y", color="#dddddd", linewidth=0.6)
-            axis.spines["top"].set_visible(False)
-            axis.spines["right"].set_visible(False)
-        time_axis.set_xlabel("Epoch")
-
-    axes[0, 0].set_ylabel("Exponent ratio (%)")
-    axes[1, 0].set_ylabel("Encoding time (s)")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    if legend_from_any_axis and not handles:
-        for axis in axes[0, 1:]:
-            handles, labels = axis.get_legend_handles_labels()
-            if handles:
-                break
-    if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    figure_dir = output_dir / "figures"
-    figure_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = figure_dir / f"{output_stem}.pdf"
-    png_path = figure_dir / f"{output_stem}.png"
-    fig.savefig(pdf_path, bbox_inches="tight")
-    fig.savefig(png_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return pdf_path, png_path
-
-
 def validate_checkpoint_results(
     result_path: Path,
     *,
@@ -523,7 +422,7 @@ def validate_checkpoint_results(
         (slug, epoch, compressor)
         for slug in selected_models
         for epoch in range(int(epochs) + 1)
-        for compressor in ("ZipNN src", "NeuralZip")
+        for compressor in ("ZipNN", "NeuralZip")
     }
     selected_rows = [row for row in rows if row.get("model") in selected_models]
     keys = [

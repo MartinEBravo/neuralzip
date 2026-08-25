@@ -25,47 +25,40 @@ class TimeAwareModeSelectionTests(unittest.TestCase):
             "seconds": 0.02,
         }
 
-        result = select_fastest_within_ratio(
+        selected = select_fastest_within_ratio(
             [local, shared, packed],
             estimated_bytes=self._bytes,
             estimated_seconds=self._seconds,
             ratio_tolerance=0.03,
         )
 
-        self.assertIs(result.selected, packed)
-        self.assertEqual(result.metrics["ratio_best_kind"], "local_huff0")
-        self.assertEqual(result.metrics["selected_kind"], "packed_huff0")
-        self.assertAlmostEqual(result.metrics["selected_relative_byte_overhead"], 0.03)
-        self.assertTrue(result.metrics["avoided_local_huff0"])
+        self.assertIs(selected, packed)
 
     def test_zero_ratio_tolerance_keeps_smallest_representation(self):
         local = {"kind": "local_huff0", "bytes": 100, "seconds": 0.10}
         shared = {"kind": "shared_huff0", "bytes": 101, "seconds": 0.01}
 
-        result = select_fastest_within_ratio(
+        selected = select_fastest_within_ratio(
             [shared, local],
             estimated_bytes=self._bytes,
             estimated_seconds=self._seconds,
             ratio_tolerance=0.0,
         )
 
-        self.assertIs(result.selected, local)
-        self.assertEqual(result.metrics["eligible_candidate_count"], 1)
-        self.assertFalse(result.metrics["avoided_local_huff0"])
+        self.assertIs(selected, local)
 
     def test_faster_mode_outside_ratio_limit_is_ineligible(self):
         local = {"kind": "local_huff0", "bytes": 100, "seconds": 0.10}
         raw = {"kind": "raw", "bytes": 111, "seconds": 0.0}
 
-        result = select_fastest_within_ratio(
+        selected = select_fastest_within_ratio(
             [raw, local],
             estimated_bytes=self._bytes,
             estimated_seconds=self._seconds,
             ratio_tolerance=0.10,
         )
 
-        self.assertIs(result.selected, local)
-        self.assertEqual(result.metrics["eligible_candidate_count"], 1)
+        self.assertIs(selected, local)
 
     def test_selection_is_stable_across_candidate_order(self):
         local = {"kind": "local_huff0", "bytes": 100, "seconds": 0.10}
@@ -82,8 +75,8 @@ class TimeAwareModeSelectionTests(unittest.TestCase):
             estimated_seconds=self._seconds,
         )
 
-        self.assertEqual(forward.selected["kind"], "shared_huff0")
-        self.assertEqual(reverse.selected["kind"], "shared_huff0")
+        self.assertEqual(forward["kind"], "shared_huff0")
+        self.assertEqual(reverse["kind"], "shared_huff0")
 
     def test_invalid_ratio_inputs_are_rejected(self):
         mode = {"kind": "local_huff0", "bytes": 1, "seconds": 1}
@@ -134,39 +127,26 @@ class PackedTimeBudgetSelectionTests(unittest.TestCase):
         ]
 
     def test_global_budget_uses_historical_savings_per_second_order(self):
-        result = select_packed_time_budget(
+        selected = select_packed_time_budget(
             self.evaluations,
             packed_time_budget_ratio=0.10,
         )
 
         self.assertEqual(
-            result.selected_keys,
+            selected,
             frozenset({"zero", "efficient", "fits-last"}),
         )
-        self.assertEqual(result.metrics["selection_strategy"], "time-budget")
-        self.assertEqual(result.metrics["base_estimated_seconds"], 10.0)
-        self.assertEqual(result.metrics["packed_time_budget_seconds"], 1.0)
-        self.assertAlmostEqual(result.metrics["packed_extra_seconds"], 0.9)
-        self.assertEqual(result.metrics["packed_estimated_bytes_saved"], 190.0)
-        self.assertEqual(result.metrics["packed_candidates"], 4)
-        self.assertEqual(result.metrics["packed_opportunities"], 4)
-        self.assertEqual(result.metrics["packed_selected"], 3)
-        self.assertEqual(result.metrics["packed_rejected_by_time_budget"], 1)
-        self.assertEqual(result.metrics["packed_zero_extra_selected"], 1)
 
     def test_zero_budget_disables_even_zero_extra_opportunities(self):
-        result = select_packed_time_budget(
+        selected = select_packed_time_budget(
             self.evaluations,
             packed_time_budget_ratio=0.0,
         )
 
-        self.assertEqual(result.selected_keys, frozenset())
-        self.assertEqual(result.metrics["packed_selected"], 0)
-        self.assertEqual(result.metrics["packed_extra_seconds"], 0.0)
-        self.assertEqual(result.metrics["packed_estimated_bytes_saved"], 0.0)
+        self.assertEqual(selected, frozenset())
 
     def test_non_saving_opportunities_are_not_candidates(self):
-        result = select_packed_time_budget(
+        selected = select_packed_time_budget(
             [
                 {"key": "none", "base_seconds": 1.0, "opportunity": None},
                 {
@@ -178,9 +158,7 @@ class PackedTimeBudgetSelectionTests(unittest.TestCase):
             packed_time_budget_ratio=1.0,
         )
 
-        self.assertEqual(result.metrics["packed_candidates"], 0)
-        self.assertEqual(result.metrics["packed_opportunities"], 0)
-        self.assertEqual(result.selected_keys, frozenset())
+        self.assertEqual(selected, frozenset())
 
     def test_invalid_time_metrics_are_rejected(self):
         with self.assertRaises(ValueError):

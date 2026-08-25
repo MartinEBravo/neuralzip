@@ -27,145 +27,53 @@ from pathlib import Path
 
 import torch
 
-from neuralzip.hashing import canonical_digest, sha256_file
-from neuralzip.experiment_io import atomic_write_text as atomic_text
-from neuralzip.system import module_path, package_versions
+from neuralzip.experiment_io import (
+    atomic_write_json as atomic_json,
+)
+from neuralzip.experiment_io import (
+    atomic_write_text as atomic_text,
+)
+from neuralzip.hashing import canonical_digest
+from neuralzip.system import parse_cpu_set
 
 try:
-    from .run_general_codec_rerun import (
-        DEFAULT_CHUNK_SIZE,
-        DEFAULT_COMPRESSION_THRESHOLD,
-        SPECS_BY_KEY,
-        host_provenance,
-        load_model,
-        parse_cpu_set,
+    from .direct_compression import (
+        encode_neuralzip,
+        prepare_neuralzip,
         zipnn_src_pass,
     )
-    from .run_latency_profile_probe import (
-        atomic_json,
-        measure_profile,
-        prepare_profile,
+    from .model_catalog import SPECS_BY_KEY
+    from .model_loading import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        code_provenance,
+        host_provenance,
+        load_model,
     )
 except ImportError:  # Direct execution from the examples directory.
-    from run_general_codec_rerun import (
-        DEFAULT_CHUNK_SIZE,
-        DEFAULT_COMPRESSION_THRESHOLD,
-        SPECS_BY_KEY,
-        host_provenance,
-        load_model,
-        parse_cpu_set,
+    from direct_compression import (
+        encode_neuralzip,
+        prepare_neuralzip,
         zipnn_src_pass,
     )
-    from run_latency_profile_probe import (
-        atomic_json,
-        measure_profile,
-        prepare_profile,
+    from model_catalog import SPECS_BY_KEY
+    from model_loading import (
+        DEFAULT_CHUNK_SIZE,
+        DEFAULT_COMPRESSION_THRESHOLD,
+        code_provenance,
+        host_provenance,
+        load_model,
     )
 
 
 MIB = 1 << 20
 GIB = 1 << 30
 PROTOCOL_VERSION = 1
-
-# Small-to-large order for every fixed BF16 checkpoint in the direct,
-# model-storage, MoE, and distilled tables. GPT-2 and BERT are included because
-# they also appear in the setup/direct-encoding table.
-MODEL_ORDER = (
-    "efficientnet-b0",
-    "resnet18",
-    "efficientnet-b3",
-    "resnet34",
-    "resnet50",
-    "convnext-tiny",
-    "resnet101",
-    "convnext-small",
-    "resnet152",
-    "efficientnet-b7",
-    "gpt2",
-    "bert-base",
-    "convnext-base",
-    "convnext-large",
-    "sd15-unet",
-    "qwen35-08b-base",
-    "gemma3-1b",
-    "llama32-1b",
-    "olmo2-1b",
-    "qwen25-15b",
-    "qwen35-2b-base",
-    "qwen25-3b",
-    "llama32-3b",
-    "gemma3-4b",
-    "olmoe-1b-7b-0125",
-    "mistral7b",
-    "olmo2-7b",
-    "deepseek-r1-distill-qwen-7b",
-    "qwen25-7b",
-    "qwen25-7b-distilled",
-    "deepseek-r1-distill-llama-8b",
-    "llama31-nemotron-8b",
-    "lfm25-8b-a1b",
-    "jetmoe-8b",
-    "zaya1-8b",
-    "gemma2-9b-distilled",
-    "gemma3-12b",
-    "mistral-nemo-12b",
-    "olmo2-13b",
-    "qwen15-moe-a27b",
-    "phi4-14b",
-    "qwen25-14b",
-    "deepseek-moe-16b",
-    "gemma4-26b-a4b",
-    "qwen35-27b",
-    "qwen3-30b-a3b",
-    "gemma4-31b",
-    "qwen35-35b-a3b",
-    "mixtral-8x7b",
-    "latamgpt-70b",
-)
+DEFAULT_MANIFEST = Path(__file__).with_name("fixed_model_manifest.json")
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def code_provenance() -> dict[str, object]:
-    root = Path(__file__).resolve().parents[1]
-    paths = (
-        Path(__file__).resolve(),
-        root / "examples" / "run_general_codec_rerun.py",
-        root / "examples" / "run_latency_profile_probe.py",
-        root / "neuralzip" / "compressor.py",
-        root / "neuralzip" / "neuralzip_codec.py",
-        root / "neuralzip" / "huff0.py",
-        root / "neuralzip" / "archive.py",
-        root / "neuralzip" / "_huff0_cpp.cpp",
-    )
-    extensions = tuple((root / "neuralzip").glob("_huff0_cpp*.so"))
-    files = {
-        str(path.relative_to(root)): sha256_file(path)
-        for path in (*paths, *extensions)
-        if path.is_file()
-    }
-    for module_name in ("zipnn", "zipnn_core"):
-        path = module_path(module_name)
-        module_paths = (
-            [path]
-            if path.is_file() and path.suffix != ".py"
-            else sorted(path.parent.glob("*.py"))
-        )
-        for path in module_paths:
-            if path.is_file():
-                files[f"external/{module_name}/{path.name}"] = sha256_file(path)
-    value = {
-        "files": files,
-        "packages": package_versions("torch", "torchvision", "neuralzip", "zipnn"),
-        "runtime_versions": {
-            "python": platform.python_version(),
-            "torch": str(torch.__version__),
-        },
-    }
-    value["digest"] = canonical_digest(value)
-    return value
 
 
 def protocol(args: argparse.Namespace) -> dict[str, object]:
@@ -186,9 +94,7 @@ def protocol(args: argparse.Namespace) -> dict[str, object]:
         "small_steady_warmup_relative_tolerance": max(
             0.20, args.steady_warmup_tolerance
         ),
-        "small_steady_warmup_absolute_ms": max(
-            20.0, args.steady_warmup_absolute_ms
-        ),
+        "small_steady_warmup_absolute_ms": max(20.0, args.steady_warmup_absolute_ms),
         "repetitions": args.repetitions,
         "small_repetitions": args.small_repetitions,
         "small_bf16_gib": args.small_bf16_gib,
@@ -202,62 +108,34 @@ def protocol(args: argparse.Namespace) -> dict[str, object]:
         "setup_in_encode": False,
         "decode_in_encode": False,
         "metrics_in_encode": False,
-        "profiles": ["full"],
     }
     value["code"] = code_provenance()
     value["fingerprint"] = canonical_digest(value)
     return value
 
 
-def reference_rows(paths: list[Path]) -> dict[str, dict[str, object]]:
-    selected: dict[str, dict[str, object]] = {}
-    for path in paths:
-        payload = json.loads(path.read_text())
-        if isinstance(payload, dict):
-            payload = payload.get("results", payload.get("rows", []))
-        if not isinstance(payload, list):
-            raise ValueError(f"Reference results are not a row list: {path}")
-        grouped: dict[str, list[dict[str, object]]] = {}
-        for row in payload:
-            if not isinstance(row, dict) or row.get("status") != "ok":
-                continue
-            key = str(row.get("model_key") or "")
-            if key in SPECS_BY_KEY:
-                grouped.setdefault(key, []).append(row)
-        for key, rows in grouped.items():
-            revisions = {str(row.get("revision")) for row in rows}
-            fingerprints = {str(row.get("weights_fingerprint")) for row in rows}
-            floating = {int(row.get("floating_numel") or 0) for row in rows}
-            if len(revisions) != 1 or len(fingerprints) != 1 or len(floating) != 1:
-                raise ValueError(f"Reference rows disagree for {key} in {path}")
-            row = rows[0]
-            selected[key] = {
-                "revision": row.get("revision"),
-                "weights_fingerprint": row.get("weights_fingerprint"),
-                "floating_numel": int(row.get("floating_numel") or 0),
-                "reference_results": str(path),
-            }
-    return selected
+def load_manifest(path: Path) -> dict[str, object]:
+    """Load versioned checkpoint pins and attach canonical catalog metadata."""
 
+    source = json.loads(path.read_text())
+    if source.get("version") != 1 or not isinstance(source.get("models"), list):
+        raise ValueError(f"Unsupported fixed-model manifest: {path}")
 
-def build_manifest(args: argparse.Namespace) -> int:
-    if not args.reference_json:
-        raise SystemExit("--build-manifest requires --reference-json")
-    references = [path.resolve() for path in args.reference_json]
-    rows = reference_rows(references)
-    requested = (
-        [value.strip() for value in args.models.split(",") if value.strip()]
-        if args.models
-        else list(MODEL_ORDER)
-    )
-    unknown = [key for key in requested if key not in SPECS_BY_KEY]
-    missing = [key for key in requested if key not in rows]
-    if unknown:
-        raise SystemExit(f"Unknown models: {', '.join(unknown)}")
-    if missing:
-        raise SystemExit(f"Models missing pinned provenance: {', '.join(missing)}")
     models = []
-    for index, key in enumerate(requested):
+    seen = set()
+    for index, pin in enumerate(source["models"]):
+        key = str(pin.get("model_key") or "")
+        if key not in SPECS_BY_KEY:
+            raise ValueError(f"Manifest contains unknown model {key!r}")
+        if key in seen:
+            raise ValueError(f"Manifest repeats model {key!r}")
+        if (
+            not pin.get("revision")
+            or not pin.get("weights_fingerprint")
+            or int(pin.get("floating_numel") or 0) <= 0
+        ):
+            raise ValueError(f"Manifest has incomplete provenance for {key}")
+        seen.add(key)
         spec = SPECS_BY_KEY[key]
         models.append(
             {
@@ -267,22 +145,22 @@ def build_manifest(args: argparse.Namespace) -> int:
                 "family": spec.family,
                 "suites": list(spec.suites),
                 "spec": asdict(spec),
-                **rows[key],
+                "revision": str(pin["revision"]),
+                "weights_fingerprint": str(pin["weights_fingerprint"]),
+                "floating_numel": int(pin["floating_numel"]),
             }
         )
+
     manifest = {
-        "created_at": utc_now(),
+        "version": 1,
         "models": models,
         "model_count": len(models),
-        "reference_results": [
-            {"path": str(path), "sha256": sha256_file(path)}
-            for path in references
-        ],
+        "source": str(path.resolve()),
     }
-    manifest["fingerprint"] = canonical_digest(manifest)
-    atomic_json(args.output.resolve(), manifest)
-    print(f"manifest={args.output.resolve()} models={len(models)}", flush=True)
-    return 0
+    manifest["fingerprint"] = canonical_digest(
+        {"version": manifest["version"], "models": models}
+    )
+    return manifest
 
 
 def manifest_entry(manifest: dict[str, object], key: str) -> dict[str, object]:
@@ -390,9 +268,7 @@ def warm_until_stable(
                 "encode_seconds": seconds,
                 "codec_encode_seconds": float(metrics["codec_encode_seconds"]),
                 "input_copy_seconds": float(metrics["input_copy_seconds"]),
-                "exponent_compressed_bytes": int(
-                    metrics["exponent_compressed_bytes"]
-                ),
+                "exponent_compressed_bytes": int(metrics["exponent_compressed_bytes"]),
                 "exponent_ratio_pct": float(metrics["exponent_ratio_pct"]),
             }
         )
@@ -418,7 +294,7 @@ def warm_until_stable(
 
 
 def worker(args: argparse.Namespace) -> int:
-    manifest = json.loads(args.manifest.read_text())
+    manifest = load_manifest(args.manifest)
     entry = manifest_entry(manifest, args.worker_model)
     spec = SPECS_BY_KEY[args.worker_model]
     output = args.output_dir / "models" / f"{spec.key}.json"
@@ -465,9 +341,13 @@ def worker(args: argparse.Namespace) -> int:
                 f"Revision mismatch: {state['revision']} != {entry['revision']}"
             )
         if state["weights_fingerprint"] != entry["weights_fingerprint"]:
-            raise RuntimeError("Checkpoint fingerprint differs from the pinned manifest")
+            raise RuntimeError(
+                "Checkpoint fingerprint differs from the pinned manifest"
+            )
         if state["floating_numel"] != int(entry["floating_numel"]):
-            raise RuntimeError("Floating parameter count differs from the pinned manifest")
+            raise RuntimeError(
+                "Floating parameter count differs from the pinned manifest"
+            )
         bf16_gib = int(state["floating_numel"]) * 2 / GIB
         is_small = bf16_gib <= args.small_bf16_gib
         repetitions = args.small_repetitions if is_small else args.repetitions
@@ -532,23 +412,21 @@ def worker(args: argparse.Namespace) -> int:
             gc.collect()
 
         print(f"setup={spec.key}:neuralzip", flush=True)
-        profile = prepare_profile(
+        prepared = prepare_neuralzip(
             model,
-            "full",
-            args.threads,
+            threads=args.threads,
             verify_warmup=True,
             direct_batch_bytes=args.batch_mib * MIB,
         )
-        codec = profile["compressor"].codec
+        codec = prepared["compressor"].codec
         state["neuralzip_setup"] = {
-            "clustering_seconds": profile["clustering_seconds"],
-            "codebook_setup_seconds": profile["codebook_setup_seconds"],
-            "setup_seconds": profile["setup_seconds"],
-            "warmup_seconds": profile["warmup_seconds"],
-            "warmup_roundtrip_ok": profile["verified_warmup"],
-            "warmup_metrics": profile["warmup_metrics"],
-            "selected_mode_streams": profile["selected_mode_streams"],
-            "selection_stats": profile["selection_stats"],
+            "clustering_seconds": prepared["clustering_seconds"],
+            "codebook_setup_seconds": prepared["codebook_setup_seconds"],
+            "setup_seconds": prepared["setup_seconds"],
+            "warmup_seconds": prepared["warmup_seconds"],
+            "warmup_roundtrip_ok": prepared["verified_warmup"],
+            "warmup_metrics": prepared["warmup_metrics"],
+            "selected_mode_streams": prepared["selected_mode_streams"],
             "direct_batch_bytes": int(codec.direct_batch_bytes),
         }
         atomic_json(output, state)
@@ -556,7 +434,7 @@ def worker(args: argparse.Namespace) -> int:
         # The verified NeuralZip warm-up is followed by decoding, so discard a
         # second encode immediately before the measured repeated-use phase.
         def neuralzip_warmup():
-            return measure_profile(profile)
+            return encode_neuralzip(prepared)
 
         state["neuralzip_steady_warmups"] = warm_until_stable(
             f"{spec.key}:neuralzip",
@@ -572,7 +450,7 @@ def worker(args: argparse.Namespace) -> int:
                 f"measure={spec.key}:neuralzip:repeat-{repetition}",
                 flush=True,
             )
-            metrics = measure_profile(profile)
+            metrics = encode_neuralzip(prepared)
             state["samples"].append(
                 {
                     "variant": "neuralzip",
@@ -598,7 +476,7 @@ def worker(args: argparse.Namespace) -> int:
             flush=True,
         )
         return 0
-    except BaseException as error:
+    except Exception as error:  # noqa: BLE001 - persist every worker failure
         state["status"] = "failed"
         state["finished_at"] = utc_now()
         state["error"] = {
@@ -651,7 +529,9 @@ def write_suite_summary(
             failed.append(
                 {
                     "model_key": entry["model_key"],
-                    "reason": result.get("error", {}).get("message", result.get("status")),
+                    "reason": result.get("error", {}).get(
+                        "message", result.get("status")
+                    ),
                 }
             )
             continue
@@ -697,9 +577,7 @@ def write_suite_summary(
     }
     atomic_json(output_dir / "results.json", summary_payload)
     columns = (
-        list(table_rows[0])
-        if table_rows
-        else ["model_key", "model", "compressor"]
+        list(table_rows[0]) if table_rows else ["model_key", "model", "compressor"]
     )
     from io import StringIO
 
@@ -712,7 +590,7 @@ def write_suite_summary(
 
 
 def parent(args: argparse.Namespace) -> int:
-    manifest = json.loads(args.manifest.read_text())
+    manifest = load_manifest(args.manifest)
     proto = protocol(args)
     output_dir = args.output_dir.resolve()
     (output_dir / "models").mkdir(parents=True, exist_ok=True)
@@ -733,7 +611,9 @@ def parent(args: argparse.Namespace) -> int:
     if requested is not None:
         missing = requested - {entry["model_key"] for entry in entries}
         if missing:
-            raise SystemExit(f"Models absent from manifest: {', '.join(sorted(missing))}")
+            raise SystemExit(
+                f"Models absent from manifest: {', '.join(sorted(missing))}"
+            )
     progress = {
         "status": "running",
         "created_at": utc_now(),
@@ -815,7 +695,9 @@ def parent(args: argparse.Namespace) -> int:
             if result.returncode == 0:
                 success = True
                 break
-            print(f"failed={key}:attempt-{attempt}:exit-{result.returncode}", flush=True)
+            print(
+                f"failed={key}:attempt-{attempt}:exit-{result.returncode}", flush=True
+            )
         if success:
             progress["completed"].append(key)
         else:
@@ -838,10 +720,7 @@ def parent(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build-manifest", action="store_true")
-    parser.add_argument("--reference-json", type=Path, action="append", default=[])
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--cache-root", type=Path, action="append", default=[])
     parser.add_argument("--models", default="")
@@ -861,12 +740,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.build_manifest:
-        if args.output is None:
-            raise SystemExit("--build-manifest requires --output")
-        return build_manifest(args)
-    if args.manifest is None or args.output_dir is None:
-        raise SystemExit("A run requires --manifest and --output-dir")
+    if args.output_dir is None:
+        raise SystemExit("A run requires --output-dir")
     if not args.cache_root:
         raise SystemExit("A run requires at least one --cache-root")
     if (

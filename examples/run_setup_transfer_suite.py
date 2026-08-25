@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Benchmark one frozen NeuralZip plan across multiple family members.
+"""Benchmark one reusable NeuralZip setup across multiple family members.
 
-Each invocation builds the structural plan once from the configured source
+Each invocation builds the setup once from the configured source
 checkpoint, releases the source tensors, and then processes every target in
 the family sequentially.  Target values are not used for histogramming,
 Jensen--Shannon matching, or mode probing.  The target-specific NeuralZip and
-official ZipNN paths are retained as controls but do not affect the transferred
-plan.
+official ZipNN paths are retained as controls but do not affect the reused
+setup.
 """
 
 from __future__ import annotations
@@ -27,6 +27,20 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from examples.direct_compression import zipnn_src_pass
+from examples.model_catalog import SPECS_BY_KEY
+from examples.model_loading import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_COMPRESSION_THRESHOLD,
+    MappingModel,
+    code_provenance,
+    default_hf_cache,
+    host_provenance,
+    iter_float_tensors,
+    load_model,
+    snapshot_weight_files,
+    utc_now,
+)
 from neuralzip import Compressor
 from neuralzip.codec_protocol import (
     decode_tensor_batch,
@@ -39,21 +53,6 @@ from neuralzip.hashing import sha256_bytes, sha256_file
 from neuralzip.system import cpu_affinity, parse_cpu_set
 from neuralzip.tensors import bitwise_equal
 
-from examples.run_general_codec_rerun import (
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_COMPRESSION_THRESHOLD,
-    MappingModel,
-    ModelSpec,
-    SPECS_BY_KEY,
-    code_provenance,
-    default_hf_cache,
-    host_provenance,
-    iter_float_tensors,
-    load_model,
-    snapshot_weight_files,
-    utc_now,
-    zipnn_src_pass,
-)
 DEFAULT_THREADS = 12
 SHARED_MODES = {"shared_huff0", "packed_huff0"}
 PACKED_MODES = {"packed_huff0"}
@@ -68,74 +67,22 @@ class FamilySpec:
     target_keys: tuple[str, ...]
 
 
-EXTRA_MODEL_SPECS = (
-    ModelSpec(
-        "whisper-large-v3",
-        "Whisper large-v3",
-        "Whisper v3",
-        ("family-transfer",),
-        "hf",
-        "openai/whisper-large-v3",
-        1.55,
-    ),
-    ModelSpec(
-        "whisper-large-v3-turbo",
-        "Whisper large-v3 Turbo",
-        "Whisper v3",
-        ("family-transfer",),
-        "hf",
-        "openai/whisper-large-v3-turbo",
-        0.81,
-    ),
-    ModelSpec(
-        "siglip2-giant",
-        "SigLIP 2 Giant",
-        "SigLIP 2",
-        ("family-transfer",),
-        "hf",
-        "google/siglip2-giant-opt-patch16-384",
-    ),
-    ModelSpec(
-        "siglip2-so400m",
-        "SigLIP 2 So400m",
-        "SigLIP 2",
-        ("family-transfer",),
-        "hf",
-        "google/siglip2-so400m-patch16-384",
-    ),
-)
+MODELS_BY_KEY = SPECS_BY_KEY
 
 
-MODEL_SPECS = {
-    **SPECS_BY_KEY,
-    **{spec.key: spec for spec in EXTRA_MODEL_SPECS},
-}
-
-
-# These immutable revisions are the same checkpoints used by the final storage
-# run.  The two additional task families use the revisions already pinned by
-# the original pairwise transfer runner.
+FIXED_MODEL_MANIFEST = Path(__file__).with_name("fixed_model_manifest.json")
 PINNED_REVISIONS = {
-    "qwen25-15b": "8faed761d45a263340a0528343f099c05c9a4323",
-    "qwen25-3b": "3aab1f1954e9cc14eb9509a215f9e5ca08227a9b",
-    "qwen25-7b": "d149729398750b98c0af14eb82c78cfe92750796",
-    "qwen25-14b": "97e1e76335b7017d8f67c08a19d103c0504298c9",
-    "qwen35-08b-base": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
-    "qwen35-2b-base": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
-    "qwen35-27b": "fc05daec18b0a78c049392ed2e771dde82bdf654",
-    "olmo2-1b": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
-    "olmo2-7b": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
-    "olmo2-13b": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
-    "gemma3-1b": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
-    "gemma3-4b": "cc012e0a6d0787b4adcc0fa2c4da74402494554d",
-    "gemma3-12b": "295efb63d01a7017928f273a94ebb86105c9526f",
-    "llama32-1b": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
-    "llama32-3b": "13afe5124825b4f3751f836b40dafda64c1ed062",
-    "whisper-large-v3": "06f233fe06e710322aca913c1bc4249a0d71fce1",
-    "whisper-large-v3-turbo": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
-    "siglip2-giant": "a713301b217d38485fb2204c808367d10bc3cc40",
-    "siglip2-so400m": "dd658faac399427308559e2c3ac1e99cbe43845d",
+    str(row["model_key"]): str(row["revision"])
+    for row in json.loads(FIXED_MODEL_MANIFEST.read_text())["models"]
 }
+PINNED_REVISIONS.update(
+    {
+        "whisper-large-v3": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+        "whisper-large-v3-turbo": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+        "siglip2-giant": "a713301b217d38485fb2204c808367d10bc3cc40",
+        "siglip2-so400m": "dd658faac399427308559e2c3ac1e99cbe43845d",
+    }
+)
 
 
 FAMILY_SPECS = {
@@ -169,7 +116,7 @@ FAMILY_SPECS = {
             "qwen25",
             "Qwen 2.5",
             "qwen25-14b",
-            ("qwen25-7b", "qwen25-3b", "qwen25-15b"),
+            ("qwen25-7b", "qwen25-3b", "qwen25-1p5b"),
         ),
         FamilySpec(
             "qwen35",
@@ -210,12 +157,12 @@ GEMMA_TEXT_KEYS = {"gemma3-12b", "gemma3-4b", "gemma3-1b"}
 
 
 def canonical_tensor_name(model_key: str, name: str) -> str | None:
-    """Return the structural name used by the frozen family plan.
+    """Return the structural name used by the reusable family setup.
 
     Gemma 3 4B and 12B store the text backbone below ``language_model`` while
     the text-only 1B checkpoint stores the same module at the root.  Transfer
     is evaluated on that common language-model component, matching the
-    ``Gemma3TextModel`` scope used by the original pairwise experiment.
+    ``Gemma3TextModel`` scope shared by the checkpoints.
     """
 
     name = str(name)
@@ -255,11 +202,11 @@ def runner_sha256() -> str:
 
 
 def dependency_sha256() -> dict[str, str]:
-    paths = (REPOSITORY_ROOT / "examples" / "run_general_codec_rerun.py",)
-    return {
-        str(path.relative_to(REPOSITORY_ROOT)): sha256_file(path)
-        for path in paths
-    }
+    paths = (
+        REPOSITORY_ROOT / "examples" / "model_loading.py",
+        REPOSITORY_ROOT / "examples" / "direct_compression.py",
+    )
+    return {str(path.relative_to(REPOSITORY_ROOT)): sha256_file(path) for path in paths}
 
 
 def model_revision(key: str) -> str | None:
@@ -272,7 +219,7 @@ def checkpoint_names(
     cache_dir: Path,
     allow_download: bool,
 ) -> set[str]:
-    spec = MODEL_SPECS[key]
+    spec = MODELS_BY_KEY[key]
     if spec.backend == "torchvision":
         from torchvision import models
 
@@ -301,7 +248,7 @@ def checkpoint_names(
             from safetensors import safe_open
 
             with safe_open(str(path), framework="pt", device="cpu") as handle:
-                names.update(str(name) for name in handle.keys())
+                names.update(str(name) for name in handle)
             continue
         state = torch.load(path, map_location="meta", weights_only=True)
         names.update(str(name) for name in state)
@@ -383,11 +330,11 @@ def exponent_metrics(payloads, codebooks=()):
         "compressed_exponent_bytes": sizes.compressed_bytes,
         "compressed_exponent_group_bytes": sizes.group_bytes,
         "exponent_codebook_metadata_bytes": sizes.codebook_bytes,
-        "exponent_pct": sizes.ratio_pct,
-        "shared_exponent_pct": symbol_pct(SHARED_MODES),
-        "packed_exponent_pct": symbol_pct(PACKED_MODES),
-        "local_exponent_pct": symbol_pct(LOCAL_MODES),
-        "raw_exponent_pct": symbol_pct({"raw"}),
+        "exponent_ratio_pct": sizes.ratio_pct,
+        "shared_exponent_share_pct": symbol_pct(SHARED_MODES),
+        "packed_exponent_share_pct": symbol_pct(PACKED_MODES),
+        "local_exponent_share_pct": symbol_pct(LOCAL_MODES),
+        "raw_exponent_share_pct": symbol_pct({"raw"}),
         "mode_symbols": mode_symbols,
         "mode_chunks": mode_chunks,
         "referenced_codebooks": sizes.referenced_codebooks,
@@ -424,7 +371,7 @@ def setup_neuralzip(named_tensors, *, threads):
     report = prepare_neuralzip_codec(codec, named_tensors)
     return codec, {
         "clustering_seconds": report.clustering_seconds,
-        "codebook_seconds": report.codebook_setup_seconds,
+        "codebook_setup_seconds": report.codebook_setup_seconds,
         "setup_seconds": report.setup_seconds,
         "clusters": int(codec.cluster_count),
         "codebooks": len(codec.export_codebooks()),
@@ -451,8 +398,8 @@ def _mode_map_signature(mapping) -> tuple[object, ...]:
     )
 
 
-def frozen_plan_fingerprint(codec) -> tuple[object, ...]:
-    """Capture immutable encoding-relevant state from the source plan."""
+def frozen_setup_fingerprint(codec) -> tuple[object, ...]:
+    """Capture immutable encoding-relevant state from the source setup."""
 
     return (
         codec.export_codebooks(),
@@ -463,13 +410,13 @@ def frozen_plan_fingerprint(codec) -> tuple[object, ...]:
     )
 
 
-def frozen_plan_sha256(fingerprint) -> str:
+def frozen_setup_sha256(fingerprint) -> str:
     return sha256_bytes(repr(fingerprint).encode("utf-8"))
 
 
-def assert_frozen_plan(codec, fingerprint) -> None:
-    if frozen_plan_fingerprint(codec) != fingerprint:
-        raise RuntimeError("Direct transfer changed the frozen source plan.")
+def assert_frozen_setup(codec, fingerprint) -> None:
+    if frozen_setup_fingerprint(codec) != fingerprint:
+        raise RuntimeError("Direct transfer changed the reusable source setup.")
 
 
 def benchmark_target(
@@ -481,9 +428,9 @@ def benchmark_target(
     cache_dir: Path,
     allow_download: bool,
     threads: int,
-    plan_fingerprint,
+    setup_fingerprint,
 ) -> dict[str, object]:
-    spec = MODEL_SPECS[target_key]
+    spec = MODELS_BY_KEY[target_key]
     print(f"[{family.key}] loading target {spec.label}", flush=True)
     target = load_model(
         spec,
@@ -502,15 +449,12 @@ def benchmark_target(
         preview = ", ".join(missing[:5])
         raise RuntimeError(
             f"{spec.label} has {len(missing)} tensor name(s) outside the frozen "
-            f"source plan, including: {preview}."
+            f"source setup, including: {preview}."
         )
 
     print(f"[{family.key}] mapping {spec.label}", flush=True)
     mapping_started = time.perf_counter()
-    mapping = source_codec.prepare_direct_transfer_target(
-        tensors,
-        require_full_match=True,
-    )
+    mapping = source_codec.prepare_direct_transfer_target(tensors)
     mapping_seconds = time.perf_counter() - mapping_started
     if int(mapping["matched_tensors"]) != len(tensors):
         raise RuntimeError(f"{spec.label} did not map every floating tensor.")
@@ -521,14 +465,14 @@ def benchmark_target(
     ):
         if mapping.get(flag) is not False:
             raise RuntimeError(f"Direct transfer unexpectedly enabled {flag}.")
-    assert_frozen_plan(source_codec, plan_fingerprint)
+    assert_frozen_setup(source_codec, setup_fingerprint)
 
     print(f"[{family.key}] transferred warm-up {spec.label}", flush=True)
     transfer_warmup = compress_with_codec(source_codec, tensors, verify=True)
     if transfer_warmup["roundtrip_ok"] is not True:
         raise RuntimeError(f"Transferred round-trip failed for {spec.label}.")
     transferred = compress_with_codec(source_codec, tensors)
-    assert_frozen_plan(source_codec, plan_fingerprint)
+    assert_frozen_setup(source_codec, setup_fingerprint)
 
     print(f"[{family.key}] target-specific control {spec.label}", flush=True)
     native_codec, native_setup = setup_neuralzip(tensors, threads=threads)
@@ -554,7 +498,7 @@ def benchmark_target(
             if target_key in GEMMA_TEXT_KEYS
             else "complete floating checkpoint"
         ),
-        "transfer_setup": {"seconds": mapping_seconds, **mapping},
+        "transfer_mapping": {"seconds": mapping_seconds, **mapping},
         "neuralzip_transferred_direct": {
             **transferred,
             "roundtrip_ok": True,
@@ -564,31 +508,29 @@ def benchmark_target(
             "roundtrip_ok": True,
             "setup": native_setup,
         },
-        "zipnn_source": {
+        "zipnn": {
             **zipnn,
             "roundtrip_ok": True,
         },
         "verification": {
             "neuralzip_transferred_direct": True,
             "neuralzip_target_specific_direct": True,
-            "zipnn_source": True,
+            "zipnn": True,
         },
         "comparison": {
-            "direct_transfer_speedup_vs_zipnn_source": (
-                float(zipnn["encode_seconds"])
-                / float(transferred["encode_seconds"])
+            "direct_transfer_speedup_vs_zipnn": (
+                float(zipnn["encode_seconds"]) / float(transferred["encode_seconds"])
             ),
             "direct_transfer_speedup_vs_target_specific": (
-                float(native["encode_seconds"])
-                / float(transferred["encode_seconds"])
+                float(native["encode_seconds"]) / float(transferred["encode_seconds"])
             ),
-            "direct_transfer_ratio_delta_vs_zipnn_source_pp": (
-                float(transferred["exponent_pct"])
+            "direct_transfer_ratio_delta_vs_zipnn_pp": (
+                float(transferred["exponent_ratio_pct"])
                 - float(zipnn["exponent_ratio_pct"])
             ),
             "direct_transfer_ratio_delta_vs_target_specific_pp": (
-                float(transferred["exponent_pct"])
-                - float(native["exponent_pct"])
+                float(transferred["exponent_ratio_pct"])
+                - float(native["exponent_ratio_pct"])
             ),
         },
     }
@@ -609,7 +551,7 @@ def run_family(
     if threads <= 0:
         raise ValueError("threads must be positive.")
     started_at = utc_now()
-    source_spec = MODEL_SPECS[family.source_key]
+    source_spec = MODELS_BY_KEY[family.source_key]
     print(f"[{family.key}] loading source {source_spec.label}", flush=True)
     source = load_model(
         source_spec,
@@ -621,9 +563,9 @@ def run_family(
     source_names = {name for name, _ in source_tensors}
     source_parameters = sum(int(tensor.numel()) for _, tensor in source_tensors)
 
-    print(f"[{family.key}] building one frozen source plan", flush=True)
+    print(f"[{family.key}] building one reusable source setup", flush=True)
     source_codec, source_setup = setup_neuralzip(source_tensors, threads=threads)
-    plan_fingerprint = frozen_plan_fingerprint(source_codec)
+    setup_fingerprint = frozen_setup_fingerprint(source_codec)
     source_provenance = source.provenance
     del source_tensors, source
     gc.collect()
@@ -657,7 +599,7 @@ def run_family(
             else "complete floating checkpoint"
         ),
         "source_setup": source_setup,
-        "source_plan_sha256": frozen_plan_sha256(plan_fingerprint),
+        "source_setup_sha256": frozen_setup_sha256(setup_fingerprint),
         "target_histograms_computed": False,
         "target_js_matching": False,
         "target_mode_probing": False,
@@ -676,7 +618,7 @@ def run_family(
                 cache_dir=cache_dir,
                 allow_download=allow_download,
                 threads=threads,
-                plan_fingerprint=plan_fingerprint,
+                setup_fingerprint=setup_fingerprint,
             )
         )
         if progress_path is not None:
@@ -709,11 +651,7 @@ def main() -> int:
             allow_download=args.allow_download,
         )
         exit_code = (
-            0
-            if all(
-                row["full_exact_name_mapping"] for row in result["targets"]
-            )
-            else 1
+            0 if all(row["full_exact_name_mapping"] for row in result["targets"]) else 1
         )
     else:
         result = run_family(

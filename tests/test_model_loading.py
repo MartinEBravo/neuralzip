@@ -9,7 +9,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.run_general_codec_rerun import ModelSpec, snapshot_weight_files
+from examples.model_catalog import ModelSpec
+from examples.model_loading import snapshot_weight_files
 
 
 def _snapshot(
@@ -197,7 +198,6 @@ def test_online_snapshot_keeps_using_snapshot_download(tmp_path, monkeypatch):
                 "*.bin",
                 "*.bin.index.json",
                 "*.pt",
-                "config.json",
                 "config.json",
             ),
             "local_files_only": False,

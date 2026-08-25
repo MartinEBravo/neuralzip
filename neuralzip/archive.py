@@ -1,18 +1,10 @@
 import io
 import struct
+from contextlib import nullcontext
 from pathlib import Path
 
 from .payloads import ByteGroupPayload, CodebookPayload, StreamChunk, TensorPayload
-from .serialization import (
-    CHUNK_MODE_IDS,
-    CHUNK_MODES,
-    serialized_codebook_size,
-    serialized_codebooks_size,
-    serialized_group_size,
-    serialized_size,
-    serialized_tensor_size,
-)
-
+from .serialization import CHUNK_MODE_IDS, CHUNK_MODES
 
 MAGIC = b"NZP1"
 VERSION = 2
@@ -136,15 +128,18 @@ def dump(compressed_model, target):
             )
         tensors.append(payload)
 
-    close = False
-    if isinstance(target, (str, Path)):
-        target = Path(target).open("wb")
-        close = True
-    try:
-        _write_archive(target, compressed_model.get("method", "neuralzip"), codebooks, tensors)
-    finally:
-        if close:
-            target.close()
+    context = (
+        Path(target).open("wb")  # noqa: SIM115 - entered by the context below
+        if isinstance(target, (str, Path))
+        else nullcontext(target)
+    )
+    with context as handle:
+        _write_archive(
+            handle,
+            compressed_model.get("method", "neuralzip"),
+            codebooks,
+            tensors,
+        )
 
 
 def dumps(compressed_model):
@@ -176,7 +171,9 @@ class _Reader:
         try:
             return self.read_exact(size).decode("utf-8")
         except UnicodeDecodeError as error:
-            raise ValueError("NeuralZip archive contains invalid UTF-8 metadata.") from error
+            raise ValueError(
+                "NeuralZip archive contains invalid UTF-8 metadata."
+            ) from error
 
 
 def _read_codebook(reader):
@@ -267,12 +264,13 @@ def _read_tensor(reader):
 
 
 def load(source):
-    close = False
-    if isinstance(source, (str, Path)):
-        source = Path(source).open("rb")
-        close = True
-    reader = _Reader(source)
-    try:
+    context = (
+        Path(source).open("rb")  # noqa: SIM115 - entered by the context below
+        if isinstance(source, (str, Path))
+        else nullcontext(source)
+    )
+    with context as handle:
+        reader = _Reader(handle)
         if reader.read_exact(len(MAGIC)) != MAGIC:
             raise ValueError("Not a NeuralZip archive.")
         (version,) = reader.unpack("H")
@@ -283,14 +281,10 @@ def load(source):
         codebooks = tuple(_read_codebook(reader) for _ in range(codebook_count))
         (tensor_count,) = reader.unpack("Q")
         tensors = tuple(_read_tensor(reader) for _ in range(tensor_count))
-        if source.read(1):
+        if handle.read(1):
             raise ValueError("NeuralZip archive contains trailing bytes.")
-    finally:
-        if close:
-            source.close()
     return {
         "method": method,
-        "header": {"codebooks": codebooks},
         "codebooks": codebooks,
         "tensor_results": [{"payload": tensor} for tensor in tensors],
     }

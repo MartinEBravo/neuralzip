@@ -7,7 +7,6 @@ from the number of bytes that :mod:`neuralzip.archive` actually emits.
 
 import struct
 
-
 CHUNK_MODE_IDS = {
     "raw": 0,
     "zero": 1,
@@ -37,9 +36,7 @@ def serialized_text_size(value):
 RAW_CHUNK_METADATA_BYTES = _struct_size("BQ") + _struct_size("Q")
 SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + _struct_size("q")
 PACKED_CHUNK_METADATA_BYTES = (
-    RAW_CHUNK_METADATA_BYTES
-    + _struct_size("qQB")
-    + 2 * _struct_size("Q")
+    RAW_CHUNK_METADATA_BYTES + _struct_size("qQB") + 2 * _struct_size("Q")
 )
 
 

@@ -1,4 +1,4 @@
-"""Shared compression protocol for the final checkpoint trajectories.
+"""Shared compression protocol for checkpoint trajectories.
 
 Vision and language checkpoints deliberately share this implementation so
 their timing and byte-accounting boundaries cannot drift independently.
@@ -10,23 +10,22 @@ import gc
 import hashlib
 import struct
 import time
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Callable, Iterable, Mapping
 
 import torch
 
 from neuralzip import Compressor, NeuralZipPlan
-from neuralzip.archive import serialized_codebooks_size
 from neuralzip.codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     encode_tensor_batch,
     is_current_codec_protocol,
     measure_exponent_streams,
 )
+from neuralzip.experiment_io import read_csv
+from neuralzip.serialization import serialized_codebooks_size
 from neuralzip.tensors import bitwise_equal
 from neuralzip.zipnn_source import parse_zipnn_exponent_stream
-from neuralzip.experiment_io import read_csv
-
 
 BASE_RESULT_FIELDS = (
     "model",
@@ -61,15 +60,14 @@ BASE_RESULT_FIELDS = (
     "status",
 )
 
-ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN src": "zipnn-src"}
+ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN": "zipnn-src"}
 
 
 def is_current_codec_result(row) -> bool:
     compressor = str(row.get("compressor", ""))
-    return (
-        is_current_codec_protocol(row.get("codec_protocol_version"))
-        and row.get("encoder_path") == ENCODER_PATHS.get(compressor)
-    )
+    return is_current_codec_protocol(row.get("codec_protocol_version")) and row.get(
+        "encoder_path"
+    ) == ENCODER_PATHS.get(compressor)
 
 
 def completed_checkpoint_methods(
@@ -186,18 +184,18 @@ def setup_neuralzip(
     )
     report = plan.setup_report
     if report is None:
-        raise RuntimeError("Fitted NeuralZip plan did not report setup timing.")
+        raise RuntimeError("Fitted NeuralZip setup did not report setup timing.")
     codebooks = plan.codebooks
     return plan, {
         "clustering_seconds": report.clustering_seconds,
-        "codebook_seconds": report.codebook_setup_seconds,
+        "codebook_setup_seconds": report.codebook_setup_seconds,
         "setup_seconds": report.setup_seconds,
         "clusters": int(plan.codec.cluster_count),
         "codebooks": len(codebooks),
         "codebook_digest": plan.digest,
         "selected_modes": plan.codec.selected_modes,
         "epoch": 0,
-        "scope": "one frozen plan per training trajectory",
+        "scope": "one reusable setup per training trajectory",
     }
 
 
@@ -228,14 +226,12 @@ def benchmark_neuralzip(
     plan = _as_plan(plan)
     before = tensor_digest(named_tensors)
     mapping_started = time.perf_counter()
-    transfer = plan.map_target(
-        named_tensors,
-        strategy="structural",
-        require_full_match=True,
-    )
+    transfer = plan.map_target(named_tensors)
     mapping_seconds = time.perf_counter() - mapping_started
     if int(transfer["matched_tensors"]) != len(named_tensors):
-        raise RuntimeError(f"NeuralZip failed full checkpoint mapping at epoch {epoch}.")
+        raise RuntimeError(
+            f"NeuralZip failed full checkpoint mapping at epoch {epoch}."
+        )
     if plan.digest != str(setup["codebook_digest"]):
         raise RuntimeError("NeuralZip changed the frozen epoch-0 codebooks.")
 
@@ -262,9 +258,7 @@ def benchmark_neuralzip(
         "raw_bytes": encoded.raw_bytes,
         "compressed_bytes": compressed_bytes,
         "full_ratio_pct": (
-            100.0 * compressed_bytes / encoded.raw_bytes
-            if encoded.raw_bytes
-            else 0.0
+            100.0 * compressed_bytes / encoded.raw_bytes if encoded.raw_bytes else 0.0
         ),
         "encode_seconds": encoded.encode_seconds,
         "codec_encode_seconds": encoded.encode_seconds,
@@ -325,7 +319,7 @@ def benchmark_zipnn_src(
     roundtrip = result["roundtrip_ok"] is True
     if not unchanged or not roundtrip:
         raise RuntimeError(
-            "ZipNN src must receive a dedicated clone and preserve the checkpoint: "
+            "ZipNN must receive a dedicated clone and preserve the checkpoint: "
             f"roundtrip={roundtrip}, input_unchanged={unchanged}."
         )
     output = {
@@ -370,7 +364,7 @@ def benchmark_checkpoint_codecs(
     upsert_result: Callable[[Mapping], None],
     transform_metrics: Callable[[Mapping], Mapping] = dict,
 ) -> None:
-    """Benchmark and persist both final checkpoint codecs in stable order."""
+    """Benchmark and persist both checkpoint codecs in stable order."""
 
     named_tensors = list(tensors.items())
     methods = (
@@ -383,7 +377,7 @@ def benchmark_checkpoint_codecs(
                 setup=setup,
             ),
         ),
-        ("ZipNN src", lambda: benchmark_zipnn_src(tensors, threads=threads)),
+        ("ZipNN", lambda: benchmark_zipnn_src(tensors, threads=threads)),
     )
     for compressor, benchmark in methods:
         if compressor in completed:

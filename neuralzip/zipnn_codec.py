@@ -5,7 +5,6 @@ from . import huff0
 from .dtypes import FLOAT_DTYPES_BY_NAME, dtype_name
 from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
-
 DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
 
 ZIPNN_DTYPE_CONFIG = {
@@ -295,13 +294,13 @@ class ZipNNCodec:
         raw = bytearray(compressed.raw_bytes)
         for byte_offset, group in enumerate(compressed.groups):
             stream = self._decompress_stream(group)
-            expected_symbols = len(raw[byte_offset::compressed.element_size])
+            expected_symbols = len(raw[byte_offset :: compressed.element_size])
             if len(stream) != expected_symbols:
                 raise ValueError(
                     f"Byte group {byte_offset} has {len(stream)} symbols; "
                     f"expected {expected_symbols}."
                 )
-            raw[byte_offset::compressed.element_size] = stream
+            raw[byte_offset :: compressed.element_size] = stream
 
         restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

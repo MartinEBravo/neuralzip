@@ -5,27 +5,25 @@ import gc
 import io
 import os
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
-
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
-from examples.checkpoint_common import (  # noqa: E402
+from examples.checkpoint_common import (
     add_checkpoint_run_arguments,
     atomic_torch_save,
     initialize_checkpoint_run,
     limited,
     load_or_fit_frozen_codec,
     missing_checkpoint_slugs,
-    render_checkpoint_figure,
     restore_rng_state,
     rng_state,
     run_checkpoint_models,
@@ -34,9 +32,7 @@ from examples.checkpoint_common import (  # noqa: E402
     upsert_model_epoch_row,
     validate_checkpoint_results,
 )
-from neuralzip.checkpoint_loading import load_torch_checkpoint  # noqa: E402
-from neuralzip.experiment_io import atomic_write_json  # noqa: E402
-from examples.checkpoint_compression import (  # noqa: E402
+from examples.checkpoint_compression import (
     BASE_RESULT_FIELDS,
     CODEC_PROTOCOL_VERSION,
     ENCODER_PATHS,
@@ -47,13 +43,12 @@ from examples.checkpoint_compression import (  # noqa: E402
     nonfloating_state,
     tensor_digest,
 )
-
+from neuralzip.checkpoint_loading import load_torch_checkpoint
+from neuralzip.experiment_io import atomic_write_json
 
 DEFAULT_MODELS = (
     "resnet18",
     "resnet34",
-    "convnext_tiny",
-    "efficientnet_b0",
 )
 RESULT_FIELDS = BASE_RESULT_FIELDS
 TRAINING_FIELDS = (
@@ -75,7 +70,6 @@ TRAINING_FIELDS = (
 class ModelSpec:
     slug: str
     label: str
-    optimizer: str
     learning_rate: float
     weight_decay: float
 
@@ -83,10 +77,8 @@ class ModelSpec:
 MODEL_SPECS = {
     spec.slug: spec
     for spec in (
-        ModelSpec("resnet18", "ResNet-18", "sgd", 0.1, 5e-4),
-        ModelSpec("resnet34", "ResNet-34", "sgd", 0.1, 5e-4),
-        ModelSpec("convnext_tiny", "ConvNeXt-Tiny", "adamw", 4e-3, 0.05),
-        ModelSpec("efficientnet_b0", "EfficientNet-B0", "sgd", 0.1, 5e-4),
+        ModelSpec("resnet18", "ResNet-18", 0.1, 5e-4),
+        ModelSpec("resnet34", "ResNet-34", 0.1, 5e-4),
     )
 }
 
@@ -95,17 +87,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train CIFAR-100 models from random initialization and benchmark "
-            "every exact FP32 checkpoint with ZipNN src and a NeuralZip plan "
-            "frozen at epoch 0."
+            "every exact FP32 checkpoint with ZipNN and a NeuralZip setup "
+            "built at epoch 0."
         )
     )
-    parser.add_argument("--models", nargs="+", choices=tuple(MODEL_SPECS), default=list(DEFAULT_MODELS))
+    parser.add_argument(
+        "--models", nargs="+", choices=tuple(MODEL_SPECS), default=list(DEFAULT_MODELS)
+    )
     add_checkpoint_run_arguments(
         parser,
         epochs=50,
         batch_size=128,
-        data_dir=ROOT / "examples" / "outputs" / "datasets" / "cifar100_hf",
-        output_dir=ROOT / "results" / "final-checkpoints-cifar100",
+        data_dir=ROOT / "results" / "datasets" / "cifar100_hf",
+        output_dir=ROOT / "results" / "checkpoints-cifar100",
     )
     parser.add_argument(
         "--dataset-source",
@@ -115,7 +109,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--test-limit", type=int)
-    parser.add_argument("--smoke", action="store_true", help="Tiny synthetic code-path check; never thesis data.")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Tiny synthetic code-path check; never thesis data.",
+    )
     return parser.parse_args()
 
 
@@ -126,14 +124,6 @@ def build_model(slug: str, *, num_classes: int = 100) -> nn.Module:
         model = getattr(models, slug)(weights=None, num_classes=num_classes)
         model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         model.maxpool = nn.Identity()
-        return model
-    if slug == "convnext_tiny":
-        model = models.convnext_tiny(weights=None)
-        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
-        return model
-    if slug == "efficientnet_b0":
-        model = models.efficientnet_b0(weights=None)
-        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
         return model
     raise ValueError(f"Unsupported model: {slug}")
 
@@ -163,8 +153,8 @@ def cifar100_transforms(*, train: bool):
 
 class HFCIFAR100Parquet(Dataset):
     def __init__(self, path: Path, *, transform=None) -> None:
-        from PIL import Image
         import pyarrow.parquet as pq
+        from PIL import Image
 
         schema_names = set(pq.read_schema(path).names)
         label_column = "fine_label" if "fine_label" in schema_names else "label"
@@ -286,7 +276,7 @@ def cpu_model_state(model: nn.Module) -> dict[str, torch.Tensor]:
         name: tensor.detach().cpu().contiguous().clone()
         for name, tensor in model.state_dict().items()
     }
-    floating_state(state, error_prefix="Final checkpoint suite")
+    floating_state(state, error_prefix="Checkpoint suite")
     return state
 
 
@@ -302,13 +292,15 @@ def benchmark_checkpoint(
     result_path: Path,
 ) -> None:
     done = completed_checkpoint_methods(result_path, spec.slug, epoch)
-    if done == {"NeuralZip", "ZipNN src"}:
-        print(f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True)
+    if done == {"NeuralZip", "ZipNN"}:
+        print(
+            f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True
+        )
         return
 
     checkpoint = load_torch_checkpoint(path)
     state = checkpoint_state(checkpoint)
-    tensors = floating_state(state, error_prefix="Final checkpoint suite")
+    tensors = floating_state(state, error_prefix="Checkpoint suite")
     nonfloating = nonfloating_state(state)
     print(
         f"[{spec.slug}] epoch={epoch:03d} tensors={len(tensors)} "
@@ -347,12 +339,6 @@ def benchmark_checkpoint(
 
 
 def make_optimizer(spec: ModelSpec, model: nn.Module):
-    if spec.optimizer == "adamw":
-        return torch.optim.AdamW(
-            model.parameters(),
-            lr=spec.learning_rate,
-            weight_decay=spec.weight_decay,
-        )
     return torch.optim.SGD(
         model.parameters(),
         lr=spec.learning_rate,
@@ -363,7 +349,9 @@ def make_optimizer(spec: ModelSpec, model: nn.Module):
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device, *, amp_enabled: bool) -> tuple[float, float]:
+def evaluate(
+    model, loader, criterion, device, *, amp_enabled: bool
+) -> tuple[float, float]:
     model.eval()
     loss_total = 0.0
     correct = 0
@@ -385,7 +373,9 @@ def evaluate(model, loader, criterion, device, *, amp_enabled: bool) -> tuple[fl
     return loss_total / max(examples, 1), correct / max(examples, 1)
 
 
-def train_one_epoch(model, loader, optimizer, scaler, criterion, device, *, amp_enabled: bool):
+def train_one_epoch(
+    model, loader, optimizer, scaler, criterion, device, *, amp_enabled: bool
+):
     model.train()
     loss_total = 0.0
     correct = 0
@@ -589,7 +579,7 @@ def frozen_codec_for_trajectory(
     def prepare(checkpoint):
         tensors = floating_state(
             checkpoint_state(checkpoint),
-            error_prefix="Final checkpoint suite",
+            error_prefix="Checkpoint suite",
         )
         return (
             list(tensors.items()),
@@ -625,19 +615,6 @@ def process_trajectory(
     )
 
 
-def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | None:
-    return render_checkpoint_figure(
-        result_path,
-        output_dir,
-        models=DEFAULT_MODELS,
-        model_labels={slug: spec.label for slug, spec in MODEL_SPECS.items()},
-        output_stem="checkpoint_training",
-        figure_size=(14.4, 6.2),
-        is_current_result=is_current_codec_result,
-        legend_from_any_axis=True,
-    )
-
-
 def validate_complete_results(
     result_path: Path,
     *,
@@ -657,7 +634,7 @@ def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:
     atomic_write_json(
         args.output_dir / "run_metadata.json",
         {
-            "experiment": "final-training-checkpoint-suite",
+            "experiment": "training-checkpoint-suite",
             "models": [asdict(MODEL_SPECS[slug]) for slug in args.models],
             "dataset": dataset_name,
             "dataset_is_real": not args.smoke,
@@ -666,7 +643,7 @@ def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:
             "checkpoint_dtype": "float32 exact model state",
             "checkpoint_schedule": "epoch 0 and the end of every epoch",
             "compression_schedule": "post-hoc isolated CPU benchmark of every saved epoch",
-            "compressors": ["ZipNN src 0.5.4", "NeuralZip frozen epoch-0 plan"],
+            "compressors": ["ZipNN 0.5.4", "NeuralZip epoch-0 setup"],
             "codec_protocol_version": CODEC_PROTOCOL_VERSION,
             "encoder_paths": ENCODER_PATHS,
             "ratio_scope": "exponent symbols + raw fallback + metadata",
@@ -704,15 +681,6 @@ def main() -> None:
         args.device = "cpu"
         args.output_dir = args.output_dir / "smoke"
     result_path = initialize_checkpoint_run(args)
-    if args.render_only:
-        validate_complete_results(
-            result_path,
-            models=args.models,
-            epochs=args.epochs,
-        )
-        print(f"rendered={render_figure(result_path, args.output_dir)}", flush=True)
-        return
-
     train_data = test_data = None
     dataset_name = (
         "uoft-cs/cifar100-parquet"
@@ -751,13 +719,11 @@ def main() -> None:
         args=args,
         specs=MODEL_SPECS,
         result_path=result_path,
-        local_source="trained-by-final-runner",
+        local_source="trained-by-checkpoint-runner",
         train_trajectory=train_trajectory,
         process_trajectory=process_trajectory,
-        render_figure=render_figure,
         validate_results=validate_complete_results,
     )
-    print(f"figure={args.output_dir / 'figures' / 'checkpoint_training.pdf'}", flush=True)
 
 
 if __name__ == "__main__":

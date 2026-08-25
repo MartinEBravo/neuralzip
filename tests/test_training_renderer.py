@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "examples" / "render_four_model_training_suite.py"
-SPEC = importlib.util.spec_from_file_location("render_four_model_training_suite", SCRIPT)
+SPEC = importlib.util.spec_from_file_location(
+    "render_four_model_training_suite", SCRIPT
+)
 assert SPEC is not None and SPEC.loader is not None
 module = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = module

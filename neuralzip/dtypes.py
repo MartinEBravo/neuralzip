@@ -2,7 +2,6 @@
 
 import torch
 
-
 FLOAT_DTYPES_BY_NAME = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
@@ -12,11 +11,9 @@ FLOAT_DTYPES_BY_NAME = {
 _DTYPE_ALIASES = {
     "float16": torch.float16,
     "fp16": torch.float16,
-    "f16": torch.float16,
     "bfloat16": torch.bfloat16,
     "bf16": torch.bfloat16,
     "float32": torch.float32,
-    "fp32": torch.float32,
     "f32": torch.float32,
 }
 

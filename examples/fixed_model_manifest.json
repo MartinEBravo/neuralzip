@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "model_key": "efficientnet-b0",
+      "revision": "EfficientNet_B0_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "f2bef7ece2b6e1f1e3c6347e7b1748ce4bcb2c94d9f0af4de929b8dd6112ee9f",
+      "floating_numel": 5330564
+    },
+    {
+      "model_key": "resnet18",
+      "revision": "ResNet18_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "931cd5e2fae59b06e428f08b9890108e7892ff63441f3d0b6b4c39bb5554539c",
+      "floating_numel": 11699112
+    },
+    {
+      "model_key": "efficientnet-b3",
+      "revision": "EfficientNet_B3_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "77bbea826c17942ae427445486163528165183e325c17b022635fc11e53363cd",
+      "floating_numel": 12320528
+    },
+    {
+      "model_key": "resnet34",
+      "revision": "ResNet34_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "c4a8a602d5447ea3c60c71bfab8d8932beca87765697a9bb04fcd8972988d22e",
+      "floating_numel": 21814696
+    },
+    {
+      "model_key": "resnet50",
+      "revision": "ResNet50_Weights.IMAGENET1K_V2",
+      "weights_fingerprint": "aa805b77d339f74fdac6375175dc3c26906da60d5495df787e959a10c4bd01fc",
+      "floating_numel": 25610152
+    },
+    {
+      "model_key": "convnext-tiny",
+      "revision": "ConvNeXt_Tiny_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "1f035667739e809d8c2217f85f19fb986109ff2a12890634d3d21b68a20d9837",
+      "floating_numel": 28589128
+    },
+    {
+      "model_key": "resnet101",
+      "revision": "ResNet101_Weights.IMAGENET1K_V2",
+      "weights_fingerprint": "42e2b5352d51bb98e33e74a996e1d72e792f5066eb2e63c9b5ab53aeeb76c828",
+      "floating_numel": 44654504
+    },
+    {
+      "model_key": "convnext-small",
+      "revision": "ConvNeXt_Small_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "83b1926a268de61334b6dd573fe4b49337be89217ffe52ef62c65343f317fb6c",
+      "floating_numel": 50223688
+    },
+    {
+      "model_key": "resnet152",
+      "revision": "ResNet152_Weights.IMAGENET1K_V2",
+      "weights_fingerprint": "466f0927a5305333ca79fa0d9ff23e8293c3c716035cfe6ca3774fcdc1f83e07",
+      "floating_numel": 60344232
+    },
+    {
+      "model_key": "efficientnet-b7",
+      "revision": "EfficientNet_B7_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "310c8dc23b3df9569eb31d60ab78c6fd977c2966b8f306d6d92a4694bb3e0071",
+      "floating_numel": 66658680
+    },
+    {
+      "model_key": "gpt2",
+      "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+      "weights_fingerprint": "9bc9469fad2f9cdc2d9b79799c1908fbf5e106f0d480420fa015dd8511942d8b",
+      "floating_numel": 137022720
+    },
+    {
+      "model_key": "bert-base",
+      "revision": "86b5e0934494bd15c9632b12f734a8a67f723594",
+      "weights_fingerprint": "9c48354ee835f0d2cc4336329d7dbfe1d89e5a42f1384863494ca8fb29ddf2de",
+      "floating_numel": 110106428
+    },
+    {
+      "model_key": "convnext-base",
+      "revision": "ConvNeXt_Base_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "c92d738c99ca49642a0779346bf716a40056c8610cd897154b9e3ebcb13326cd",
+      "floating_numel": 88591464
+    },
+    {
+      "model_key": "convnext-large",
+      "revision": "ConvNeXt_Large_Weights.IMAGENET1K_V1",
+      "weights_fingerprint": "06f2909e364b3acd9ce2f6ca9c6297b933c3070c2fcfe11e40668b5fb90432aa",
+      "floating_numel": 197767336
+    },
+    {
+      "model_key": "sd15-unet",
+      "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+      "weights_fingerprint": "15ce384ec63a8742e856270f4913cd9594b12e512d29f929cdf3dad17ca30708",
+      "floating_numel": 859520964
+    },
+    {
+      "model_key": "qwen35-08b-base",
+      "revision": "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+      "weights_fingerprint": "305d0b3955d81020748af80d3d800b3ea1843abcde4058eb06636945219ed261",
+      "floating_numel": 873438784
+    },
+    {
+      "model_key": "gemma3-1b",
+      "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+      "weights_fingerprint": "9416ec040b3d412838660fbb9bcd7f963e29df5e49332eab5c49243d2dca113f",
+      "floating_numel": 999885952
+    },
+    {
+      "model_key": "llama32-1b",
+      "revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
+      "weights_fingerprint": "1acffbc34be97944eda1afb22806cff0f60d9da51293802a64f2e36824c0e36f",
+      "floating_numel": 1235814400
+    },
+    {
+      "model_key": "olmo2-1b",
+      "revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
+      "weights_fingerprint": "9e97e9bc96956ebff040b2a69cf7c45cb658e4aa2261a0d89d30607c1bb4c4da",
+      "floating_numel": 1484916736
+    },
+    {
+      "model_key": "qwen25-1p5b",
+      "revision": "8faed761d45a263340a0528343f099c05c9a4323",
+      "weights_fingerprint": "feba988508eaf45bebfa5f8f2446408cd076b1502f92ccb648b9c65b7314513a",
+      "floating_numel": 1543714304
+    },
+    {
+      "model_key": "qwen35-2b-base",
+      "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+      "weights_fingerprint": "1fcf7be5297a5b5df5def8d5afbdb51d1e9e57735ab47a427b55fcf5ebe0912f",
+      "floating_numel": 2274069824
+    },
+    {
+      "model_key": "qwen25-3b",
+      "revision": "3aab1f1954e9cc14eb9509a215f9e5ca08227a9b",
+      "weights_fingerprint": "36a4bb19aafdc55f5d34e2e4d8336411beb0df478097b066624f706ea57f2fae",
+      "floating_numel": 3085938688
+    },
+    {
+      "model_key": "llama32-3b",
+      "revision": "13afe5124825b4f3751f836b40dafda64c1ed062",
+      "weights_fingerprint": "13e4a99c359d0a05428bb68df8fd168453d84b7ee1b8b3ca5e507196db6e13eb",
+      "floating_numel": 3212749824
+    },
+    {
+      "model_key": "gemma3-4b",
+      "revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d",
+      "weights_fingerprint": "74796f435981dcb808315d46b20d97fda5a9079c73f308703b1ecf7636495881",
+      "floating_numel": 4300079472
+    },
+    {
+      "model_key": "olmoe-1b-7b-0125",
+      "revision": "9b0c1aa87e34a20052389dce1f0cf01da783f654",
+      "weights_fingerprint": "c5632e015d67b0169c8f57cafc278e5bef211bbe384f047599ceba5728fdfc96",
+      "floating_numel": 6919161856
+    },
+    {
+      "model_key": "mistral7b",
+      "revision": "caa1feb0e54d415e2df31207e5f4e273e33509b1",
+      "weights_fingerprint": "ad79f1e9ecf3252fc404b0b33e4bbb65378dc379c802bef7e83c658fc108a069",
+      "floating_numel": 7248023552
+    },
+    {
+      "model_key": "olmo2-7b",
+      "revision": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
+      "weights_fingerprint": "ce8237431bb617445cf84940fdd64cc1995518fc426ea7279e8c83a6ce3f201d",
+      "floating_numel": 7298617344
+    },
+    {
+      "model_key": "deepseek-r1-distill-qwen-7b",
+      "revision": "916b56a44061fd5cd7d6a8fb632557ed4f724f60",
+      "weights_fingerprint": "c85dff3491c252003237183ae6c2e2764ae9dc4b5c13964a0f0b88028a575a77",
+      "floating_numel": 7615616512
+    },
+    {
+      "model_key": "qwen25-7b",
+      "revision": "d149729398750b98c0af14eb82c78cfe92750796",
+      "weights_fingerprint": "dbb950a8d1b54a1372341ae74941db0d29b0fe23f334304ac2c62e9975edbf41",
+      "floating_numel": 7615616512
+    },
+    {
+      "model_key": "qwen25-7b-distilled",
+      "revision": "4ecabac382c637b7103fc4d1a96e41c1712f60e4",
+      "weights_fingerprint": "ba157e840345bfa11424b53caee46a1666cf8319ac63fa4d8d8079129505b4d4",
+      "floating_numel": 7615616512
+    },
+    {
+      "model_key": "deepseek-r1-distill-llama-8b",
+      "revision": "6a6f4aa4197940add57724a7707d069478df56b1",
+      "weights_fingerprint": "9a609a647df32ccf895776d60e543f3947662fa579d240c05571c0286cda378b",
+      "floating_numel": 8030261248
+    },
+    {
+      "model_key": "llama31-nemotron-8b",
+      "revision": "54641c1611fcff44fa4865626462445e0a153fc7",
+      "weights_fingerprint": "3894006f8aed9b97f4139f4132218dcff06442ee6fcbe1ba3c4f15e95264273a",
+      "floating_numel": 8030261248
+    },
+    {
+      "model_key": "lfm25-8b-a1b",
+      "revision": "19d919640aed1125840c33101ecf5b66a5428964",
+      "weights_fingerprint": "f331a1e0d379c1f3c376f3a79c79efe91af9ff1446e9c499c38b7850a7cacca2",
+      "floating_numel": 8467856832
+    },
+    {
+      "model_key": "jetmoe-8b",
+      "revision": "d8fd02ccf7911aa8148a63c7984ffd2e465b0352",
+      "weights_fingerprint": "f0cda8e7bd91e9567cd094032307bae62d28b2ebcdddfc7d95c69bbd2504015e",
+      "floating_numel": 8522237952
+    },
+    {
+      "model_key": "zaya1-8b",
+      "revision": "970cfc9f5e7e5a4f5f6f0645955928a9b6a98415",
+      "weights_fingerprint": "e9142db282d35dd095b79d6c478945118b503f59b30945ae7e02ad2f76ef6ff2",
+      "floating_numel": 8840489464
+    },
+    {
+      "model_key": "gemma2-9b-distilled",
+      "revision": "6f13a0fb1286f2e1deec874e98e661e5133e7862",
+      "weights_fingerprint": "fd92f47390438ec3b526e0ce296c023566b19270c739ee38938a907fc01bc938",
+      "floating_numel": 9241705984
+    },
+    {
+      "model_key": "gemma3-12b",
+      "revision": "295efb63d01a7017928f273a94ebb86105c9526f",
+      "weights_fingerprint": "ca284131a2ab12b5623de8f672496c0841da53d421e33186eb1631406c69c990",
+      "floating_numel": 12187325040
+    },
+    {
+      "model_key": "mistral-nemo-12b",
+      "revision": "a4477a2f977929a969745b69bbd62e03043551a5",
+      "weights_fingerprint": "38ef6408b815ca789daf8edc75b4a8bef6154df3533f4195ffbcfaecb38f8ed9",
+      "floating_numel": 12247782400
+    },
+    {
+      "model_key": "olmo2-13b",
+      "revision": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+      "weights_fingerprint": "353aabd3d398d41f2c0316b7bd524dc6429c5435d7875cc11f036b992515e461",
+      "floating_numel": 13716198400
+    },
+    {
+      "model_key": "qwen15-moe-a27b",
+      "revision": "1a758c50ecb6350748b9ce0a99d2352fd9fc11c9",
+      "weights_fingerprint": "28bd137103922118ae5377c358debd316b8e195002233f79cd0b1e67312c4b52",
+      "floating_numel": 14315784192
+    },
+    {
+      "model_key": "phi4-14b",
+      "revision": "2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+      "weights_fingerprint": "9175e86e2a71b857b0d6174783a99b2ea29d2f72523403c972e7d38a3fd1f1bf",
+      "floating_numel": 14659507200
+    },
+    {
+      "model_key": "qwen25-14b",
+      "revision": "97e1e76335b7017d8f67c08a19d103c0504298c9",
+      "weights_fingerprint": "72f4c83b52decb437d7386e3a861508eb53053624bcb01ad15704b89dafa5ca8",
+      "floating_numel": 14770033664
+    },
+    {
+      "model_key": "deepseek-moe-16b",
+      "revision": "521d2bc4fb69a3f3ae565310fcc3b65f97af2580",
+      "weights_fingerprint": "81e1729b16bf17684cee7e3179e40128765db2182f7441b885d876d14062535f",
+      "floating_numel": 16375728128
+    },
+    {
+      "model_key": "gemma4-26b-a4b",
+      "revision": "24548b62aa021d562695c04aaf7758a1ea47990b",
+      "weights_fingerprint": "6153ae1561f4f3fb4f94c4c48045974dbdaf0758df282e8ba6a1e472d9d68b58",
+      "floating_numel": 25805936206
+    },
+    {
+      "model_key": "qwen35-27b",
+      "revision": "fc05daec18b0a78c049392ed2e771dde82bdf654",
+      "weights_fingerprint": "c180777f54f63dc6f462872f0974fa901f8e861098bdae11f025351d4f2d45f0",
+      "floating_numel": 27781427952
+    },
+    {
+      "model_key": "qwen3-30b-a3b",
+      "revision": "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+      "weights_fingerprint": "1aa6c1b4c912bf3597acae0644e7fef66b1cfe547fd4d935513da7446bd4aa64",
+      "floating_numel": 30532122624
+    },
+    {
+      "model_key": "gemma4-31b",
+      "revision": "02e15e4990e8c452f8543fb26beff15b1daf8f3d",
+      "weights_fingerprint": "5d66b099027c5f4037873b5acdbe465f414458197126be9b5754c6606caf1dd6",
+      "floating_numel": 31273088876
+    },
+    {
+      "model_key": "qwen35-35b-a3b",
+      "revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+      "weights_fingerprint": "6aa45c7ee8357bba09bf453b188608d8f5fff402b798b9fa5db62b313e823a40",
+      "floating_numel": 35951822704
+    },
+    {
+      "model_key": "mixtral-8x7b",
+      "revision": "fc7ac94680e38d7348cfa806e51218e6273104b0",
+      "weights_fingerprint": "dfc4381f4ac7369ee4f57973158e23b58754374b39ec776e5db64514a4be0475",
+      "floating_numel": 46702792704
+    },
+    {
+      "model_key": "latamgpt-70b",
+      "revision": "504d5e6f36ee17b795662f11bfb2dbb5164f6ac5",
+      "weights_fingerprint": "0b27e44a6f5106f073fb40d05650fbf17525b0ce833b1f5b95f76afd41caed0c",
+      "floating_numel": 70553706496
+    }
+  ]
+}

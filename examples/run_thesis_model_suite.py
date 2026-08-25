@@ -10,7 +10,6 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -26,25 +25,33 @@ from torchvision.models import (
 from transformers import AutoModel
 
 from neuralzip import Compressor
-from neuralzip.codec_protocol import measure_compressor_exponents
 from neuralzip.ablations import (
     delta_exponent_huffman_cost,
     order1_huffman_cluster_cost,
     selected_turborc_range_cost,
     zipnn_exponent_stream,
 )
+from neuralzip.codec_protocol import measure_compressor_exponents
 from neuralzip.metrics import (
     conditional_entropy_from_counts as first_order_entropy_from_counts,
+)
+from neuralzip.metrics import (
     jensen_shannon_distance as jensen_shannon,
+)
+from neuralzip.metrics import (
     shannon_entropy_from_counts as entropy_from_counts,
 )
 from neuralzip.zipnn_source import parse_zipnn_exponent_stream
 
+try:
+    from .model_catalog import SPECS_BY_KEY, ModelSpec
+except ImportError:  # Direct execution from the examples directory.
+    from model_catalog import SPECS_BY_KEY, ModelSpec
+
 
 ROOT = Path(__file__).resolve().parents[1]
-THESIS_ROOT = ROOT.parent
-MODEL_ROOT = THESIS_ROOT / ".hf-cache"
-OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "phenomenon_model_suite"
+MODEL_ROOT = ROOT / "results" / "model-cache"
+OUTPUT_DIR = ROOT / "results" / "thesis-model-suite"
 FIGURE_DIR = OUTPUT_DIR / "figures"
 NGRAM_SIZES = (1, 2, 4, 8)
 NGRAM_SAMPLE_EXPONENTS = 8 << 20
@@ -53,46 +60,10 @@ JS_THRESHOLD = 0.05
 FIELD_CHUNK_ELEMENTS = 4 << 20
 
 
-@dataclass(frozen=True)
-class ModelSpec:
-    slug: str
-    label: str
-    source: str
-    local_path: Path
-    kind: str
-
-
-MODEL_SPECS = (
-    ModelSpec(
-        slug="gpt2",
-        label="GPT-2",
-        source="gpt2",
-        local_path=MODEL_ROOT / "gpt2",
-        kind="hf_auto",
-    ),
-    ModelSpec(
-        slug="bert-base",
-        label="BERT Base",
-        source="google-bert/bert-base-uncased",
-        local_path=MODEL_ROOT / "bert-base-uncased",
-        kind="hf_auto",
-    ),
-    ModelSpec(
-        slug="resnet18",
-        label="ResNet-18",
-        source="torchvision ResNet18_Weights.IMAGENET1K_V1",
-        local_path=MODEL_ROOT / "resnet18",
-        kind="resnet18",
-    ),
-    ModelSpec(
-        slug="resnet34",
-        label="ResNet-34",
-        source="torchvision ResNet34_Weights.IMAGENET1K_V1",
-        local_path=MODEL_ROOT / "resnet34",
-        kind="resnet34",
-    ),
-)
-SPECS_BY_SLUG = {spec.slug: spec for spec in MODEL_SPECS}
+PHENOMENON_KEYS = ("gpt2", "bert-base", "resnet18", "resnet34")
+MODEL_SPECS = tuple(SPECS_BY_KEY[key] for key in PHENOMENON_KEYS)
+SPECS_BY_SLUG = {spec.key: spec for spec in MODEL_SPECS}
+LOCAL_MODEL_DIRECTORIES = {"bert-base": "bert-base-uncased"}
 
 
 class ModelView:
@@ -102,24 +73,31 @@ class ModelView:
         self.model = module
 
 
-def load_model(spec: ModelSpec) -> ModelView:
-    if spec.kind == "hf_auto":
-        source = spec.local_path if (spec.local_path / "config.json").is_file() else spec.source
+def load_model(
+    spec: ModelSpec,
+    *,
+    model_root: Path = MODEL_ROOT,
+    allow_download: bool = False,
+) -> ModelView:
+    if spec.backend == "hf":
+        local_path = model_root / LOCAL_MODEL_DIRECTORIES.get(spec.key, spec.key)
+        source = local_path if (local_path / "config.json").is_file() else spec.source
         module = AutoModel.from_pretrained(
             source,
             dtype=torch.bfloat16,
-            local_files_only=True,
+            cache_dir=model_root,
+            local_files_only=not allow_download,
         )
-    elif spec.kind == "resnet18":
+    elif spec.key == "resnet18":
         module = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1).to(
             dtype=torch.bfloat16
         )
-    elif spec.kind == "resnet34":
+    elif spec.key == "resnet34":
         module = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1).to(
             dtype=torch.bfloat16
         )
     else:
-        raise ValueError(f"Unsupported model kind: {spec.kind}")
+        raise ValueError(f"Unsupported phenomenon model: {spec.key}")
 
     module.eval()
     module.requires_grad_(False)
@@ -138,14 +116,7 @@ def floating_parameters(view: ModelView):
 
 
 def bf16_fields(parameter: torch.Tensor, start: int, stop: int):
-    raw = (
-        parameter.detach()
-        .cpu()
-        .contiguous()
-        .view(torch.uint8)
-        .reshape(-1)
-        .numpy()
-    )
+    raw = parameter.detach().cpu().contiguous().view(torch.uint8).reshape(-1).numpy()
     low = raw[2 * start : 2 * stop : 2]
     high = raw[2 * start + 1 : 2 * stop : 2]
     sign = high >> np.uint8(7)
@@ -155,7 +126,9 @@ def bf16_fields(parameter: torch.Tensor, start: int, stop: int):
 
 
 def sample_allocations(parameters, budget):
-    sizes = np.asarray([int(parameter.numel()) for _, parameter in parameters], dtype=np.int64)
+    sizes = np.asarray(
+        [int(parameter.numel()) for _, parameter in parameters], dtype=np.int64
+    )
     total = int(sizes.sum())
     target = min(int(budget), total)
     if target == 0:
@@ -250,9 +223,8 @@ def run_diagnostics(view: ModelView):
                     transition_counts[int(previous), int(exponent[0])] += 1
                 if exponent.size > 1:
                     pair_ids = (
-                        (exponent[:-1].astype(np.uint16) << np.uint16(8))
-                        | exponent[1:].astype(np.uint16)
-                    )
+                        exponent[:-1].astype(np.uint16) << np.uint16(8)
+                    ) | exponent[1:].astype(np.uint16)
                     transition_counts += np.bincount(
                         pair_ids, minlength=256 * 256
                     ).reshape(256, 256)
@@ -274,9 +246,13 @@ def run_diagnostics(view: ModelView):
         sample = sampled_exponent_stream(name, parameter, allocation)
         if sample.size:
             sampled_streams.append(sample)
-        if tensor_index == 1 or tensor_index % 25 == 0 or tensor_index == len(parameters):
+        if (
+            tensor_index == 1
+            or tensor_index % 25 == 0
+            or tensor_index == len(parameters)
+        ):
             print(
-                f"[{view.spec.slug}] diagnostics {tensor_index}/{len(parameters)} "
+                f"[{view.spec.key}] diagnostics {tensor_index}/{len(parameters)} "
                 f"{name} ({size:,})",
                 flush=True,
             )
@@ -311,7 +287,7 @@ def run_diagnostics(view: ModelView):
                 "sampled_exponents": sampled_exponents,
                 "tokens": token_count,
                 "tails": tails,
-                "unique_ngrams": int(len(counts)),
+                "unique_ngrams": len(counts),
             }
         )
         del token_arrays
@@ -332,7 +308,7 @@ def run_diagnostics(view: ModelView):
     matrix = matrix[np.ix_(order, order)]
     selected_names = [selected_names[index] for index in order]
 
-    model_dir = OUTPUT_DIR / view.spec.slug
+    model_dir = OUTPUT_DIR / view.spec.key
     model_dir.mkdir(parents=True, exist_ok=True)
     metadata.to_csv(model_dir / "tensor_exponent_summary.csv", index=False)
     pd.DataFrame(ngram_rows).to_csv(model_dir / "ngram_entropy.csv", index=False)
@@ -376,7 +352,7 @@ def component_exponent_metrics(result):
         "raw_bytes": report.raw_bytes,
         "compressed_bytes": report.compressed_bytes,
         "codebook_bytes": report.codebook_bytes,
-        "compression_pct": report.ratio_pct,
+        "exponent_ratio_pct": report.ratio_pct,
     }
 
 
@@ -406,20 +382,17 @@ def production_exponent_measure(
         **options,
     ).compress(view)
     if result["roundtrip_ok"] is not True:
-        raise RuntimeError(
-            f"Round-trip failed for {view.spec.label} {method}."
-        )
+        raise RuntimeError(f"Round-trip failed for {view.spec.label} {method}.")
     if method == "zipnn-src":
         raw_bytes, compressed_bytes = zipnn_exponent_metrics(
             result,
             method,
-            threads,
         )
         exponent_metrics = {
             "raw_bytes": raw_bytes,
             "compressed_bytes": compressed_bytes,
             "codebook_bytes": 0,
-            "compression_pct": 100.0 * compressed_bytes / raw_bytes,
+            "exponent_ratio_pct": 100.0 * compressed_bytes / raw_bytes,
         }
     else:
         exponent_metrics = component_exponent_metrics(result)
@@ -427,7 +400,7 @@ def production_exponent_measure(
         **exponent_metrics,
         "encode_seconds": float(result["encode_seconds"]),
         "setup_seconds": float(result.get("setup_seconds") or 0.0),
-        "clusters": int((result.get("header") or {}).get("clusters") or 0),
+        "clusters": int(result.get("clusters") or 0),
         "selected_modes": result.get("selected_modes") or {},
         "roundtrip_ok": bool(result["roundtrip_ok"]),
     }
@@ -461,9 +434,7 @@ def run_component(view: ModelView, threads: int):
     )
     rows = []
     for variant, method, options in variants:
-        metrics = production_exponent_measure(
-            view, method, threads, **options
-        )
+        metrics = production_exponent_measure(view, method, threads, **options)
         rows.append(
             {
                 "model": view.spec.label,
@@ -473,11 +444,9 @@ def run_component(view: ModelView, threads: int):
             }
         )
 
-    runs = pd.DataFrame(rows)
-    summary = runs.copy()
-    model_dir = OUTPUT_DIR / view.spec.slug
+    summary = pd.DataFrame(rows)
+    model_dir = OUTPUT_DIR / view.spec.key
     model_dir.mkdir(parents=True, exist_ok=True)
-    runs.to_csv(model_dir / "component_runs.csv", index=False)
     summary.to_csv(model_dir / "component_summary.csv", index=False)
     write_json(
         model_dir / "component_metadata.json",
@@ -486,7 +455,7 @@ def run_component(view: ModelView, threads: int):
             "warmup_runs": 1,
             "threads": int(threads),
             "backend": "official ZipNN source and NeuralZip production encoder",
-            "zipnn_source_version": importlib.metadata.version("zipnn"),
+            "zipnn_version": importlib.metadata.version("zipnn"),
             "zipnn_defensive_copy_included": True,
             "ratio_scope": "exponent payload plus compressor-native metadata",
             "seconds": time.perf_counter() - start,
@@ -497,9 +466,9 @@ def run_component(view: ModelView, threads: int):
 
 def timed_cost(function):
     start = time.perf_counter()
-    frame = function()
+    result = function()
     seconds = time.perf_counter() - start
-    return frame.iloc[0].to_dict(), seconds
+    return result, seconds
 
 
 def select_mmrepair_pair(view: ModelView):
@@ -529,9 +498,9 @@ def run_mmrepair(view: ModelView, mmrepair_dir: Path):
         shapes.append(list(tensor.shape))
     matrix = np.concatenate(matrices, axis=0)
 
-    output_dir = OUTPUT_DIR / view.spec.slug / "mmrepair"
+    output_dir = OUTPUT_DIR / view.spec.key / "mmrepair"
     output_dir.mkdir(parents=True, exist_ok=True)
-    base = output_dir / f"{view.spec.slug}.exp.i32"
+    base = output_dir / f"{view.spec.key}.exp.i32"
     matrix.astype("<i4").tofile(base)
     command = [
         sys.executable,
@@ -552,7 +521,7 @@ def run_mmrepair(view: ModelView, mmrepair_dir: Path):
     )
     log = completed.stdout + completed.stderr
     (output_dir / "matrepair.log").write_text(log)
-    matches = re.findall(r"^Elapsed time:\s+([0-9.]+)$", completed.stdout, re.M)
+    matches = re.findall(r"^Elapsed time:\s+([0-9.]+)$", completed.stdout, re.MULTILINE)
     if not matches:
         raise RuntimeError("Could not parse MM-RePair elapsed time.")
     paths = (
@@ -566,7 +535,7 @@ def run_mmrepair(view: ModelView, mmrepair_dir: Path):
         "method": "MM-RePair",
         "raw_bytes": raw_bytes,
         "compressed_bytes": compressed_bytes,
-        "compressed_pct": 100.0 * compressed_bytes / raw_bytes,
+        "exponent_ratio_pct": 100.0 * compressed_bytes / raw_bytes,
         "encode_seconds": float(matches[-1]),
         "tensor_names": [name for name, _ in pair],
         "tensor_shapes": shapes,
@@ -582,7 +551,7 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
         {
             "method": "ZipNN",
             "encode_seconds": float(zipnn["encode_seconds"]),
-            "compressed_pct": float(zipnn["compression_pct"]),
+            "exponent_ratio_pct": float(zipnn["exponent_ratio_pct"]),
             "raw_bytes": int(zipnn["raw_bytes"]),
             "compressed_bytes": int(zipnn["compressed_bytes"]),
         }
@@ -593,7 +562,7 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
         {
             "method": "NeuralZip",
             "encode_seconds": float(neuralzip["encode_seconds"]),
-            "compressed_pct": float(neuralzip["compression_pct"]),
+            "exponent_ratio_pct": float(neuralzip["exponent_ratio_pct"]),
             "raw_bytes": int(neuralzip["raw_bytes"]),
             "compressed_bytes": int(neuralzip["compressed_bytes"]),
         }
@@ -608,7 +577,7 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
         {
             "method": "Delta exponent Huffman",
             "encode_seconds": delta_seconds,
-            "compressed_pct": float(delta["compressed_pct"]),
+            "exponent_ratio_pct": float(delta["exponent_ratio_pct"]),
             "raw_bytes": int(delta["raw_bytes"]),
             "compressed_bytes": int(delta["compressed_bytes"]),
         }
@@ -623,7 +592,7 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
         {
             "method": "Order-1 clustered Huffman",
             "encode_seconds": order1_seconds,
-            "compressed_pct": float(order1["compressed_pct"]),
+            "exponent_ratio_pct": float(order1["exponent_ratio_pct"]),
             "raw_bytes": int(order1["raw_bytes"]),
             "compressed_bytes": int(order1["compressed_bytes"]),
         }
@@ -631,15 +600,15 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
 
     arithmetic = selected_turborc_range_cost(
         view,
-        cluster_js_thresholds=(JS_THRESHOLD,),
+        cluster_js_threshold=JS_THRESHOLD,
         layout="transpose2d",
         method="rccs",
-    ).iloc[0].to_dict()
+    )
     rows.append(
         {
             "method": "Arithmetic coding",
             "encode_seconds": float(arithmetic["encode_seconds"]),
-            "compressed_pct": float(arithmetic["compressed_pct"]),
+            "exponent_ratio_pct": float(arithmetic["exponent_ratio_pct"]),
             "raw_bytes": int(arithmetic["raw_bytes"]),
             "compressed_bytes": int(arithmetic["compressed_bytes"]),
         }
@@ -647,18 +616,18 @@ def run_deferred(view: ModelView, mmrepair_dir: Path, threads: int):
 
     frame = pd.DataFrame(rows)
     frame.insert(0, "model", view.spec.label)
-    model_dir = OUTPUT_DIR / view.spec.slug
+    model_dir = OUTPUT_DIR / view.spec.key
     model_dir.mkdir(parents=True, exist_ok=True)
     frame.to_csv(model_dir / "deferred.csv", index=False)
     return frame
 
 
 def compact_compression_result(result):
-    excluded = {"tensor_results", "codebooks", "header"}
+    excluded = {"tensor_results", "codebooks"}
     return {key: value for key, value in result.items() if key not in excluded}
 
 
-def zipnn_exponent_metrics(result, method: str, threads: int):
+def zipnn_exponent_metrics(result, method: str):
     """Return the complete BF16 exponent representation for local/src ZipNN."""
 
     raw_bytes = 0
@@ -674,7 +643,6 @@ def zipnn_exponent_metrics(result, method: str, threads: int):
     if method != "zipnn-src":
         raise ValueError(method)
 
-    del threads
     for tensor_result in result["tensor_results"]:
         payload = tensor_result["payload"]
         _, exponent = parse_zipnn_exponent_stream(
@@ -717,7 +685,6 @@ def run_zipnn_implementation(view: ModelView, threads: int):
         exponent_raw_bytes, exponent_compressed_bytes = zipnn_exponent_metrics(
             result,
             method,
-            threads,
         )
         rows.append(
             {
@@ -730,7 +697,7 @@ def run_zipnn_implementation(view: ModelView, threads: int):
                 "input_copy_seconds": float(result.get("input_copy_seconds", 0.0)),
                 "raw_bytes": exponent_raw_bytes,
                 "compressed_bytes": exponent_compressed_bytes,
-                "compressed_pct": 100.0
+                "exponent_ratio_pct": 100.0
                 * exponent_compressed_bytes
                 / exponent_raw_bytes,
                 "full_raw_bytes": int(result["raw_bytes"]),
@@ -747,14 +714,14 @@ def run_zipnn_implementation(view: ModelView, threads: int):
             ),
         }
         print(
-            f"[{view.spec.slug}] {method}: total={result['encode_seconds']:.6f}s, "
+            f"[{view.spec.key}] {method}: total={result['encode_seconds']:.6f}s, "
             f"codec={result.get('codec_encode_seconds', result['encode_seconds']):.6f}s, "
             f"copy={result.get('input_copy_seconds', 0.0):.6f}s, "
             f"exponent={100.0 * exponent_compressed_bytes / exponent_raw_bytes:.3f}%",
             flush=True,
         )
     frame = pd.DataFrame(rows)
-    model_dir = OUTPUT_DIR / view.spec.slug
+    model_dir = OUTPUT_DIR / view.spec.key
     model_dir.mkdir(parents=True, exist_ok=True)
     frame.to_csv(model_dir / "zipnn_implementation.csv", index=False)
     write_json(
@@ -798,7 +765,7 @@ def json_default(value):
 def aggregate_csv(filename):
     frames = []
     for spec in MODEL_SPECS:
-        path = OUTPUT_DIR / spec.slug / filename
+        path = OUTPUT_DIR / spec.key / filename
         if not path.is_file():
             raise FileNotFoundError(path)
         frames.append(pd.read_csv(path))
@@ -811,7 +778,7 @@ def render_figures():
     ngrams = []
     heatmaps = []
     for spec in MODEL_SPECS:
-        model_dir = OUTPUT_DIR / spec.slug
+        model_dir = OUTPUT_DIR / spec.key
         diagnostics.append(json.loads((model_dir / "diagnostics.json").read_text()))
         ngram = pd.read_csv(model_dir / "ngram_entropy.csv")
         ngram.insert(0, "model", spec.label)
@@ -832,7 +799,11 @@ def render_figures():
     ngram.to_csv(FIGURE_DIR / "ngram_exponent_entropy.csv", index=False)
 
     colors = ("#c44e52", "#55a868", "#4c72b0")
-    fields = (("sign", "Sign Entropy", 1), ("exponent", "Exponent Entropy", 8), ("mantissa", "Mantissa Entropy", 7))
+    fields = (
+        ("sign", "Sign Entropy", 1),
+        ("exponent", "Exponent Entropy", 8),
+        ("mantissa", "Mantissa Entropy", 7),
+    )
     fig, axes = plt.subplots(1, 3, figsize=(14, 5.8))
     for axis, (field, title, width), color in zip(axes, fields, colors):
         axis.bar(entropy["model"], entropy[field], color=color)
@@ -909,7 +880,12 @@ def aggregate_tables():
     zipnn.to_csv(OUTPUT_DIR / "zipnn_implementation_all_models.csv", index=False)
 
 
-def write_run_metadata(threads: int):
+def write_run_metadata(
+    threads: int,
+    *,
+    model_root: Path,
+    allow_download: bool,
+):
     write_json(
         OUTPUT_DIR / "run_metadata.json",
         {
@@ -917,6 +893,8 @@ def write_run_metadata(threads: int):
             "dtype": "bfloat16",
             "repetitions": 1,
             "threads": int(threads),
+            "model_root": str(model_root.resolve()),
+            "allow_download": bool(allow_download),
             "ngram_sample_exponents": NGRAM_SAMPLE_EXPONENTS,
             "max_heatmap_tensors": MAX_HEATMAP_TENSORS,
             "js_threshold": JS_THRESHOLD,
@@ -931,6 +909,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", choices=tuple(SPECS_BY_SLUG))
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
+    parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--threads", type=int, default=12)
     parser.add_argument(
         "--phase",
@@ -949,7 +929,11 @@ def main():
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    write_run_metadata(args.threads)
+    write_run_metadata(
+        args.threads,
+        model_root=args.model_root,
+        allow_download=args.allow_download,
+    )
     if args.phase == "render":
         render_figures()
         aggregate_tables()
@@ -958,7 +942,11 @@ def main():
         raise SystemExit("--model is required unless --phase=render")
 
     spec = SPECS_BY_SLUG[args.model]
-    view = load_model(spec)
+    view = load_model(
+        spec,
+        model_root=args.model_root,
+        allow_download=args.allow_download,
+    )
     print(
         f"loaded={spec.label} parameters="
         f"{sum(parameter.numel() for parameter in view.model.parameters()):,}",

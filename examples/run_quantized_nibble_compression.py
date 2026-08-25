@@ -11,10 +11,10 @@ import platform
 import struct
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from huggingface_hub import HfApi, HfFileSystem
@@ -29,23 +29,25 @@ from neuralzip.checkpoint_loading import resolve_weight_map
 from neuralzip.experiment_io import atomic_write_json
 from neuralzip.hashing import (
     canonical_digest as _shared_canonical_digest,
+)
+from neuralzip.hashing import (
     sha256_file as _shared_sha256_file,
 )
 from neuralzip.metrics import jensen_shannon_distance as _js_distance
-from neuralzip.payloads import (
+from neuralzip.serialization import (
     RAW_CHUNK_METADATA_BYTES as CHUNK_HEADER_BYTES,
+)
+from neuralzip.serialization import (
     SHARED_CHUNK_METADATA_BYTES as SHARED_CHUNK_HEADER_BYTES,
 )
 from neuralzip.system import cpu_affinity
 
-
-DEFAULT_OUTPUT_DIR = Path(
-    "examples/outputs/lossy_lossless/quantized_nibbles_final"
-)
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT_DIR = ROOT / "results" / "quantized-nibbles"
 ALLOWED_ARTIFACT_EXTENSIONS = (".safetensors", ".gguf")
 RAW_CHUNK_BYTES = 256 << 10
 MAX_SAMPLE_BYTES_PER_FILE = 64 << 20
-CODEBOOK_HEADER_BYTES = 8 + len("nibble".encode("utf-8")) + 8
+CODEBOOK_HEADER_BYTES = 8 + len(b"nibble") + 8
 CLUSTER_JS_THRESHOLD = 0.05
 MAX_CLUSTER_SAMPLE_BYTES = 16 << 20
 SAMPLE_MANIFEST_VERSION = 2
@@ -80,7 +82,7 @@ class SharedPlan:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Reproducible nibble-compression probe for real quantized model "
+            "Reproducible nibble-compression experiment for real quantized model "
             "artifacts. Remote I/O is materialized before any encode timing."
         )
     )
@@ -102,8 +104,8 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="MODEL=REVISION",
         help=(
-            "Optional pinned Hugging Face revision. MODEL may be a name, id, "
-            "or slug. The resolved commit is always stored in the manifest."
+            "Override the catalog's pinned Hugging Face revision. MODEL may be "
+            "a name, id, or slug."
         ),
     )
     parser.add_argument(
@@ -140,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     if args.threads <= 0:
-        parser.error("--threads must be positive; use 12 for final results.")
+        parser.error("--threads must be positive.")
     if args.max_sample_bytes_per_file <= 0:
         parser.error("--max-sample-bytes-per-file must be positive.")
     if args.raw_chunk_bytes <= 0:
@@ -195,11 +197,9 @@ def _select_specs(selection: str) -> list[dict]:
 
 def _revision_overrides(values: Iterable[str], specs: list[dict]) -> dict[str, str]:
     aliases = {
-        alias: str(spec["model_id"])
-        for spec in specs
-        for alias in _spec_aliases(spec)
+        alias: str(spec["model_id"]) for spec in specs for alias in _spec_aliases(spec)
     }
-    revisions = {}
+    revisions = {str(spec["model_id"]): str(spec["revision"]) for spec in specs}
     for value in values:
         selector, separator, revision = value.partition("=")
         if not separator or not selector.strip() or not revision.strip():
@@ -232,9 +232,7 @@ def _safe_repository_path(value: object) -> str:
 def _artifact_selector(spec: dict) -> dict:
     raw = spec.get("artifact_selector")
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"{spec.get('model_id')} has no explicit artifact_selector."
-        )
+        raise TypeError(f"{spec.get('model_id')} has no explicit artifact_selector.")
     kind = str(raw.get("kind") or "")
     if kind == "safetensors-index":
         index = str(raw.get("index") or "")
@@ -386,9 +384,7 @@ def _hf_model_files(
         path = str(item["name"])
         relative_path = _remote_relative_path(model_id, path)
         if relative_path in repository_files:
-            raise ValueError(
-                f"Duplicate repository artifact path: {relative_path}"
-            )
+            raise ValueError(f"Duplicate repository artifact path: {relative_path}")
         repository_files[relative_path] = item
 
     if selector["kind"] == "safetensors-index":
@@ -444,9 +440,7 @@ def _manifest_payload(manifest: dict) -> dict:
         "resolved_revision": manifest["resolved_revision"],
         "artifact_selector": manifest["artifact_selector"],
         "selected_artifacts": manifest["selected_artifacts"],
-        "max_sample_bytes_per_file": manifest[
-            "max_sample_bytes_per_file"
-        ],
+        "max_sample_bytes_per_file": manifest["max_sample_bytes_per_file"],
         "files": [
             {
                 "relative_path": row["relative_path"],
@@ -607,9 +601,7 @@ def _materialize_model(
         "max_sample_bytes_per_file": int(max_sample_bytes_per_file),
         "files": manifest_files,
     }
-    manifest["sample_fingerprint"] = _canonical_digest(
-        _manifest_payload(manifest)
-    )
+    manifest["sample_fingerprint"] = _canonical_digest(_manifest_payload(manifest))
     _write_json(manifest_path, manifest)
     return _validate_manifest(
         manifest_path,
@@ -621,8 +613,7 @@ def _materialize_model(
 
 def _load_samples(manifest: dict, model_dir: Path) -> tuple[bytes, ...]:
     samples = tuple(
-        (model_dir / str(row["cache_file"])).read_bytes()
-        for row in manifest["files"]
+        (model_dir / str(row["cache_file"])).read_bytes() for row in manifest["files"]
     )
     if sum(map(len, samples)) != sum(
         int(row["sample_bytes"]) for row in manifest["files"]
@@ -822,13 +813,9 @@ def _encode_shared(
         source_blocks, encoded_by_index, strict=True
     ):
         raw_cost = _raw_chunk_cost(source)
-        encoded_cost = (
-            SHARED_CHUNK_HEADER_BYTES + len(payload) if payload else raw_cost
-        )
+        encoded_cost = SHARED_CHUNK_HEADER_BYTES + len(payload) if payload else raw_cost
         if payload is not None and encoded_cost < raw_cost:
-            blocks.append(
-                EncodedBlock("shared_huff0", source, payload, cluster_index)
-            )
+            blocks.append(EncodedBlock("shared_huff0", source, payload, cluster_index))
             payload_bytes += encoded_cost
             huffman_chunks += 1
             referenced_clusters.add(cluster_index)
@@ -866,9 +853,7 @@ def _verify_archive(
         if block.mode == "raw":
             restored = block.payload
         elif block.mode == "local_huff0":
-            nibble_bytes = huff0.decompress_block(
-                block.payload, 2 * len(block.source)
-            )
+            nibble_bytes = huff0.decompress_block(block.payload, 2 * len(block.source))
             restored = _bytes_from_nibbles(nibble_bytes)
         elif block.mode == "shared_huff0":
             if decodebooks is None or block.cluster_index is None:
@@ -906,7 +891,7 @@ def _result_row(
     manifest: dict,
     compressor: str,
     archive: EncodedArchive,
-    precompute_seconds: float,
+    setup_seconds: float,
     encode_seconds: float,
     clusters: int,
     threads: int,
@@ -922,7 +907,7 @@ def _result_row(
     )
     ratio = 100.0 * archive.compressed_bytes / raw_bytes if raw_bytes else None
     return {
-        "experiment": "lossy-lossless-quantized-nibbles-final",
+        "experiment": "quantized-nibble-compression",
         "model": str(spec["name"]),
         "model_id": str(spec["model_id"]),
         "representation": str(spec["representation"]),
@@ -943,9 +928,7 @@ def _result_row(
         "raw_bytes": raw_bytes,
         "compressed_bytes": archive.compressed_bytes,
         "ratio_pct": ratio,
-        "compressed_pct": ratio,
-        "precompute_seconds": precompute_seconds,
-        "encoding_seconds": encode_seconds,
+        "setup_seconds": setup_seconds,
         "encode_seconds": encode_seconds,
         "huffman_chunks": archive.huffman_chunks,
         "raw_chunks": archive.raw_chunks,
@@ -976,14 +959,14 @@ def _run_model(
     model_index: int,
 ) -> list[dict]:
     samples = _load_samples(manifest, model_dir)
-    precompute_started = time.perf_counter()
+    setup_started = time.perf_counter()
     shared_plan = _prepare_shared_plan(
         samples,
         raw_chunk_bytes=raw_chunk_bytes,
         js_threshold=js_threshold,
         max_cluster_sample_bytes=max_cluster_sample_bytes,
     )
-    precompute_seconds = time.perf_counter() - precompute_started
+    setup_seconds = time.perf_counter() - setup_started
 
     encoders = {
         "zipnn-nibble-local": (
@@ -1022,16 +1005,12 @@ def _run_model(
                 manifest=manifest,
                 compressor=compressor,
                 archive=archive,
-                precompute_seconds=(
-                    precompute_seconds
-                    if compressor == "neuralzip-nibble-js"
-                    else 0.0
+                setup_seconds=(
+                    setup_seconds if compressor == "neuralzip-nibble-js" else 0.0
                 ),
                 encode_seconds=encode_seconds,
                 clusters=(
-                    shared_plan.clusters
-                    if compressor == "neuralzip-nibble-js"
-                    else 0
+                    shared_plan.clusters if compressor == "neuralzip-nibble-js" else 0
                 ),
                 threads=threads,
                 raw_chunk_bytes=raw_chunk_bytes,
@@ -1146,7 +1125,7 @@ def main() -> int:
     metadata = {
         "format_version": RESULT_FORMAT_VERSION,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "experiment": "lossy-lossless-quantized-nibbles-final",
+        "experiment": "quantized-nibble-compression",
         "protocol": {
             "input": (
                 "real repository bytes from the tensor-data region, sampled "
@@ -1170,9 +1149,7 @@ def main() -> int:
         "host": _host_metadata(args.threads),
         "backend": _backend_fingerprint(),
         "sample_fingerprints": {
-            str(spec["model_id"]): manifests[spec["model_id"]][
-                "sample_fingerprint"
-            ]
+            str(spec["model_id"]): manifests[spec["model_id"]]["sample_fingerprint"]
             for spec in specs
         },
         "selected_specs_sha256": _canonical_digest(specs),

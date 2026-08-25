@@ -1,53 +1,70 @@
 import hashlib
 import json
-import os
-import subprocess
-import sys
 import unittest
 from collections import Counter
 from dataclasses import asdict
-from pathlib import Path
 
 from examples import model_catalog
-import examples.run_general_codec_rerun as general_runner
 
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_MODEL_KEYS = tuple(
-    """
-    gpt2 bert-base resnet18 resnet34 resnet50 resnet101 resnet152
-    qwen25-15b qwen25-3b qwen25-7b qwen25-14b olmo2-1b olmo2-7b
-    olmo2-13b mistral7b mistral-nemo-12b llama32-1b llama32-3b
-    llama31-nemotron-8b llama33-70b gemma4-31b gemma3-1b gemma3-4b
-    gemma3-12b phi4-14b qwen35-27b qwen35-08b-base qwen35-2b-base
-    latamgpt-70b convnext-tiny convnext-small convnext-base convnext-large
-    efficientnet-b0 efficientnet-b3 efficientnet-b7 sd15-unet zaya1-8b
-    lfm25-8b-a1b jetmoe-8b olmoe-1b-7b-0125 qwen15-moe-a27b
-    qwen3-30b-a3b qwen35-35b-a3b deepseek-moe-16b mixtral-8x7b
-    gemma4-26b-a4b deepseek-r1-distill-llama-8b
-    deepseek-r1-distill-qwen-7b gemma2-9b-distilled
-    qwen25-7b-distilled
-    """.split()
+EXPECTED_MODEL_KEYS = (
+    "gpt2",
+    "bert-base",
+    "resnet18",
+    "resnet34",
+    "resnet50",
+    "resnet101",
+    "resnet152",
+    "qwen25-1p5b",
+    "qwen25-3b",
+    "qwen25-7b",
+    "qwen25-14b",
+    "olmo2-1b",
+    "olmo2-7b",
+    "olmo2-13b",
+    "mistral7b",
+    "mistral-nemo-12b",
+    "llama32-1b",
+    "llama32-3b",
+    "llama31-nemotron-8b",
+    "gemma4-31b",
+    "gemma3-1b",
+    "gemma3-4b",
+    "gemma3-12b",
+    "phi4-14b",
+    "qwen35-27b",
+    "qwen35-08b-base",
+    "qwen35-2b-base",
+    "latamgpt-70b",
+    "convnext-tiny",
+    "convnext-small",
+    "convnext-base",
+    "convnext-large",
+    "efficientnet-b0",
+    "efficientnet-b3",
+    "efficientnet-b7",
+    "sd15-unet",
+    "whisper-large-v3",
+    "whisper-large-v3-turbo",
+    "siglip2-giant",
+    "siglip2-so400m",
+    "zaya1-8b",
+    "lfm25-8b-a1b",
+    "jetmoe-8b",
+    "olmoe-1b-7b-0125",
+    "qwen15-moe-a27b",
+    "qwen3-30b-a3b",
+    "qwen35-35b-a3b",
+    "deepseek-moe-16b",
+    "mixtral-8x7b",
+    "gemma4-26b-a4b",
+    "deepseek-r1-distill-llama-8b",
+    "deepseek-r1-distill-qwen-7b",
+    "gemma2-9b-distilled",
+    "qwen25-7b-distilled",
 )
-EXPECTED_FAMILY_ORDER = {
-    "ResNet": 0,
-    "ConvNeXt": 1,
-    "EfficientNet": 2,
-    "Qwen2.5": 3,
-    "OLMo 2": 4,
-    "Mistral": 5,
-    "Stable Diffusion": 6,
-    "Phi 4": 7,
-    "Qwen 3.5": 8,
-    "Gemma 3": 9,
-    "Gemma 4": 9,
-    "Llama 3": 10,
-    "Llama 3 / derivatives": 10,
-    "Llama 3 / LatamGPT": 11,
-}
 EXPECTED_MODEL_SPECS = (
-    51,
-    "2e1c215e1de86d7c100c3fc74dae6b6f782871f6732525c14bcdb73ef0d34ca5",
+    54,
+    "eb37e7b3049cc3be54987d4cc7c9316e7f53246ad59d322ddf883328c88bf2d1",
 )
 
 
@@ -74,21 +91,15 @@ class ModelCatalogTests(unittest.TestCase):
             {
                 "phenomenon": 4,
                 "vision": 13,
-                "model-storing": 35,
+                "model-storing": 34,
                 "moe": 10,
                 "distilled": 4,
+                "setup-transfer": 4,
             },
-        )
-        self.assertEqual(
-            model_catalog.MODEL_STORAGE_FAMILY_ORDER,
-            EXPECTED_FAMILY_ORDER,
         )
         self.assertEqual(tuple(model_catalog.SPECS_BY_KEY), EXPECTED_MODEL_KEYS)
         self.assertTrue(
-            all(
-                model_catalog.SPECS_BY_KEY[spec.key] is spec
-                for spec in specs
-            )
+            all(model_catalog.SPECS_BY_KEY[spec.key] is spec for spec in specs)
         )
 
     def test_quantized_catalog_has_explicit_artifact_selection(self):
@@ -101,46 +112,6 @@ class ModelCatalogTests(unittest.TestCase):
                 "artifact_selector"
             ],
             {"kind": "exact-files", "files": ("latamgpt-Q4_K_M.gguf",)},
-        )
-
-    def test_general_runner_reexports_canonical_catalog(self):
-        self.assertIs(general_runner.ModelSpec, model_catalog.ModelSpec)
-        self.assertIs(general_runner.MODEL_SPECS, model_catalog.MODEL_SPECS)
-        self.assertIs(general_runner.SPECS_BY_KEY, model_catalog.SPECS_BY_KEY)
-        self.assertIs(
-            general_runner.MODEL_STORAGE_FAMILY_ORDER,
-            model_catalog.MODEL_STORAGE_FAMILY_ORDER,
-        )
-
-    def test_direct_script_import_path_lists_the_same_catalog(self):
-        environment = os.environ.copy()
-        environment["PYTHONPATH"] = os.pathsep.join(
-            filter(
-                None,
-                (str(REPOSITORY_ROOT), environment.get("PYTHONPATH")),
-            )
-        )
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(REPOSITORY_ROOT / "examples" / "run_general_codec_rerun.py"),
-                "--list",
-            ],
-            cwd=REPOSITORY_ROOT,
-            env=environment,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        lines = result.stdout.splitlines()
-        self.assertEqual(len(lines), len(model_catalog.MODEL_SPECS))
-        self.assertEqual(
-            lines,
-            [
-                f"{spec.key}\t{spec.label}\t{spec.family}\t"
-                f"{','.join(spec.suites)}\t{spec.source}"
-                for spec in model_catalog.MODEL_SPECS
-            ],
         )
 
 

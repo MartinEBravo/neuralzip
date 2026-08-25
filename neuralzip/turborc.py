@@ -4,15 +4,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-
 DEFAULT_METHOD = "rccs"
 
 _METHODS = {
-    "rcs": ("rcsenc", "rcsdec"),
     "rccs": ("rccsenc", "rccsdec"),
-    "rcrles": ("rcrlesenc", "rcrlesdec"),
-    "rcrle1s": ("rcrle1senc", "rcrle1sdec"),
-    "rcqlfcs": ("rcqlfcsenc", "rcqlfcsdec"),
 }
 
 
@@ -30,15 +25,7 @@ class TurboRangePayload:
 def _normalize_method(method):
     key = str(method or DEFAULT_METHOD).strip().lower()
     key = key.replace("-", "").replace("_", "")
-    if key.startswith("turborc"):
-        key = key[len("turborc") :]
-    aliases = {
-        "order0": "rcs",
-        "range0": "rcs",
-        "order1": "rccs",
-        "range1": "rccs",
-    }
-    key = aliases.get(key, key)
+    key = key.removeprefix("turborc")
     if key not in _METHODS:
         choices = ", ".join(sorted(_METHODS))
         raise ValueError(

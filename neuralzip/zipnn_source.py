@@ -1,10 +1,10 @@
 """Non-destructive adapter for the official ZipNN package and its archives."""
 
-from dataclasses import dataclass
 import math
 import struct
 import sys
 import time
+from dataclasses import dataclass
 
 import torch
 
@@ -34,9 +34,6 @@ class ZipNNArchiveLayout:
     byte_reorder: int
     bit_reorder: int
     streams: tuple[ZipNNStreamSize, ...]
-
-    def stream(self, stream_id):
-        return self.streams[int(stream_id)]
 
     @property
     def exponent_stream(self):
@@ -177,8 +174,7 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
     archive_bytes = int.from_bytes(view[24:32], byteorder="little")
     if archive_bytes != len(view):
         raise ValueError(
-            "ZipNN compressed length mismatch: "
-            f"{archive_bytes} != {len(view)}."
+            f"ZipNN compressed length mismatch: {archive_bytes} != {len(view)}."
         )
     if expected_raw_bytes is not None and original_bytes != int(expected_raw_bytes):
         raise ValueError(
@@ -186,15 +182,11 @@ def parse_zipnn_streams(payload, *, element_size, expected_raw_bytes=None):
             f"{original_bytes} != {int(expected_raw_bytes)}."
         )
     if original_bytes % element_size:
-        raise ValueError(
-            f"ZipNN original length is not divisible by {element_size}."
-        )
+        raise ValueError(f"ZipNN original length is not divisible by {element_size}.")
 
     input_format = int(view[8])
     if input_format not in {2, 3}:
-        raise ValueError(
-            "ZipNN stream parsing requires a torch or numpy tensor frame."
-        )
+        raise ValueError("ZipNN stream parsing requires a torch or numpy tensor frame.")
     header_bytes = _shape_header_end(view)
     chunk_exponent = int(view[14])
     if chunk_exponent >= 63:
@@ -277,7 +269,5 @@ def parse_zipnn_exponent_stream(
     )
     for label, observed, expected in expectations:
         if expected is not None and observed != int(expected):
-            raise ValueError(
-                f"ZipNN {label} mismatch: {observed} != {int(expected)}."
-            )
+            raise ValueError(f"ZipNN {label} mismatch: {observed} != {int(expected)}.")
     return layout, layout.exponent_stream

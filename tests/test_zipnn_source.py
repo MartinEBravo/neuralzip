@@ -23,8 +23,7 @@ def _frame(*, element_size, original_bytes, chunk_exponent, totals):
         for chunk in range(chunks):
             entries.append((total * (chunk + 1)) // chunks)
     sizes = b"".join(
-        int(value).to_bytes(struct.calcsize("P"), sys.byteorder)
-        for value in entries
+        int(value).to_bytes(struct.calcsize("P"), sys.byteorder) for value in entries
     )
     data = bytes(sum(totals))
     payload = header + shape + types + sizes + data
@@ -55,7 +54,9 @@ class ZipNNSourceParserTests(unittest.TestCase):
             result["encode_seconds"],
             result["codec_encode_seconds"] + result["input_copy_seconds"],
         )
-        self.assertTrue(torch.equal(source.view(torch.uint8), reference.view(torch.uint8)))
+        self.assertTrue(
+            torch.equal(source.view(torch.uint8), reference.view(torch.uint8))
+        )
 
     @unittest.skipUnless(importlib.util.find_spec("zipnn"), "zipnn is not installed")
     def test_shared_adapter_is_non_destructive_and_reports_one_time_boundary(self):
@@ -71,7 +72,9 @@ class ZipNNSourceParserTests(unittest.TestCase):
 
         encoded = codec.encode_tensor(source, verify=True)
 
-        self.assertTrue(torch.equal(source.view(torch.uint8), reference.view(torch.uint8)))
+        self.assertTrue(
+            torch.equal(source.view(torch.uint8), reference.view(torch.uint8))
+        )
         self.assertTrue(encoded.roundtrip_ok)
         self.assertGreaterEqual(encoded.input_copy_seconds, 0.0)
         self.assertGreaterEqual(encoded.codec_encode_seconds, 0.0)
@@ -85,14 +88,18 @@ class ZipNNSourceParserTests(unittest.TestCase):
         frames = (
             (
                 2,
-                "5a4e0005040a010102000000000012060000000000000000"
-                "2300000000000000010100",
+                (
+                    "5a4e0005040a010102000000000012060000000000000000"
+                    "2300000000000000010100"
+                ),
                 10,
             ),
             (
                 4,
-                "5a4e000504dc010102000000000012010000000000000000"
-                "2300000000000000010100",
+                (
+                    "5a4e000504dc010102000000000012010000000000000000"
+                    "2300000000000000010100"
+                ),
                 220,
             ),
         )
@@ -205,7 +212,9 @@ class ZipNNSourceParserTests(unittest.TestCase):
                     self.assertEqual(layout.exponent_stream.raw_bytes, tensor.numel())
                     restored = codec.decompress(payload)
                     self.assertTrue(
-                        torch.equal(tensor.view(torch.uint8), restored.view(torch.uint8))
+                        torch.equal(
+                            tensor.view(torch.uint8), restored.view(torch.uint8)
+                        )
                     )
 
 

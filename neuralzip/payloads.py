@@ -1,13 +1,16 @@
 from dataclasses import dataclass
 
 from .serialization import (
-    PACKED_CHUNK_METADATA_BYTES,
-    RAW_CHUNK_METADATA_BYTES,
-    SHARED_CHUNK_METADATA_BYTES,
-    serialized_codebook_size,
-    serialized_group_size,
-    serialized_tensor_size,
-    stream_chunk_metadata_bytes,
+    serialized_codebook_size as _serialized_codebook_size,
+)
+from .serialization import (
+    serialized_group_size as _serialized_group_size,
+)
+from .serialization import (
+    serialized_tensor_size as _serialized_tensor_size,
+)
+from .serialization import (
+    stream_chunk_metadata_bytes as _stream_chunk_metadata_bytes,
 )
 
 
@@ -26,7 +29,7 @@ class CodebookPayload:
 
     @property
     def metadata_bytes(self):
-        return serialized_codebook_size(self)
+        return _serialized_codebook_size(self)
 
 
 @dataclass(frozen=True)
@@ -48,7 +51,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        return stream_chunk_metadata_bytes(self.mode)
+        return _stream_chunk_metadata_bytes(self.mode)
 
     @property
     def compressed_bytes(self):
@@ -67,11 +70,11 @@ class ByteGroupPayload:
 
     @property
     def metadata_bytes(self):
-        return serialized_group_size(self) - self.payload_bytes
+        return _serialized_group_size(self) - self.payload_bytes
 
     @property
     def compressed_bytes(self):
-        return serialized_group_size(self)
+        return _serialized_group_size(self)
 
     @property
     def huffman_chunks(self):
@@ -93,13 +96,6 @@ class ByteGroupPayload:
     @property
     def zero_chunks(self):
         return sum(chunk.mode == "zero" for chunk in self.chunks)
-
-    @property
-    def shared_codebook_refs(self):
-        return sum(
-            chunk.mode in {"shared_huff0", "packed_huff0"}
-            for chunk in self.chunks
-        )
 
     @property
     def packed_ngram_chunks(self):
@@ -135,16 +131,12 @@ class TensorPayload:
         return self.numel * self.element_size
 
     @property
-    def metadata_bytes(self):
-        return serialized_tensor_size(self) - self.payload_bytes
-
-    @property
     def payload_bytes(self):
         return sum(group.payload_bytes for group in self.groups)
 
     @property
     def compressed_bytes(self):
-        return serialized_tensor_size(self)
+        return _serialized_tensor_size(self)
 
     @property
     def huffman_chunks(self):
@@ -157,10 +149,6 @@ class TensorPayload:
     @property
     def zero_chunks(self):
         return sum(group.zero_chunks for group in self.groups)
-
-    @property
-    def shared_codebook_refs(self):
-        return sum(getattr(group, "shared_codebook_refs", 0) for group in self.groups)
 
     @property
     def local_huff0_chunks(self):

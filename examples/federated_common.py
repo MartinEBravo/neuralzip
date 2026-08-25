@@ -8,9 +8,9 @@ timing boundaries around the federated protocol remain owned by each runner.
 from __future__ import annotations
 
 import gc
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping, MutableMapping, Sequence
 
 import torch
 
@@ -24,8 +24,7 @@ from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.tensors import bitwise_equal
 from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
-
-COMPRESSOR_SRC = "ZipNN src"
+COMPRESSOR_SRC = "ZipNN"
 COMPRESSOR_NEURALZIP = "NeuralZip"
 COMPRESSORS = (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP)
 DTYPE_NAME = "float32"
@@ -220,11 +219,7 @@ class FederatedCodecProtocol:
         *,
         client_index: int | None = None,
     ) -> tuple[str, str]:
-        order = (
-            COMPRESSORS
-            if int(round_index) % 2
-            else tuple(reversed(COMPRESSORS))
-        )
+        order = COMPRESSORS if int(round_index) % 2 else tuple(reversed(COMPRESSORS))
         if client_index is not None and int(client_index) % 2:
             order = tuple(reversed(order))
         return order
@@ -340,11 +335,7 @@ def _encoded_metrics(
     raw_floating_bytes = downlink.raw_floating_bytes * int(clients) + sum(
         encoded.raw_floating_bytes for encoded in uplinks
     )
-    critical_seconds = downlink.encode_seconds + max(
-        (encoded.encode_seconds for encoded in uplinks), default=0.0
-    )
     return {
-        "encoding_critical_seconds": critical_seconds,
         "exponent_raw_bytes": exponent_raw,
         "exponent_compressed_bytes": exponent_compressed,
         "exponent_ratio_pct": (
@@ -356,11 +347,11 @@ def _encoded_metrics(
 
 
 def new_cumulative_metrics() -> dict[str, dict[str, float | int]]:
-    """Create the stable accumulator schema shared by both final suites."""
+    """Create the stable accumulator schema shared by both suites."""
 
     return {
         name: {
-            "encoding_seconds": 0.0,
+            "downlink_encode_seconds": 0.0,
             **{field: 0 for field in _CUMULATIVE_FIELDS},
         }
         for name in COMPRESSORS
@@ -384,9 +375,9 @@ def build_round_rows(
     for name in COMPRESSORS:
         metrics = _encoded_metrics(downlinks[name], uplinks[name], clients=clients)
         totals = cumulative[name]
-        totals["encoding_seconds"] = float(totals["encoding_seconds"]) + float(
-            metrics["encoding_critical_seconds"]
-        )
+        totals["downlink_encode_seconds"] = float(
+            totals["downlink_encode_seconds"]
+        ) + float(downlinks[name].encode_seconds)
         for field in _CUMULATIVE_FIELDS:
             totals[field] = int(totals[field]) + int(metrics[field])
         rows.append(
@@ -396,17 +387,9 @@ def build_round_rows(
                 "setup_seconds_once": setup_seconds[name],
                 "setup_bytes_once": setup_bytes[name],
                 "downlink_encode_seconds": downlinks[name].encode_seconds,
-                "uplink_encode_max_seconds": max(
-                    encoded.encode_seconds for encoded in uplinks[name]
-                ),
-                "encoding_critical_seconds": metrics["encoding_critical_seconds"],
-                "encoding_critical_cumulative_seconds": totals[
-                    "encoding_seconds"
-                ],
+                "downlink_encode_cumulative_seconds": totals["downlink_encode_seconds"],
                 "exponent_raw_bytes": metrics["exponent_raw_bytes"],
-                "exponent_compressed_bytes": metrics[
-                    "exponent_compressed_bytes"
-                ],
+                "exponent_compressed_bytes": metrics["exponent_compressed_bytes"],
                 "exponent_ratio_pct": metrics["exponent_ratio_pct"],
                 "archive_bytes": metrics["archive_bytes"],
                 "raw_floating_bytes": metrics["raw_floating_bytes"],
@@ -441,16 +424,14 @@ def build_summary_rows(
                 **dimensions,
                 "setup_seconds_once": setup_seconds[name],
                 "setup_bytes_once": setup_bytes[name],
-                "encoding_critical_seconds": totals["encoding_seconds"],
-                "encoding_plus_setup_seconds": (
-                    float(totals["encoding_seconds"]) + setup_seconds[name]
+                "downlink_encode_seconds": totals["downlink_encode_seconds"],
+                "downlink_plus_setup_seconds": (
+                    float(totals["downlink_encode_seconds"]) + setup_seconds[name]
                 ),
                 "exponent_raw_bytes": raw_exponent,
                 "exponent_compressed_bytes": compressed_exponent,
                 "exponent_ratio_pct": (
-                    100.0 * compressed_exponent / raw_exponent
-                    if raw_exponent
-                    else 0.0
+                    100.0 * compressed_exponent / raw_exponent if raw_exponent else 0.0
                 ),
                 "setup_communication_bytes": setup_communication_bytes,
                 "exponent_compressed_plus_setup_bytes": compressed_with_setup,

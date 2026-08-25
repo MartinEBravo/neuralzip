@@ -6,18 +6,18 @@ import json
 import math
 import re
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 import torch
 
-from neuralzip.neuralzip_codec import (
-    NeuralZipCodec,
-    _exponent_distribution,
-)
-from neuralzip.metrics import jensen_shannon_distance
-from run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
+from neuralzip.metrics import exponent_distribution, jensen_shannon_distance
+from neuralzip.neuralzip_codec import NeuralZipCodec
+
+try:
+    from .run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
+except ImportError:  # Direct execution from the examples directory.
+    from run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
 
 
 def normalized_role(model_slug: str, name: str) -> str:
@@ -36,9 +36,7 @@ def _transformer_pairs(model_slug: str, names: set[str]):
         right_template = "h.{depth}.mlp.c_proj.weight"
         label = "FFN expansion--reduction"
     elif model_slug == "bert-base":
-        pattern = re.compile(
-            r"^encoder\.layer\.(\d+)\.intermediate\.dense\.weight$"
-        )
+        pattern = re.compile(r"^encoder\.layer\.(\d+)\.intermediate\.dense\.weight$")
         right_template = "encoder.layer.{depth}.output.dense.weight"
         label = "FFN expansion--reduction"
     else:
@@ -84,9 +82,7 @@ def _entropy(labels) -> float:
     counts = Counter(labels)
     total = sum(counts.values())
     return -sum(
-        (count / total) * math.log(count / total)
-        for count in counts.values()
-        if count
+        (count / total) * math.log(count / total) for count in counts.values() if count
     )
 
 
@@ -109,9 +105,7 @@ def adjusted_mutual_information(left, right) -> float:
     mutual_information = 0.0
     for (left_label, right_label), count in joint.items():
         mutual_information += (count / total) * math.log(
-            count
-            * total
-            / (left_counts[left_label] * right_counts[right_label])
+            count * total / (left_counts[left_label] * right_counts[right_label])
         )
 
     expected_mutual_information = 0.0
@@ -153,8 +147,8 @@ def summarize_clusters(assignments: pd.DataFrame):
         rows.append(
             {
                 "js_cluster": str(cluster_id),
-                "tensors": int(len(group)),
-                "roles": int(len(role_counts)),
+                "tensors": len(group),
+                "roles": len(role_counts),
                 "dominant_role": dominant_role,
                 "role_purity": float(dominant_count / len(group)),
                 "members": " | ".join(group["name"]),
@@ -167,8 +161,7 @@ def summarize_clusters(assignments: pd.DataFrame):
 
 def run_model(spec, model_root: Path, output_root: Path, threshold: float):
     print(f"\n=== {spec.label} ===", flush=True)
-    resolved_spec = replace(spec, local_path=model_root / spec.local_path.name)
-    view = load_model(resolved_spec)
+    view = load_model(spec, model_root=model_root)
     model = view.model
     model.requires_grad_(False)
     named_tensors = sorted(
@@ -190,20 +183,18 @@ def run_model(spec, model_root: Path, output_root: Path, threshold: float):
     distributions = {}
     assignment_rows = []
     for name, tensor in named_tensors:
-        distributions[name] = _exponent_distribution(tensor)
+        distributions[name] = exponent_distribution(tensor)
         assignment_rows.append(
             {
                 "name": name,
-                "normalized_role": normalized_role(spec.slug, name),
+                "normalized_role": normalized_role(spec.key, name),
                 "numel": int(tensor.numel()),
                 "js_cluster": str(codec.cluster_id(name)),
             }
         )
     assignments = pd.DataFrame(assignment_rows)
     assignment_by_name = assignments.set_index("name")
-    pair_label, selected_pairs = coupled_pairs(
-        spec.slug, set(assignments["name"])
-    )
+    pair_label, selected_pairs = coupled_pairs(spec.key, set(assignments["name"]))
     if not selected_pairs:
         raise RuntimeError(f"No representative pairs found for {spec.label}.")
 
@@ -232,14 +223,14 @@ def run_model(spec, model_root: Path, output_root: Path, threshold: float):
     pairs = pd.DataFrame(pair_rows)
     clusters = summarize_clusters(assignments)
     summary = {
-        "model_slug": spec.slug,
+        "model_slug": spec.key,
         "model": spec.label,
         "dtype": "bfloat16",
         "js_threshold": float(threshold),
-        "tensors": int(len(assignments)),
+        "tensors": len(assignments),
         "js_clusters": int(assignments["js_cluster"].nunique()),
         "representative_pair": pair_label,
-        "paired_depths": int(len(pairs)),
+        "paired_depths": len(pairs),
         "same_cluster_pct": float(100.0 * pairs["same_cluster"].mean()),
         "adjusted_mutual_information": adjusted_mutual_information(
             left_clusters, right_clusters
@@ -247,7 +238,7 @@ def run_model(spec, model_root: Path, output_root: Path, threshold: float):
         "mean_pair_js": float(pairs["js_distance"].mean()),
     }
 
-    output_dir = output_root / spec.slug
+    output_dir = output_root / spec.key
     output_dir.mkdir(parents=True, exist_ok=True)
     assignments.to_csv(output_dir / "assignments.csv", index=False)
     pairs.to_csv(output_dir / "coupled_pairs.csv", index=False)
@@ -268,6 +259,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--models", nargs="+", default=["all"])
     parser.add_argument("--threshold", type=float, default=0.05)
+    parser.add_argument("--threads", type=int, default=12)
     args = parser.parse_args()
 
     if args.models == ["all"]:
@@ -278,15 +270,15 @@ def main():
             parser.error(f"Unknown model slugs: {', '.join(unknown)}")
         specs = tuple(SPECS_BY_SLUG[slug] for slug in args.models)
 
-    torch.set_num_threads(32)
+    if args.threads < 1:
+        parser.error("--threads must be positive")
+    torch.set_num_threads(args.threads)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summaries = [
         run_model(spec, args.model_root, args.output_dir, args.threshold)
         for spec in specs
     ]
-    pd.DataFrame(summaries).to_csv(
-        args.output_dir / "model_summary.csv", index=False
-    )
+    pd.DataFrame(summaries).to_csv(args.output_dir / "model_summary.csv", index=False)
     (args.output_dir / "summary.json").write_text(
         json.dumps(summaries, indent=2, sort_keys=True) + "\n"
     )

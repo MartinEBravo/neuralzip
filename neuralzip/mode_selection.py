@@ -3,18 +3,16 @@
 The functions in this module deliberately do not measure wall time themselves.
 Callers must benchmark candidates on the same representative input and pass
 cost/time estimators.  Keeping measurement outside the policy makes selection
-deterministic in tests and lets the codec report estimated selection metrics
-separately from its measured end-to-end encoding time.
+deterministic in tests.
 
 ``ratio_tolerance`` is a relative compressed-size tolerance.  For example,
 ``0.02`` permits a candidate whose estimated compressed bytes are at most 2%
 larger than the smallest candidate.  It is not a percentage-point tolerance.
 """
 
-from dataclasses import dataclass
 import math
-from typing import Any, Callable, Iterable, Mapping, Sequence
-
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any
 
 DEFAULT_KIND_PRIORITY = (
     "shared_huff0",
@@ -22,22 +20,6 @@ DEFAULT_KIND_PRIORITY = (
     "local_huff0",
     "raw",
 )
-
-
-@dataclass(frozen=True)
-class ModeSelectionResult:
-    """One selected mode and diagnostics for the ratio/time decision."""
-
-    selected: Mapping[str, Any]
-    metrics: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
-class PackedTimeBudgetResult:
-    """Packed opportunities admitted by a global extra-time budget."""
-
-    selected_keys: frozenset[Any]
-    metrics: Mapping[str, Any]
 
 
 def _finite_nonnegative(value: Any, label: str) -> float:
@@ -57,14 +39,13 @@ def select_fastest_within_ratio(
     estimated_bytes: Callable[[Mapping[str, Any]], float],
     estimated_seconds: Callable[[Mapping[str, Any]], float],
     ratio_tolerance: float = 0.0,
-    kind_priority: Sequence[str] = DEFAULT_KIND_PRIORITY,
-) -> ModeSelectionResult:
+) -> Mapping[str, Any]:
     """Select the fastest mode whose size is close enough to the best ratio.
 
     The smallest estimated byte count defines the ratio baseline.  Candidates
     within ``best_bytes * (1 + ratio_tolerance)`` are eligible, and the fastest
     eligible candidate wins.  Remaining ties use byte count and then
-    ``kind_priority`` so the result is stable across input ordering.
+    a fixed mode priority so the result is stable across input ordering.
 
     This policy lets a shared representation replace
     ``local_huff0`` when it is faster and its ratio regression is acceptable.
@@ -75,7 +56,7 @@ def select_fastest_within_ratio(
     if not modes:
         raise ValueError("candidates must not be empty.")
 
-    priority = {str(kind): index for index, kind in enumerate(kind_priority)}
+    priority = {kind: index for index, kind in enumerate(DEFAULT_KIND_PRIORITY)}
     scored = []
     for mode in modes:
         byte_count = _finite_nonnegative(
@@ -109,34 +90,14 @@ def select_fastest_within_ratio(
         ),
     )
 
-    selected_mode, selected_bytes, selected_seconds = selected
-    byte_overhead = selected_bytes - best_bytes
-    relative_overhead = byte_overhead / best_bytes if best_bytes else 0.0
-    metrics = {
-        "selection_strategy": "fastest-within-ratio",
-        "ratio_tolerance": tolerance,
-        "candidate_count": len(scored),
-        "eligible_candidate_count": len(eligible),
-        "ratio_best_kind": _kind(ratio_best[0]),
-        "ratio_best_estimated_bytes": best_bytes,
-        "selected_kind": _kind(selected_mode),
-        "selected_estimated_bytes": selected_bytes,
-        "selected_estimated_seconds": selected_seconds,
-        "selected_byte_overhead": byte_overhead,
-        "selected_relative_byte_overhead": relative_overhead,
-        "avoided_local_huff0": (
-            _kind(ratio_best[0]) == "local_huff0"
-            and _kind(selected_mode) != "local_huff0"
-        ),
-    }
-    return ModeSelectionResult(selected=selected_mode, metrics=metrics)
+    return selected[0]
 
 
 def select_packed_time_budget(
     evaluations: Iterable[Mapping[str, Any]],
     *,
     packed_time_budget_ratio: float,
-) -> PackedTimeBudgetResult:
+) -> frozenset[Any]:
     """Restore the historical global packed-time-budget policy.
 
     Each evaluation must contain ``key`` and ``base_seconds``.  Its optional
@@ -190,34 +151,10 @@ def select_packed_time_budget(
     opportunities.sort(key=lambda item: (-item[3], repr(item[0])))
     selected_keys = set()
     used_seconds = 0.0
-    saved_bytes = 0.0
-    zero_extra_selected = 0
     if budget_ratio > 0:
-        for key, candidate_saved, extra_seconds, _ in opportunities:
+        for key, _, extra_seconds, _ in opportunities:
             if extra_seconds > 0 and used_seconds + extra_seconds > budget_seconds:
                 continue
             selected_keys.add(key)
             used_seconds += extra_seconds
-            saved_bytes += candidate_saved
-            if extra_seconds == 0:
-                zero_extra_selected += 1
-
-    metrics = {
-        "selection_strategy": "time-budget",
-        "base_estimated_seconds": base_seconds,
-        "packed_time_budget_ratio": budget_ratio,
-        "packed_time_budget_seconds": budget_seconds,
-        "packed_extra_seconds": used_seconds,
-        "packed_estimated_bytes_saved": saved_bytes,
-        # Count positive byte-saving opportunities, not every packed mode
-        # evaluated during setup.
-        "packed_candidates": len(opportunities),
-        "packed_opportunities": len(opportunities),
-        "packed_selected": len(selected_keys),
-        "packed_rejected_by_time_budget": len(opportunities) - len(selected_keys),
-        "packed_zero_extra_selected": zero_extra_selected,
-    }
-    return PackedTimeBudgetResult(
-        selected_keys=frozenset(selected_keys),
-        metrics=metrics,
-    )
+    return frozenset(selected_keys)

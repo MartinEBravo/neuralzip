@@ -9,7 +9,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.run_final_federated_language_suite import (
+from examples import federated_common
+from examples import run_federated_language as language_runner
+from examples import run_federated_vision as vision_runner
+from examples.run_federated_language import (
     MODEL_BERT,
     MODEL_GPT2,
     ClientCorpus,
@@ -25,9 +28,6 @@ from examples.run_final_federated_language_suite import (
     _tokenize_partition,
     _unique_floating_state,
 )
-from examples import federated_common
-from examples import run_final_federated_language_suite as language_runner
-from examples import run_final_federated_suite as vision_runner
 
 SuspendAutomaticGC = federated_common.SuspendAutomaticGC
 
@@ -74,11 +74,6 @@ def test_federated_runners_share_one_codec_and_reporting_implementation():
         "COMPRESSOR_SRC",
         "DTYPE_NAME",
         "FederatedCodecProtocol",
-        "NeuralZipStateCodec",
-        "ZipNNSrcStateCodec",
-        "_assert_same_tensors",
-        "_clone_tensor_map",
-        "_encoded_metrics",
         "_write_csv_atomic",
         "_write_json_atomic",
         "build_round_rows",
@@ -93,9 +88,7 @@ def test_federated_runners_share_one_codec_and_reporting_implementation():
 
 def test_federated_zipnn_wrapper_preserves_fp32_exponent_accounting():
     raw_bytes, compressed_bytes = (
-        federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(
-            _zipnn_fp32_frame()
-        )
+        federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(_zipnn_fp32_frame())
     )
 
     assert raw_bytes == 32
@@ -375,12 +368,11 @@ def test_shared_federated_rows_use_one_accumulator_and_setup_accounting():
         setup_bytes=protocol.setup_bytes,
     )
 
-    assert [row["compressor"] for row in rows] == list(
-        federated_common.COMPRESSORS
-    )
-    assert rows[0]["encoding_critical_seconds"] == 0.4
-    assert rows[1]["encoding_critical_seconds"] == 0.2
+    assert [row["compressor"] for row in rows] == list(federated_common.COMPRESSORS)
+    assert rows[0]["downlink_encode_seconds"] == 0.2
+    assert rows[1]["downlink_encode_seconds"] == 0.1
     neuralzip = summaries[1]
+    assert neuralzip["downlink_encode_seconds"] == 0.1
     assert neuralzip["exponent_compressed_bytes"] == 80
     assert neuralzip["exponent_compressed_plus_setup_bytes"] == 88
     assert neuralzip["exponent_ratio_with_setup_pct"] == 44.0

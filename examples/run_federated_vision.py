@@ -1,4 +1,4 @@
-"""Final federated compression experiment for the thesis.
+"""Federated compression experiment for the thesis.
 
 The experiment trains CIFAR ResNet models with FedAvg and evaluates two
 lossless FP32 communication codecs on exactly the same messages:
@@ -13,10 +13,10 @@ floating-point states must be identical; NeuralZip's decoded state is used as
 the canonical trajectory after this equality check.  Non-floating buffers do
 not have an exponent field and are carried unchanged.
 
-The default is the final 10-client, 200-round ResNet-18/34 suite.  Override the
+The default is the 10-client, 200-round ResNet-18/34 suite. Override the
 CLI arguments for smoke tests; for example::
 
-    python examples/run_final_federated_suite.py \
+    python examples/run_federated_vision.py \
         --architectures resnet18 --rounds 1 --clients 2 \
         --train-subset 20 --batch-size 2 --threads 2 \
         --device cpu --output-dir /tmp/neuralzip-federated-smoke
@@ -30,8 +30,8 @@ import io
 import os
 import platform
 import random
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import torch
 from PIL import Image
@@ -44,11 +44,6 @@ try:
         COMPRESSOR_SRC,
         DTYPE_NAME,
         FederatedCodecProtocol,
-        NeuralZipStateCodec,
-        ZipNNSrcStateCodec,
-        _assert_same_tensors,
-        _clone_tensor_map,
-        _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
         build_round_rows,
@@ -61,11 +56,6 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
         COMPRESSOR_SRC,
         DTYPE_NAME,
         FederatedCodecProtocol,
-        NeuralZipStateCodec,
-        ZipNNSrcStateCodec,
-        _assert_same_tensors,
-        _clone_tensor_map,
-        _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
         build_round_rows,
@@ -74,6 +64,7 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
     )
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DATASET_NAME = "CIFAR-10"
 
 
@@ -125,11 +116,9 @@ class ClientBatchStream:
 
 def _build_model(architecture: str) -> torch.nn.Module:
     if architecture not in {"resnet18", "resnet34"}:
-        raise ValueError(f"Unsupported final federated model: {architecture}.")
+        raise ValueError(f"Unsupported federated model: {architecture}.")
     model = getattr(models, architecture)(weights=None, num_classes=10)
-    model.conv1 = torch.nn.Conv2d(
-        3, 64, kernel_size=3, stride=1, padding=1, bias=False
-    )
+    model.conv1 = torch.nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = torch.nn.Identity()
     return model
 
@@ -209,8 +198,7 @@ def _train_one_client(
         examples += int(labels.numel())
 
     state = {
-        name: value.detach().cpu().clone()
-        for name, value in model.state_dict().items()
+        name: value.detach().cpu().clone() for name, value in model.state_dict().items()
     }
     del model, optimizer
     if device.type == "cuda":
@@ -232,7 +220,9 @@ def _client_streams(
     if train_subset is not None:
         indices = indices[: int(train_subset)]
     if len(indices) < int(clients):
-        raise ValueError("The real-data subset must contain at least one item per client.")
+        raise ValueError(
+            "The real-data subset must contain at least one item per client."
+        )
 
     partitions = [indices[index :: int(clients)] for index in range(int(clients))]
     streams = []
@@ -387,8 +377,8 @@ def _run_architecture(
             "ZipNN-src decoded states"
         ),
         "time_metric": (
-            "downlink encode plus maximum client uplink encode per round; "
-            "decode, training, and automatic cyclic GC excluded"
+            "one server-side downlink encode per round; client encoding, decode, "
+            "training, and automatic cyclic GC excluded"
         ),
         "automatic_gc_during_encode": False,
         "ratio_metric": (
@@ -444,17 +434,13 @@ def _run_architecture(
                     round_index,
                     client_index=client_index,
                 ),
-                context=(
-                    f"{architecture} round {round_index} client {client_index}"
-                ),
+                context=(f"{architecture} round {round_index} client {client_index}"),
                 phase="uplink",
             )
             for name, encoded in client_measurements.items():
                 uplinks[name].append(encoded)
             decoded_client_states.append(
-                _merge_decoded_state(
-                    client_state, decoded_floating_client
-                )
+                _merge_decoded_state(client_state, decoded_floating_client)
             )
             del client_state, floating_client, decoded_floating_client
 
@@ -507,7 +493,7 @@ def _run_architecture(
             f"loss={sum(client_losses) / len(client_losses):.4f} "
             + " ".join(
                 f"{row['compressor']}="
-                f"{row['encoding_critical_seconds']:.3f}s/"
+                f"{row['downlink_encode_seconds']:.3f}s/"
                 f"{row['exponent_ratio_pct']:.3f}%"
                 for row in round_rows
             ),
@@ -526,12 +512,12 @@ def _parse_args():
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("examples/outputs/datasets/cifar10_hf"),
+        default=ROOT / "results" / "datasets" / "cifar10_hf",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("examples/outputs/final_federated_cifar10_200x10"),
+        default=ROOT / "results" / "federated-cifar10-200x10",
     )
     parser.add_argument("--clients", type=int, default=10)
     parser.add_argument("--rounds", type=int, default=200)

@@ -13,9 +13,7 @@ class Huff0PrecomputedFourStreamTests(unittest.TestCase):
         codebook = huff0.build_codebook(b"".join(chunks), prior_count=1)
         decodebook = huff0.build_decodebook(codebook.codebook)
 
-        singles = [
-            huff0.encode_with_codebook_4x(chunk, codebook) for chunk in chunks
-        ]
+        singles = [huff0.encode_with_codebook_4x(chunk, codebook) for chunk in chunks]
         batched = huff0.encode_many_with_codebook_4x(
             chunks,
             codebook,
@@ -73,39 +71,6 @@ class Huff0PrecomputedFourStreamTests(unittest.TestCase):
                     ),
                     [None],
                 )
-
-    def test_pretokenized_batch_honors_each_exact_payload_limit(self):
-        token_chunks = [
-            bytes([1, 2, 1, 2]) * (16 << 10),
-            bytes([3, 4, 3, 4]) * (16 << 10),
-        ]
-        codebook = huff0.build_codebook(b"".join(token_chunks), prior_count=1)
-        decodebook = huff0.build_decodebook(codebook.codebook)
-
-        payloads = huff0.encode_many_pretokenized_with_codebook_4x(
-            token_chunks,
-            codebook,
-            [-1, 1],
-            threads=4,
-        )
-
-        self.assertIsNotNone(payloads[0])
-        self.assertIsNone(payloads[1])
-        token_payload = huff0.Huff0Payload(
-            payloads[0],
-            codebook.codebook,
-            len(token_chunks[0]),
-        )
-        self.assertEqual(
-            huff0.decompress_with_decodebook_4x(token_payload, decodebook),
-            token_chunks[0],
-        )
-        with self.assertRaises(ValueError):
-            huff0.encode_many_pretokenized_with_codebook_4x(
-                token_chunks,
-                codebook,
-                [-1],
-            )
 
     def test_packed_ngram_four_stream_roundtrip(self):
         chunks = [

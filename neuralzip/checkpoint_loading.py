@@ -8,11 +8,10 @@ be mixed into one measurement.
 
 from __future__ import annotations
 
-import gc
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Iterable, Iterator, Mapping
 
 import torch
 
@@ -97,7 +96,9 @@ def resolve_weight_map(
                 f"Checkpoint shard {relative_path!r} has an invalid size."
             ) from error
         if size <= 0:
-            raise ValueError(f"Checkpoint index references empty shard: {relative_path}")
+            raise ValueError(
+                f"Checkpoint index references empty shard: {relative_path}"
+            )
         expected_keys.add(key)
         referenced_files.add(relative_path)
 
@@ -135,9 +136,7 @@ def select_indexed_weights(
         ),
     ]
     if allow_bin:
-        formats.append(
-            ("*.bin.index.json", "pytorch_model.bin.index.json", (".bin",))
-        )
+        formats.append(("*.bin.index.json", "pytorch_model.bin.index.json", (".bin",)))
 
     for pattern, canonical_name, suffixes in formats:
         indexes = sorted(path.glob(pattern))
@@ -171,128 +170,8 @@ def select_indexed_weights(
     return None
 
 
-def select_safetensors_weights(
-    path: Path,
-    *,
-    require_config: bool = False,
-) -> SnapshotSelection:
-    """Select exactly one canonical safetensors checkpoint under ``path``.
-
-    An index is authoritative when present.  Every referenced shard must be a
-    non-empty safetensors file, and unrelated files are excluded.  Without an
-    index, only the canonical ``model.safetensors`` filename is accepted.
-    """
-
-    path = Path(path)
-    if require_config and not (path / "config.json").is_file():
-        raise FileNotFoundError(f"Snapshot has no config.json: {path}")
-
-    indexed = select_indexed_weights(path)
-    if indexed is not None:
-        return indexed
-
-    canonical = path / "model.safetensors"
-    if canonical.is_file() and canonical.stat().st_size > 0:
-        return SnapshotSelection(files=(canonical,))
-
-    orphan_shards = sorted(path.glob("*.safetensors"))
-    if orphan_shards:
-        raise ValueError(
-            "Snapshot has safetensors files but no authoritative index or "
-            f"model.safetensors: {path}"
-        )
-    raise FileNotFoundError(f"Snapshot has no authoritative weight file: {path}")
-
-
-def download_safetensors_snapshot(
-    repo_id: str,
-    *,
-    revision: str | None = None,
-    local_files_only: bool = True,
-    cache_dir: Path | None = None,
-    local_dir: Path | None = None,
-    include_config: bool = False,
-) -> tuple[Path, SnapshotSelection]:
-    """Resolve a snapshot and return its strictly selected weight files."""
-
-    from huggingface_hub import snapshot_download
-
-    patterns = ["*.safetensors", "*.safetensors.index.json"]
-    if include_config:
-        patterns.extend(("*.json", "*.model", "*.txt"))
-    kwargs = {
-        "repo_id": repo_id,
-        "local_files_only": bool(local_files_only),
-        "allow_patterns": tuple(patterns),
-    }
-    if revision is not None:
-        kwargs["revision"] = revision
-    if cache_dir is not None:
-        kwargs["cache_dir"] = Path(cache_dir)
-    if local_dir is not None:
-        kwargs["local_dir"] = Path(local_dir)
-        kwargs["ignore_patterns"] = (
-            "*.bin",
-            "*.gguf",
-            "*.h5",
-            "*.msgpack",
-            "*.onnx",
-        )
-    snapshot = Path(snapshot_download(**kwargs))
-    return snapshot, select_safetensors_weights(
-        snapshot,
-        require_config=include_config,
-    )
-
-
-def iter_safetensors_shards(
-    selection: SnapshotSelection,
-    *,
-    device: str = "cpu",
-) -> Iterator[tuple[Path, Mapping[str, torch.Tensor]]]:
-    """Yield selected shards while validating index keys and duplicates.
-
-    Consumers should exhaust the iterator so its final index validation runs.
-    Only one shard is retained by this generator at a time.
-    """
-
-    from safetensors.torch import load_file
-
-    loaded_keys: set[str] = set()
-    for file_path in selection.files:
-        state = load_file(str(file_path), device=device)
-        duplicate = loaded_keys.intersection(state)
-        if duplicate:
-            preview = ", ".join(sorted(duplicate)[:5])
-            raise ValueError(
-                f"Duplicate checkpoint tensor key(s) in {file_path}: {preview}."
-            )
-        loaded_keys.update(str(name) for name in state)
-        try:
-            yield file_path, state
-        finally:
-            del state
-            gc.collect()
-
-    if selection.expected_keys is not None:
-        missing = sorted(selection.expected_keys - loaded_keys)
-        unexpected = sorted(loaded_keys - selection.expected_keys)
-        if missing:
-            preview = ", ".join(missing[:5])
-            raise ValueError(
-                f"Checkpoint is missing {len(missing)} indexed tensor(s), "
-                f"including: {preview}."
-            )
-        if unexpected:
-            preview = ", ".join(unexpected[:5])
-            raise ValueError(
-                f"Checkpoint contains {len(unexpected)} tensor(s) not declared "
-                f"by its index, including: {preview}."
-            )
-
-
 def load_torch_checkpoint(path: Path) -> Mapping:
-    """Load the explicit mapping stored by the final checkpoint runners."""
+    """Load the explicit mapping stored by the checkpoint runners."""
 
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, Mapping):

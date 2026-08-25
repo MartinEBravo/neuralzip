@@ -3,8 +3,8 @@
 import importlib
 import importlib.metadata
 import os
-from pathlib import Path
 import platform
+from pathlib import Path
 
 from .hashing import sha256_file
 
@@ -86,8 +86,6 @@ def host_facts(*, include_machine_id=False):
     if include_machine_id:
         machine_id = Path("/etc/machine-id")
         facts["machine_id_sha256"] = (
-            sha256_file(machine_id)
-            if machine_id.is_file()
-            else None
+            sha256_file(machine_id) if machine_id.is_file() else None
         )
     return facts

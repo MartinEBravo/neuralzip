@@ -1,4 +1,4 @@
-"""Final GPT-2/BERT checkpoint trajectories for WikiText-2.
+"""GPT-2/BERT checkpoint trajectories for WikiText-2.
 
 Run independent ``--train-only`` jobs in separate output directories when
 using multiple GPUs, then gather both model directories under one root and run
@@ -15,20 +15,19 @@ import json
 import math
 import os
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
-
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
-from examples.checkpoint_common import (  # noqa: E402
+from examples.checkpoint_common import (
     add_checkpoint_run_arguments,
     atomic_torch_save,
     checkpoint_files,
@@ -36,7 +35,6 @@ from examples.checkpoint_common import (  # noqa: E402
     limited,
     load_or_fit_frozen_codec,
     missing_checkpoint_slugs,
-    render_checkpoint_figure,
     restore_rng_state,
     rng_state,
     run_checkpoint_models,
@@ -45,9 +43,7 @@ from examples.checkpoint_common import (  # noqa: E402
     upsert_model_epoch_row,
     validate_checkpoint_results,
 )
-from neuralzip.checkpoint_loading import load_torch_checkpoint  # noqa: E402
-from neuralzip.experiment_io import atomic_write_json  # noqa: E402
-from examples.checkpoint_compression import (  # noqa: E402
+from examples.checkpoint_compression import (
     BASE_RESULT_FIELDS,
     CODEC_PROTOCOL_VERSION,
     benchmark_checkpoint_codecs,
@@ -57,7 +53,8 @@ from examples.checkpoint_compression import (  # noqa: E402
     nonfloating_state,
     tensor_digest,
 )
-
+from neuralzip.checkpoint_loading import load_torch_checkpoint
+from neuralzip.experiment_io import atomic_write_json
 
 DEFAULT_MODELS = ("gpt2", "bert-base")
 RESULT_FIELDS = BASE_RESULT_FIELDS + (
@@ -67,7 +64,7 @@ RESULT_FIELDS = BASE_RESULT_FIELDS + (
     "storage_alias_count",
     "storage_alias_metadata_bytes",
     "checkpoint_tensor_digest",
-    "epoch0_plan_digest",
+    "epoch0_setup_digest",
     "compression_protocol_digest",
 )
 TRAINING_FIELDS = (
@@ -133,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Train GPT-2 Small and BERT Base from random initialization on real "
             "WikiText-2, save exact FP32 epoch trajectories, and benchmark ZipNN "
-            "src against a NeuralZip plan frozen at epoch 0."
+            "src against a NeuralZip setup built at epoch 0."
         )
     )
     parser.add_argument(
@@ -147,8 +144,8 @@ def parse_args() -> argparse.Namespace:
         epochs=20,
         batch_size=None,
         batch_size_help="Override the per-model defaults (GPT-2=8, BERT Base=16).",
-        data_dir=ROOT / "examples" / "outputs" / "datasets" / "wikitext",
-        output_dir=ROOT / "results" / "final-language-checkpoints-wikitext2",
+        data_dir=ROOT / "results" / "datasets" / "wikitext",
+        output_dir=ROOT / "results" / "checkpoints-wikitext2",
     )
     parser.add_argument(
         "--download",
@@ -246,8 +243,12 @@ def unique_cpu_model_state(
         if tensor.is_floating_point() and tensor.dtype != torch.float32
     }
     if invalid:
-        preview = ", ".join(f"{name}={dtype}" for name, dtype in list(invalid.items())[:8])
-        raise TypeError(f"Language checkpoints require exact FP32 model states; got {preview}.")
+        preview = ", ".join(
+            f"{name}={dtype}" for name, dtype in list(invalid.items())[:8]
+        )
+        raise TypeError(
+            f"Language checkpoints require exact FP32 model states; got {preview}."
+        )
     return canonical, aliases
 
 
@@ -258,9 +259,13 @@ def expand_storage_aliases(
     expanded = dict(canonical)
     for alias, source in aliases.items():
         if alias in expanded:
-            raise ValueError(f"Storage alias {alias!r} duplicates a canonical state key.")
+            raise ValueError(
+                f"Storage alias {alias!r} duplicates a canonical state key."
+            )
         if source not in canonical:
-            raise KeyError(f"Storage alias {alias!r} refers to missing tensor {source!r}.")
+            raise KeyError(
+                f"Storage alias {alias!r} refers to missing tensor {source!r}."
+            )
         expanded[str(alias)] = canonical[str(source)]
     return expanded
 
@@ -363,7 +368,7 @@ def compression_protocol(args: argparse.Namespace) -> dict:
             "compression_threshold": 0.95,
         },
         "neuralzip": {
-            "plan": "frozen-epoch-0",
+            "setup": "epoch-0-reused",
             "compression_threshold": 0.95,
         },
         "ratio_scope": "exponent symbols + raw fallback + metadata",
@@ -389,7 +394,10 @@ class TokenBlockDataset(Dataset):
     ) -> None:
         if input_ids.ndim != 2 or input_ids.dtype != torch.long:
             raise ValueError("input_ids must be a [blocks, sequence] int64 tensor.")
-        if special_tokens_mask is not None and special_tokens_mask.shape != input_ids.shape:
+        if (
+            special_tokens_mask is not None
+            and special_tokens_mask.shape != input_ids.shape
+        ):
             raise ValueError("special_tokens_mask must match input_ids.")
         self.input_ids = input_ids.contiguous()
         self.special_tokens_mask = (
@@ -504,7 +512,9 @@ def build_real_token_blocks(
         stream = token_stream(texts, tokenizer, append_eos=True)
         block_count = len(stream) // sequence_length
         if block_count == 0:
-            raise ValueError("WikiText split is too small to form a causal token block.")
+            raise ValueError(
+                "WikiText split is too small to form a causal token block."
+            )
         values = torch.tensor(
             stream[: block_count * sequence_length], dtype=torch.long
         ).reshape(block_count, sequence_length)
@@ -518,12 +528,8 @@ def build_real_token_blocks(
     payloads = torch.tensor(
         stream[: block_count * payload_length], dtype=torch.long
     ).reshape(block_count, payload_length)
-    cls = torch.full(
-        (block_count, 1), int(tokenizer.cls_token_id), dtype=torch.long
-    )
-    sep = torch.full(
-        (block_count, 1), int(tokenizer.sep_token_id), dtype=torch.long
-    )
+    cls = torch.full((block_count, 1), int(tokenizer.cls_token_id), dtype=torch.long)
+    sep = torch.full((block_count, 1), int(tokenizer.sep_token_id), dtype=torch.long)
     values = torch.cat((cls, payloads, sep), dim=1)
     special = torch.zeros_like(values, dtype=torch.bool)
     special[:, 0] = True
@@ -1041,9 +1047,7 @@ def add_alias_manifest_to_metrics(metrics: Mapping, aliases: Mapping[str, str]) 
         else 0.0
     )
     output["exponent_ratio_pct"] = (
-        100.0
-        * output["exponent_compressed_bytes"]
-        / int(output["exponent_raw_bytes"])
+        100.0 * output["exponent_compressed_bytes"] / int(output["exponent_raw_bytes"])
         if int(output["exponent_raw_bytes"])
         else 0.0
     )
@@ -1077,14 +1081,14 @@ def benchmark_checkpoint(
         epoch,
         identities={
             "checkpoint_tensor_digest": checkpoint_tensor_digest,
-            "epoch0_plan_digest": setup["codebook_digest"],
+            "epoch0_setup_digest": setup["codebook_digest"],
             "compression_protocol_digest": compression["digest"],
         },
     )
-    if done == {"NeuralZip", "ZipNN src"}:
-        print(f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True)
-        del checkpoint, canonical, aliases, floating, nonfloating, named_tensors
-        gc.collect()
+    if done == {"NeuralZip", "ZipNN"}:
+        print(
+            f"[{spec.slug}] epoch={epoch:03d} compression already complete", flush=True
+        )
         return
     print(
         f"[{spec.slug}] epoch={epoch:03d} unique_tensors={len(canonical)} "
@@ -1112,7 +1116,7 @@ def benchmark_checkpoint(
         "storage_alias_count": len(aliases),
         "storage_alias_metadata_bytes": alias_metadata_bytes(aliases),
         "checkpoint_tensor_digest": checkpoint_tensor_digest,
-        "epoch0_plan_digest": setup["codebook_digest"],
+        "epoch0_setup_digest": setup["codebook_digest"],
         "compression_protocol_digest": compression["digest"],
     }
     benchmark_checkpoint_codecs(
@@ -1130,8 +1134,6 @@ def benchmark_checkpoint(
             aliases,
         ),
     )
-    del checkpoint, canonical, aliases, floating, nonfloating, named_tensors
-    gc.collect()
 
 
 def frozen_codec_for_trajectory(
@@ -1199,18 +1201,6 @@ def process_trajectory(
     )
 
 
-def render_figure(result_path: Path, output_dir: Path) -> tuple[Path, Path] | None:
-    return render_checkpoint_figure(
-        result_path,
-        output_dir,
-        models=DEFAULT_MODELS,
-        model_labels={slug: spec.label for slug, spec in MODEL_SPECS.items()},
-        output_stem="language_checkpoint_training",
-        figure_size=(7.6, 6.2),
-        is_current_result=is_current_codec_result,
-    )
-
-
 def validate_complete_results(
     result_path: Path,
     *,
@@ -1230,7 +1220,7 @@ def write_metadata(args: argparse.Namespace, dataset_name: str) -> None:
     atomic_write_json(
         args.output_dir / "run_metadata.json",
         {
-            "experiment": "final-language-training-checkpoint-suite",
+            "experiment": "language-training-checkpoint-suite",
             "models": [asdict(MODEL_SPECS[slug]) for slug in args.models],
             "dataset": dataset_name,
             "dataset_is_real": not args.smoke,
@@ -1249,7 +1239,7 @@ def write_metadata(args: argparse.Namespace, dataset_name: str) -> None:
                 "are recorded as metadata and reconstructed on load"
             ),
             "compression_schedule": "post-hoc isolated CPU benchmark of every saved epoch",
-            "compressors": ["ZipNN src 0.5.4", "NeuralZip frozen epoch-0 plan"],
+            "compressors": ["ZipNN 0.5.4", "NeuralZip epoch-0 setup"],
             "ratio_scope": "exponent symbols + raw fallback + metadata",
             "storage_alias_metadata": "counted once in both compressors",
             "compression_protocol": compression_protocol(args),
@@ -1309,18 +1299,17 @@ def main() -> None:
         args.device = "cpu"
         args.output_dir = args.output_dir / "smoke"
     result_path = initialize_checkpoint_run(args)
-    if args.render_only:
-        validate_complete_results(result_path, models=args.models, epochs=args.epochs)
-        print(f"rendered={render_figure(result_path, args.output_dir)}", flush=True)
-        return
-
     parquet_paths = None
-    if not args.compression_only and missing_checkpoint_slugs(
-        slugs=args.models,
-        external_root=args.existing_checkpoint_root,
-        output_dir=args.output_dir,
-        epochs=args.epochs,
-    ) and not args.smoke:
+    if (
+        not args.compression_only
+        and missing_checkpoint_slugs(
+            slugs=args.models,
+            external_root=args.existing_checkpoint_root,
+            output_dir=args.output_dir,
+            epochs=args.epochs,
+        )
+        and not args.smoke
+    ):
         if not args.train_missing:
             raise FileNotFoundError(
                 "Requested language checkpoints are missing and --no-train-missing was set."
@@ -1363,7 +1352,6 @@ def main() -> None:
         local_source="trained-by-language-runner",
         train_trajectory=train_trajectory,
         process_trajectory=process_trajectory,
-        render_figure=render_figure,
         validate_results=validate_complete_results,
     )
 

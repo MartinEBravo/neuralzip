@@ -10,14 +10,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import examples.run_precompute_family_suite as family_suite
-from examples.run_general_codec_rerun import MODEL_SPECS, MappingModel
-from examples.model_catalog import QUANTIZED_MODEL_SPECS
-from examples.run_precompute_family_suite import (
-    FAMILY_SPECS,
-    FamilySpec,
-    canonical_tensor_name,
-)
+import examples.run_setup_transfer_suite as family_suite
+from examples.model_catalog import MODEL_SPECS, QUANTIZED_MODEL_SPECS
+from examples.model_loading import MappingModel
 from examples.run_quantized_nibble_compression import (
     _bytes_from_nibbles,
     _encode_local,
@@ -26,6 +21,11 @@ from examples.run_quantized_nibble_compression import (
     _nibble_stream,
     _prepare_shared_plan,
     _verify_archive,
+)
+from examples.run_setup_transfer_suite import (
+    FAMILY_SPECS,
+    FamilySpec,
+    canonical_tensor_name,
 )
 
 
@@ -78,13 +78,16 @@ def test_family_transfer_uses_complete_floating_state_once():
 def test_family_transfer_suite_has_the_planned_coverage():
     assert len(FAMILY_SPECS) == 11
     assert sum(len(spec.target_keys) for spec in FAMILY_SPECS.values()) == 20
-    assert len(
-        {
-            key
-            for spec in FAMILY_SPECS.values()
-            for key in (spec.source_key, *spec.target_keys)
-        }
-    ) == 31
+    assert (
+        len(
+            {
+                key
+                for spec in FAMILY_SPECS.values()
+                for key in (spec.source_key, *spec.target_keys)
+            }
+        )
+        == 31
+    )
     assert all(
         spec.source_key not in spec.target_keys for spec in FAMILY_SPECS.values()
     )
@@ -144,21 +147,21 @@ def test_named_tensors_applies_gemma_scope_before_transfer():
     assert [name for name, _ in tensors] == ["model.weight"]
 
 
-def test_frozen_plan_detects_in_place_mode_mutation():
+def test_frozen_setup_detects_in_place_mode_mutation():
     tensor = torch.ones(32768, dtype=torch.bfloat16)
     codec, _ = family_suite.setup_neuralzip(
         [("layer.weight", tensor)],
         threads=2,
     )
-    fingerprint = family_suite.frozen_plan_fingerprint(codec)
+    fingerprint = family_suite.frozen_setup_fingerprint(codec)
     first_mode = next(iter(codec._mode_by_tensor_stream.values()))
     first_mode["kind"] = "corrupted"
 
-    with pytest.raises(RuntimeError, match="changed the frozen source plan"):
-        family_suite.assert_frozen_plan(codec, fingerprint)
+    with pytest.raises(RuntimeError, match="changed the reusable source setup"):
+        family_suite.assert_frozen_setup(codec, fingerprint)
 
 
-def test_run_family_builds_one_source_plan_for_multiple_targets(
+def test_run_family_builds_one_source_setup_for_multiple_targets(
     monkeypatch,
     tmp_path,
 ):
@@ -188,14 +191,14 @@ def test_run_family_builds_one_source_plan_for_multiple_targets(
         return codec, {"setup_seconds": 1.0}
 
     def fake_target(_family, received_codec, _source_names, target_key, **kwargs):
-        target_calls.append((target_key, received_codec, kwargs["plan_fingerprint"]))
+        target_calls.append((target_key, received_codec, kwargs["setup_fingerprint"]))
         return {"target_key": target_key}
 
     monkeypatch.setattr(family_suite, "setup_neuralzip", fake_setup)
-    monkeypatch.setattr(family_suite, "frozen_plan_fingerprint", lambda _: "frozen")
+    monkeypatch.setattr(family_suite, "frozen_setup_fingerprint", lambda _: "frozen")
     monkeypatch.setattr(family_suite, "benchmark_target", fake_target)
-    monkeypatch.setattr(family_suite, "host_provenance", lambda: {})
-    monkeypatch.setattr(family_suite, "code_provenance", lambda: {})
+    monkeypatch.setattr(family_suite, "host_provenance", dict)
+    monkeypatch.setattr(family_suite, "code_provenance", dict)
 
     result = family_suite.run_family(
         family,
@@ -265,9 +268,7 @@ def test_quantized_exact_selector_never_mixes_gguf_variants_or_bin_files():
 
     selected = _hf_model_files(fs, spec, "a" * 40)
 
-    assert [row["relative_path"] for row in selected] == [
-        "latamgpt-Q4_K_M.gguf"
-    ]
+    assert [row["relative_path"] for row in selected] == ["latamgpt-Q4_K_M.gguf"]
 
 
 def test_quantized_index_selects_only_authoritative_safetensors_shards():
@@ -383,7 +384,7 @@ def test_every_quantized_model_has_an_explicit_artifact_selector():
     }
 
 
-def test_lossy_lossless_suite_has_final_format_and_distillation_coverage():
+def test_quantized_suite_has_versioned_format_and_distillation_coverage():
     quantized = QUANTIZED_MODEL_SPECS
     distilled = [spec for spec in MODEL_SPECS if "distilled" in spec.suites]
 

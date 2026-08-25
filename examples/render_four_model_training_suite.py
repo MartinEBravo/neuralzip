@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Merge and render the final four-model training trajectories.
+"""Merge and render the four-model training trajectories.
 
 The script does not run experiments.  It combines the language trajectories
-produced by ``run_final_language_checkpoint_suite.py`` and
-``run_final_federated_language_suite.py`` with the existing ResNet-18/34
-trajectories.  Before writing a final artifact it checks that every requested
+produced by ``run_checkpoint_language.py`` and
+``run_federated_language.py`` with the ResNet-18/34
+trajectories. Before writing an artifact it checks that every requested
 epoch/round contains exactly one valid row for each compressor.
 
 The resulting figures use the thesis layout requested for both experiments:
@@ -20,13 +20,13 @@ import argparse
 import csv
 import math
 import os
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 
-COMPRESSOR_SRC = "ZipNN src"
+COMPRESSOR_SRC = "ZipNN"
 COMPRESSOR_NEURALZIP = "NeuralZip"
 COMPRESSORS = (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP)
 MODEL_ORDER = ("gpt2", "bert-base", "resnet18", "resnet34")
@@ -36,8 +36,8 @@ MODEL_LABELS = {
     "resnet18": "ResNet-18",
     "resnet34": "ResNet-34",
 }
-COLORS = {"ZipNN src": "#4C78A8", "NeuralZip": "#E45756"}
-MARKERS = {"ZipNN src": "o", "NeuralZip": "s"}
+COLORS = {"ZipNN": "#4C78A8", "NeuralZip": "#E45756"}
+MARKERS = {"ZipNN": "o", "NeuralZip": "s"}
 
 CHECKPOINT_REQUIRED_COLUMNS = {
     "model",
@@ -64,7 +64,7 @@ CANONICAL_FIELDS = (
     "step",
     "compressor",
     "exponent_ratio_pct",
-    "encoding_seconds",
+    "encode_seconds",
     "source_path",
 )
 
@@ -73,7 +73,6 @@ CANONICAL_FIELDS = (
 class InputSpec:
     path: Path
     models: tuple[str, ...]
-    step_name: str
     first_step: int
     last_step: int
     experiment: str
@@ -84,47 +83,29 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--language-checkpoint-csv",
         type=Path,
-        default=(
-            ROOT
-            / "results"
-            / "final-language-checkpoints-wikitext2"
-            / "checkpoint_results.csv"
-        ),
+        default=(ROOT / "results" / "checkpoints-wikitext2" / "checkpoint_results.csv"),
     )
     parser.add_argument(
         "--vision-checkpoint-csv",
         type=Path,
-        default=(
-            ROOT
-            / "results"
-            / "final-checkpoints-cifar100"
-            / "checkpoint_results.csv"
-        ),
+        default=(ROOT / "results" / "checkpoints-cifar100" / "checkpoint_results.csv"),
     )
     parser.add_argument(
         "--language-federated-root",
         type=Path,
-        default=(
-            ROOT
-            / "results"
-            / "final-federated-wikitext2-200x10"
-        ),
+        default=(ROOT / "results" / "federated-wikitext2-200x10"),
         help="Root containing gpt2/ and bert-base/ result directories.",
     )
     parser.add_argument(
         "--vision-federated-root",
         type=Path,
-        default=(
-            ROOT
-            / "results"
-            / "final-federated-cifar10-200x10"
-        ),
+        default=(ROOT / "results" / "federated-cifar10-200x10"),
         help="Root containing resnet18/ and resnet34/ result directories.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT / "results" / "final-four-model-training-suite",
+        default=ROOT / "results" / "training-trajectories",
     )
     parser.add_argument("--language-checkpoint-epochs", type=int, default=20)
     parser.add_argument("--vision-checkpoint-epochs", type=int, default=50)
@@ -173,7 +154,7 @@ def _finite_nonnegative(value: object, *, field: str, path: Path) -> float:
         parsed = float(str(value))
     except (TypeError, ValueError) as error:
         raise ValueError(f"Invalid {field}={value!r} in {path}") from error
-    if parsed < 0 or parsed != parsed or parsed in (float("inf"), float("-inf")):
+    if parsed < 0 or not math.isfinite(parsed):
         raise ValueError(f"Invalid {field}={value!r} in {path}")
     return parsed
 
@@ -195,16 +176,16 @@ def _canonicalize_checkpoint(spec: InputSpec) -> list[dict[str, object]]:
         try:
             step = int(row["epoch"])
         except (TypeError, ValueError) as error:
-            raise ValueError(f"Invalid epoch={row['epoch']!r} in {spec.path}") from error
+            raise ValueError(
+                f"Invalid epoch={row['epoch']!r} in {spec.path}"
+            ) from error
         if not spec.first_step <= step <= spec.last_step:
             continue
         if str(row["status"]).strip() != "ok":
             raise ValueError(
                 f"Non-ok checkpoint row for {model} epoch {step} in {spec.path}"
             )
-        if not _truthy(row["roundtrip_exact"]) or not _truthy(
-            row["input_unchanged"]
-        ):
+        if not _truthy(row["roundtrip_exact"]) or not _truthy(row["input_unchanged"]):
             raise ValueError(
                 f"Invalid checkpoint verification for {model} epoch {step} "
                 f"in {spec.path}"
@@ -221,7 +202,7 @@ def _canonicalize_checkpoint(spec: InputSpec) -> list[dict[str, object]]:
                     field="exponent_ratio_pct",
                     path=spec.path,
                 ),
-                "encoding_seconds": _finite_nonnegative(
+                "encode_seconds": _finite_nonnegative(
                     row["encode_seconds"], field="encode_seconds", path=spec.path
                 ),
                 "source_path": str(spec.path.resolve()),
@@ -242,7 +223,9 @@ def _canonicalize_federated(spec: InputSpec) -> list[dict[str, object]]:
         try:
             step = int(row["round"])
         except (TypeError, ValueError) as error:
-            raise ValueError(f"Invalid round={row['round']!r} in {spec.path}") from error
+            raise ValueError(
+                f"Invalid round={row['round']!r} in {spec.path}"
+            ) from error
         if not spec.first_step <= step <= spec.last_step:
             continue
         if not _truthy(row["roundtrip_ok"]):
@@ -261,7 +244,7 @@ def _canonicalize_federated(spec: InputSpec) -> list[dict[str, object]]:
                     field="exponent_ratio_pct",
                     path=spec.path,
                 ),
-                "encoding_seconds": _finite_nonnegative(
+                "encode_seconds": _finite_nonnegative(
                     row["downlink_encode_seconds"],
                     field="downlink_encode_seconds",
                     path=spec.path,
@@ -281,8 +264,7 @@ def _validate_complete(rows: Sequence[Mapping[str, object]], spec: InputSpec) ->
         for compressor in COMPRESSORS
     }
     observed_list = [
-        (str(row["model"]), int(row["step"]), str(row["compressor"]))
-        for row in rows
+        (str(row["model"]), int(row["step"]), str(row["compressor"])) for row in rows
     ]
     observed = set(observed_list)
     duplicates = sorted(key for key in observed if observed_list.count(key) != 1)
@@ -291,7 +273,9 @@ def _validate_complete(rows: Sequence[Mapping[str, object]], spec: InputSpec) ->
     if duplicates or missing or unexpected:
         details = []
         if missing:
-            details.append(f"missing={missing[:8]}" + (" ..." if len(missing) > 8 else ""))
+            details.append(
+                f"missing={missing[:8]}" + (" ..." if len(missing) > 8 else "")
+            )
         if duplicates:
             details.append(
                 f"duplicates={duplicates[:8]}" + (" ..." if len(duplicates) > 8 else "")
@@ -300,7 +284,9 @@ def _validate_complete(rows: Sequence[Mapping[str, object]], spec: InputSpec) ->
             details.append(
                 f"unexpected={unexpected[:8]}" + (" ..." if len(unexpected) > 8 else "")
             )
-        raise ValueError(f"Incomplete {spec.experiment} input {spec.path}: {'; '.join(details)}")
+        raise ValueError(
+            f"Incomplete {spec.experiment} input {spec.path}: {'; '.join(details)}"
+        )
 
 
 def _write_canonical_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
@@ -343,7 +329,7 @@ def _render(
         if upper <= lower:
             upper = lower + ratio_tick
         ratio_limits = (lower, upper)
-        tick_count = int(round((upper - lower) / ratio_tick))
+        tick_count = round((upper - lower) / ratio_tick)
         ratio_ticks = [lower + index * ratio_tick for index in range(tick_count + 1)]
 
     fig, axes = plt.subplots(2, 4, figsize=(14.4, 6.2), sharex="col")
@@ -377,7 +363,7 @@ def _render(
             )
             time_axis.plot(
                 steps,
-                [float(row["encoding_seconds"]) for row in group],
+                [float(row["encode_seconds"]) for row in group],
                 **style,
             )
         if ratio_limits is not None and ratio_ticks is not None:
@@ -425,7 +411,6 @@ def build_checkpoint_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path
             InputSpec(
                 path=args.language_checkpoint_csv,
                 models=("gpt2", "bert-base"),
-                step_name="epoch",
                 first_step=0,
                 last_step=int(args.language_checkpoint_epochs),
                 experiment="checkpoint",
@@ -437,7 +422,6 @@ def build_checkpoint_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path
             InputSpec(
                 path=args.vision_checkpoint_csv,
                 models=("resnet18", "resnet34"),
-                step_name="epoch",
                 first_step=0,
                 last_step=int(args.vision_checkpoint_epochs),
                 experiment="checkpoint",
@@ -474,7 +458,6 @@ def build_federated_outputs(args: argparse.Namespace) -> tuple[Path, Path, Path]
                     InputSpec(
                         path=root / model / "federated_round_results.csv",
                         models=(model,),
-                        step_name="round",
                         first_step=1,
                         last_step=int(args.federated_rounds),
                         experiment="federated",

@@ -11,7 +11,9 @@ def test_parse_cpu_set_supports_ranges_and_rejects_invalid_values():
 
 
 def test_cpu_affinity_is_sorted_and_platform_optional(monkeypatch):
-    monkeypatch.setattr(system.os, "sched_getaffinity", lambda _pid: {4, 1, 3}, raising=False)
+    monkeypatch.setattr(
+        system.os, "sched_getaffinity", lambda _pid: {4, 1, 3}, raising=False
+    )
     assert system.cpu_affinity() == [1, 3, 4]
     monkeypatch.delattr(system.os, "sched_getaffinity")
     assert system.cpu_affinity() is None

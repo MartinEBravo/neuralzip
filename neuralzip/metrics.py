@@ -2,6 +2,18 @@
 
 import numpy as np
 
+from .utils import split_fields
+
+
+def exponent_distribution(tensor):
+    """Return the normalized 8-bit exponent histogram of a floating tensor."""
+
+    _, exponent, _ = split_fields(tensor.detach().cpu().contiguous())
+    stream = exponent.reshape(-1).numpy()
+    counts = np.bincount(stream, minlength=256).astype(np.float64)
+    total = counts.sum()
+    return counts / total if total else counts
+
 
 def jensen_shannon_distance(left, right):
     """Return the base-2 Jensen--Shannon distance between two distributions.

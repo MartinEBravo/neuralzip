@@ -1,6 +1,6 @@
 """Federated GPT-2/BERT compression trajectories for the thesis.
 
-The default experiment complements the existing ResNet federated suite with
+The language experiment complements the ResNet federated trajectories with
 two language objectives over the real WikiText-2 raw training split:
 
 * GPT-2, randomly initialized, trained with causal language modeling;
@@ -18,13 +18,13 @@ so an interrupted run can resume only when its complete protocol fingerprint
 matches.  Synthetic data and reduced model configurations are available solely
 behind ``--smoke``::
 
-    python examples/run_final_federated_language_suite.py \
+    python examples/run_federated_language.py \
         --models gpt2 bert-base --smoke --clients 2 --rounds 1 \
         --gpt2-sequence-length 16 --bert-sequence-length 16 \
         --tokens-per-client-batch 32 --threads 2 --device cpu \
         --output-dir /tmp/neuralzip-language-federated-smoke --overwrite
 
-Run the two final models independently on different GPUs by passing one value
+Run the two models independently on different GPUs by passing one value
 to ``--models`` in each process.  Do not place two processes for the same model
 in the same output directory.
 """
@@ -40,9 +40,9 @@ import os
 import platform
 import random
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
 
 import torch
 import transformers
@@ -57,6 +57,8 @@ from transformers import (
 from neuralzip.hashing import sha256_file as _sha256_file
 from neuralzip.system import (
     cpu_affinity as _cpu_affinity,
+)
+from neuralzip.system import (
     parse_cpu_set as _parse_cpu_set_value,
 )
 
@@ -67,11 +69,6 @@ try:
         DTYPE_NAME,
         EncodedState,
         FederatedCodecProtocol,
-        NeuralZipStateCodec,
-        ZipNNSrcStateCodec,
-        _assert_same_tensors,
-        _clone_tensor_map,
-        _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
         build_round_rows,
@@ -85,11 +82,6 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
         DTYPE_NAME,
         EncodedState,
         FederatedCodecProtocol,
-        NeuralZipStateCodec,
-        ZipNNSrcStateCodec,
-        _assert_same_tensors,
-        _clone_tensor_map,
-        _encoded_metrics,
         _write_csv_atomic,
         _write_json_atomic,
         build_round_rows,
@@ -98,6 +90,7 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
     )
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DATASET_NAME = "WikiText-2"
 DATASET_REPOSITORY = "Salesforce/wikitext"
 DATASET_FILENAME = "wikitext-2-raw-v1/train-00000-of-00001.parquet"
@@ -125,7 +118,7 @@ def _set_process_affinity(cpus: Sequence[int]) -> None:
 
     if not hasattr(os, "sched_setaffinity"):
         raise RuntimeError("CPU isolation requires Linux sched_setaffinity support.")
-    cpu_set = set(int(cpu) for cpu in cpus)
+    cpu_set = {int(cpu) for cpu in cpus}
     task_dir = Path("/proc/self/task")
     tids = [int(path.name) for path in task_dir.iterdir()] if task_dir.exists() else [0]
     for tid in tids:
@@ -170,7 +163,7 @@ class TimingIsolation:
         if self.background_cpus is not None:
             _set_process_affinity(self.background_cpus)
 
-    def __enter__(self) -> "TimingIsolation":
+    def __enter__(self):
         if self._handle is not None:
             fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
         try:
@@ -428,7 +421,9 @@ def _resolve_wikitext_parquet(data_dir: Path, *, offline: bool) -> Path:
     expected = data_dir / DATASET_FILENAME
     if expected.exists():
         return expected
-    candidates = sorted(data_dir.glob("**/train-*.parquet")) if data_dir.exists() else []
+    candidates = (
+        sorted(data_dir.glob("**/train-*.parquet")) if data_dir.exists() else []
+    )
     raw_candidates = [path for path in candidates if "wikitext-2-raw-v1" in str(path)]
     if len(raw_candidates) == 1:
         return raw_candidates[0]
@@ -479,7 +474,9 @@ def _reconstruct_wikitext_documents(lines: Sequence[str]) -> list[str]:
     return documents
 
 
-def _load_real_documents(data_dir: Path, *, offline: bool) -> tuple[list[str], dict[str, object]]:
+def _load_real_documents(
+    data_dir: Path, *, offline: bool
+) -> tuple[list[str], dict[str, object]]:
     parquet_path = _resolve_wikitext_parquet(data_dir, offline=offline)
     try:
         import pyarrow.parquet as pq
@@ -525,9 +522,7 @@ def _partition_documents(
         client = min(range(int(clients)), key=lambda index: (loads[index], index))
         partitions[client].append((document_index, document))
         loads[client] += len(document.encode("utf-8"))
-    return [
-        [document for _, document in sorted(partition)] for partition in partitions
-    ]
+    return [[document for _, document in sorted(partition)] for partition in partitions]
 
 
 def _tokenizer_spec(model_name: str, *, offline: bool) -> TokenizerSpec:
@@ -549,7 +544,9 @@ def _tokenizer_spec(model_name: str, *, offline: bool) -> TokenizerSpec:
         revision=str(revision) if revision else None,
         vocab_sha256=hashlib.sha256(encoded_vocabulary).hexdigest(),
         vocab_size=len(tokenizer),
-        special_token_ids=tuple(sorted(set(int(value) for value in tokenizer.all_special_ids))),
+        special_token_ids=tuple(
+            sorted({int(value) for value in tokenizer.all_special_ids})
+        ),
         mask_token_id=(
             int(tokenizer.mask_token_id)
             if tokenizer.mask_token_id is not None
@@ -627,7 +624,7 @@ def _real_client_corpora(
     corpora = []
     assignment_digest = hashlib.sha256()
     for client_index, partition in enumerate(document_partitions):
-        assignment_digest.update(f"client={client_index}\n".encode("utf-8"))
+        assignment_digest.update(f"client={client_index}\n".encode())
         for document in partition:
             assignment_digest.update(hashlib.sha256(document.encode("utf-8")).digest())
         sequences = _tokenize_partition(
@@ -669,7 +666,7 @@ def _synthetic_client_corpora(
             sequences[:, -1] = 102
         corpora.append(ClientCorpus(sequences, 1))
     digest = hashlib.sha256(
-        f"synthetic:{seed}:{clients}:{model_name}:{sequence_length}".encode("utf-8")
+        f"synthetic:{seed}:{clients}:{model_name}:{sequence_length}".encode()
     ).hexdigest()
     return corpora, digest
 
@@ -853,9 +850,7 @@ def _validate_checkpoint_rows(
     expected = {COMPRESSOR_SRC, COMPRESSOR_NEURALZIP}
     for round_index in range(1, int(completed_rounds) + 1):
         observed = {
-            str(row["compressor"])
-            for row in rows
-            if int(row["round"]) == round_index
+            str(row["compressor"]) for row in rows if int(row["round"]) == round_index
         }
         if observed != expected:
             raise RuntimeError(
@@ -864,9 +859,7 @@ def _validate_checkpoint_rows(
 
 
 def _protocol_fingerprint(payload: Mapping[str, object]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -888,13 +881,16 @@ def _run_model(
             if path.exists():
                 path.unlink()
     elif not args.resume and any(
-        path.exists() for path in (round_path, summary_path, metadata_path, checkpoint_path)
+        path.exists()
+        for path in (round_path, summary_path, metadata_path, checkpoint_path)
     ):
         raise FileExistsError(
             f"{model_dir} already contains a run; use --resume or --overwrite."
         )
-    elif args.resume and not checkpoint_path.exists() and any(
-        path.exists() for path in (round_path, summary_path, metadata_path)
+    elif (
+        args.resume
+        and not checkpoint_path.exists()
+        and any(path.exists() for path in (round_path, summary_path, metadata_path))
     ):
         raise RuntimeError(
             f"{model_dir} has result files but no resume checkpoint; refusing unsafe resume."
@@ -980,13 +976,9 @@ def _run_model(
     fresh_setup_bytes = dict(codec_protocol.setup_bytes)
 
     cpu_affinity = (
-        list(args.timing_cpus)
-        if args.timing_cpus is not None
-        else _cpu_affinity()
+        list(args.timing_cpus) if args.timing_cpus is not None else _cpu_affinity()
     )
-    device_name = (
-        torch.cuda.get_device_name(device) if device.type == "cuda" else None
-    )
+    device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else None
     protocol = {
         "protocol_version": PROTOCOL_VERSION,
         "model": model_name,
@@ -1052,7 +1044,7 @@ def _run_model(
             setup_bytes[COMPRESSOR_NEURALZIP]
         ):
             raise RuntimeError(
-                "The deterministically rebuilt NeuralZip round-0 plan has a "
+                "The deterministically rebuilt NeuralZip round-0 setup has a "
                 "different metadata size; refusing unsafe resume."
             )
         with timing_isolation:
@@ -1078,8 +1070,7 @@ def _run_model(
                     "local_batches": int(args.local_batches),
                     "batch_size": int(batch_size),
                     "sequence_length": int(sequence_length),
-                    "tokens_per_client_batch": int(batch_size)
-                    * int(sequence_length),
+                    "tokens_per_client_batch": int(batch_size) * int(sequence_length),
                     "dtype": DTYPE_NAME,
                 },
                 clients=args.clients,
@@ -1091,7 +1082,7 @@ def _run_model(
         print(f"[{model_name}] resume from round {completed_rounds}", flush=True)
 
     # Warm both complete paths on the same round-0 state.  On resume this also
-    # validates the deterministically rebuilt frozen plan before any new row.
+    # validates the deterministically rebuilt setup before any new row.
     with timing_isolation:
         codec_protocol.warmup(initial_floating, context=model_name)
         del initial_floating
@@ -1117,15 +1108,14 @@ def _run_model(
         "unique_floating_tensors": len(layout.floating_canonical_names),
         "tied_aliases_elided": dict(layout.aliases),
         "compressors": [COMPRESSOR_SRC, COMPRESSOR_NEURALZIP],
-        "neuralzip_plan": "built once on random initialization (round 0) and frozen",
+        "neuralzip_setup": "built once on random initialization (round 0) and reused",
         "trajectory": (
             "NeuralZip-decoded canonical FP32 storages after bitwise equality "
             "with ZipNN-src; exact tied aliases restored before training and FedAvg"
         ),
         "time_metric": (
-            "downlink encode plus maximum client uplink encode per round; "
-            "decode, training, alias restoration, setup, and automatic cyclic "
-            "GC excluded"
+            "one server-side downlink encode per round; client encoding, decode, "
+            "training, alias restoration, setup, and automatic cyclic GC excluded"
         ),
         "automatic_gc_during_encode": False,
         "ratio_metric": (
@@ -1163,13 +1153,11 @@ def _run_model(
         # timer is reported; serialization itself remains outside that timer.
         with timing_isolation:
             floating_server = _unique_floating_state(server_state, layout)
-            downlink_metrics, decoded_floating_server = (
-                codec_protocol.encode_verified(
-                    floating_server,
-                    order=order,
-                    context=f"{model_name} round {round_index}",
-                    phase="downlink",
-                )
+            downlink_metrics, decoded_floating_server = codec_protocol.encode_verified(
+                floating_server,
+                order=order,
+                context=f"{model_name} round {round_index}",
+                phase="downlink",
             )
             decoded_server_state = _merge_decoded_unique(
                 server_state,
@@ -1204,19 +1192,14 @@ def _run_model(
             with timing_isolation:
                 client_state = _snapshot_model_state(training_model, layout)
                 floating_client = _unique_floating_state(client_state, layout)
-                measurements, decoded_floating_client = (
-                    codec_protocol.encode_verified(
-                        floating_client,
-                        order=codec_protocol.encoding_order(
-                            round_index,
-                            client_index=client_index,
-                        ),
-                        context=(
-                            f"{model_name} round {round_index} client "
-                            f"{client_index}"
-                        ),
-                        phase="uplink",
-                    )
+                measurements, decoded_floating_client = codec_protocol.encode_verified(
+                    floating_client,
+                    order=codec_protocol.encoding_order(
+                        round_index,
+                        client_index=client_index,
+                    ),
+                    context=(f"{model_name} round {round_index} client {client_index}"),
+                    phase="uplink",
                 )
                 for name, encoded in measurements.items():
                     uplink_metrics[name].append(encoded)
@@ -1272,8 +1255,7 @@ def _run_model(
                 "local_batches": int(args.local_batches),
                 "batch_size": int(batch_size),
                 "sequence_length": int(sequence_length),
-                "tokens_per_client_batch": int(batch_size)
-                * int(sequence_length),
+                "tokens_per_client_batch": int(batch_size) * int(sequence_length),
                 "dtype": DTYPE_NAME,
             },
             clients=args.clients,
@@ -1300,7 +1282,7 @@ def _run_model(
             f"{model_name} round={round_index}/{args.rounds} "
             f"loss={sum(client_losses) / len(client_losses):.4f} "
             + " ".join(
-                f"{row['compressor']}={row['encoding_critical_seconds']:.3f}s/"
+                f"{row['compressor']}={row['downlink_encode_seconds']:.3f}s/"
                 f"{row['exponent_ratio_pct']:.3f}%"
                 for row in round_rows
             ),
@@ -1319,12 +1301,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("examples/outputs/datasets/wikitext"),
+        default=ROOT / "results" / "datasets" / "wikitext",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("examples/outputs/final_federated_wikitext_200x10"),
+        default=ROOT / "results" / "federated-wikitext2-200x10",
     )
     parser.add_argument("--clients", type=int, default=10)
     parser.add_argument("--rounds", type=int, default=200)
@@ -1355,7 +1337,7 @@ def _parse_args() -> argparse.Namespace:
         type=_parse_cpu_set,
         help=(
             "Disjoint CPUs used for GPU training and orchestration outside the "
-            "timing lock, e.g. 12-15,28-31 on relela-06."
+            "timing lock, e.g. 12-15,28-31."
         ),
     )
     parser.add_argument("--chunk-size", type=int, default=256 << 10)

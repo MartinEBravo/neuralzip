@@ -6,26 +6,24 @@ import torch
 
 from . import huff0
 from .dtypes import dtype_name
-from .packed_exponents import (
-    restore_2d_stream,
-    topk_vocab,
-    tokenize_ngrams,
-    transpose_2d_stream,
-)
+from .metrics import exponent_distribution, jensen_shannon_distance
 from .mode_selection import (
     select_fastest_within_ratio,
     select_packed_time_budget,
 )
-from .metrics import jensen_shannon_distance
+from .packed_exponents import (
+    restore_2d_stream,
+    tokenize_ngrams,
+    topk_vocab,
+    transpose_2d_stream,
+)
 from .payloads import (
     ByteGroupPayload,
     CodebookPayload,
-    PACKED_CHUNK_METADATA_BYTES,
-    SHARED_CHUNK_METADATA_BYTES,
     StreamChunk,
     TensorPayload,
 )
-from .utils import split_fields
+from .serialization import PACKED_CHUNK_METADATA_BYTES, SHARED_CHUNK_METADATA_BYTES
 from .zipnn_codec import (
     DTYPE_BY_NAME,
     ZipNNCodec,
@@ -38,14 +36,6 @@ from .zipnn_codec import (
 
 def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
-
-
-def _exponent_distribution(tensor):
-    _, exponent, _ = split_fields(tensor.detach().cpu().contiguous())
-    stream = exponent.reshape(-1).to(torch.int64).numpy()
-    counts = np.bincount(stream, minlength=256).astype(np.float64)
-    total = counts.sum()
-    return counts / total if total else counts
 
 
 class NeuralZipCodec(ZipNNCodec):
@@ -61,7 +51,6 @@ class NeuralZipCodec(ZipNNCodec):
         prior_count=1,
         exponent_prior_count=1,
         cluster_map=None,
-        clustering="js-distance",
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
         ngram_values=(2, 3, 4),
@@ -84,7 +73,6 @@ class NeuralZipCodec(ZipNNCodec):
         self.cluster_map = {
             str(name): str(value) for name, value in (cluster_map or {}).items()
         }
-        self.clustering = str(clustering).lower().replace("_", "-")
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
@@ -96,12 +84,6 @@ class NeuralZipCodec(ZipNNCodec):
         self.enable_shared_codebooks = bool(enable_shared_codebooks)
         self.direct_batch_bytes = int(direct_batch_bytes)
 
-        if self.clustering not in {
-            "js-distance",
-            "jensen-shannon",
-            "jensen-shannon-distance",
-        }:
-            raise ValueError("NeuralZip clustering must use Jensen-Shannon distance.")
         if self.prior_count < 0 or self.exponent_prior_count < 0:
             raise ValueError("Huffman prior counts must be non-negative.")
         if self.cluster_js_threshold < 0:
@@ -131,16 +113,12 @@ class NeuralZipCodec(ZipNNCodec):
         self._codebook_payloads = []
         self._codebook_payload_by_id = {}
         self._computed_cluster_map = {}
-        self._cluster_centroids = {}
         self._clusters_prepared = False
         self._next_codebook_id = 0
         self._selected_mode_counts = {}
-        self._selection_stats = {}
-        self._selection_diagnostics = ()
         self._mode_by_tensor_stream = {}
         self._transfer_mode_by_tensor_stream = {}
         self._transfer_cluster_by_name = {}
-        self._transfer_stats = {}
         self._transfer_active = False
 
     def reset_decompression(self):
@@ -168,36 +146,13 @@ class NeuralZipCodec(ZipNNCodec):
 
     @property
     def cluster_count(self):
-        return len(set(self.cluster_map.values()) | set(self._computed_cluster_map.values()))
+        return len(
+            set(self.cluster_map.values()) | set(self._computed_cluster_map.values())
+        )
 
     @property
     def selected_modes(self):
         return dict(self._selected_mode_counts)
-
-    @property
-    def selection_stats(self):
-        return dict(self._selection_stats)
-
-    @property
-    def selection_diagnostics(self):
-        return tuple(self._selection_diagnostics)
-
-    @property
-    def transfer_stats(self):
-        return dict(self._transfer_stats)
-
-    @property
-    def setup_memory_bytes(self):
-        """Logical native bytes retained by selected shared/packed CTables."""
-        seen = set()
-        total = 0
-        for mode in self._mode_by_key.values():
-            codebook = mode.get("codebook")
-            if codebook is None or id(codebook.handle) in seen:
-                continue
-            seen.add(id(codebook.handle))
-            total += huff0.codebook_memory_bytes(codebook)
-        return int(total)
 
     def cluster_id(self, name):
         if name in self._transfer_cluster_by_name:
@@ -212,7 +167,6 @@ class NeuralZipCodec(ZipNNCodec):
         named_tensors = list(named_tensors)
         clusters = []
         computed = {}
-        distributions = {}
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if (
                 not torch.is_tensor(tensor)
@@ -221,9 +175,8 @@ class NeuralZipCodec(ZipNNCodec):
             ):
                 continue
 
-            distribution = _exponent_distribution(tensor)
+            distribution = exponent_distribution(tensor)
             weight = int(tensor.numel())
-            distributions[name] = (distribution, weight)
             if name in self.cluster_map:
                 continue
             best_index = None
@@ -240,7 +193,11 @@ class NeuralZipCodec(ZipNNCodec):
             if best_index is None or best_distance > self.cluster_js_threshold:
                 cluster_id = f"js_{len(clusters):03d}"
                 clusters.append(
-                    {"cluster_id": cluster_id, "centroid": distribution, "weight": weight}
+                    {
+                        "cluster_id": cluster_id,
+                        "centroid": distribution,
+                        "weight": weight,
+                    }
                 )
                 computed[name] = cluster_id
                 continue
@@ -253,19 +210,6 @@ class NeuralZipCodec(ZipNNCodec):
             cluster["weight"] = total_weight
             computed[name] = cluster["cluster_id"]
         self._computed_cluster_map = computed
-        weighted_centroids = {}
-        cluster_weights = {}
-        for name, (distribution, weight) in distributions.items():
-            cluster_id = self.cluster_id(name)
-            weighted_centroids[cluster_id] = weighted_centroids.get(
-                cluster_id,
-                np.zeros(256, dtype=np.float64),
-            ) + distribution * weight
-            cluster_weights[cluster_id] = cluster_weights.get(cluster_id, 0) + weight
-        self._cluster_centroids = {
-            cluster_id: weighted / cluster_weights[cluster_id]
-            for cluster_id, weighted in weighted_centroids.items()
-        }
 
     def _codebook_key(self, name, tensor, stream_id):
         return self.cluster_id(name), dtype_name(tensor.dtype), int(stream_id)
@@ -398,9 +342,7 @@ class NeuralZipCodec(ZipNNCodec):
                 total += sum(chunk.compressed_bytes for chunk in group.chunks)
             return total
 
-        total = (
-            codebook_payload.metadata_bytes if codebook_payload is not None else 0
-        )
+        total = codebook_payload.metadata_bytes if codebook_payload is not None else 0
         step = self._source_chunk_size(element_size, mode)
         for part in parts:
             for start in range(0, len(part), step):
@@ -502,15 +444,11 @@ class NeuralZipCodec(ZipNNCodec):
         if kind == "shared_huff0":
             tokens = sample
             vocab = b""
-            escapes = b""
-            tail = b""
-            hits = 0
-            misses = 0
         else:
             vocab = topk_vocab(sample, ngram_n, self.top_k)
             if not vocab:
                 return None
-            tokens, escapes, tail, hits, misses = tokenize_ngrams(
+            tokens, _, _, _, _ = tokenize_ngrams(
                 sample,
                 ngram_n,
                 vocab,
@@ -526,11 +464,6 @@ class NeuralZipCodec(ZipNNCodec):
             "ngram_n": int(ngram_n),
             "vocab": vocab,
             "codebook": codebook,
-            "sample_token_count": len(tokens),
-            "sample_ngram_hits": int(hits),
-            "sample_ngram_misses": int(misses),
-            "sample_escape_bytes": len(escapes),
-            "sample_tail_bytes": len(tail),
             # New codebooks use the same four-stream Huff0 payload shape as
             # ZipNN local blocks.  The archive mode records this explicitly so
             # legacy one-stream archives remain decodable.
@@ -548,9 +481,7 @@ class NeuralZipCodec(ZipNNCodec):
             dtype=dtype,
             codec=codec,
             mode=(
-                f"{mode['kind']}_4x"
-                if mode.get("frame_4x", False)
-                else mode["kind"]
+                f"{mode['kind']}_4x" if mode.get("frame_4x", False) else mode["kind"]
             ),
             codebook=codebook,
             ngram_n=int(mode.get("ngram_n", 1)),
@@ -634,13 +565,12 @@ class NeuralZipCodec(ZipNNCodec):
                 "sample_seconds",
             )
 
-        base_selection = select_fastest_within_ratio(
+        base = select_fastest_within_ratio(
             base_candidates,
             estimated_bytes=estimated_cost,
             estimated_seconds=estimated_seconds,
             ratio_tolerance=self.speed_ratio_tolerance,
         )
-        base = base_selection.selected
         base_cost = estimated_cost(base)
         base_seconds = estimated_seconds(base)
 
@@ -665,73 +595,24 @@ class NeuralZipCodec(ZipNNCodec):
                 )
                 packed_candidates.append(packed)
 
-        ratio_best_packed = (
-            min(packed_candidates, key=estimated_cost)
-            if packed_candidates
-            else None
-        )
         improving_packed_candidates = [
             candidate
             for candidate in packed_candidates
             if estimated_cost(candidate) < base_cost
         ]
-        packed_selection = None
+        packed = None
         if improving_packed_candidates:
             # Reject non-saving packed modes before applying the speed
             # tolerance. Otherwise a faster n-gram that is slightly larger
             # than the selected base can hide another n that saves bytes. The
             # surviving opportunity remains time-aware here and is then
             # subject to the model-wide packed-time budget below.
-            packed_selection = select_fastest_within_ratio(
+            packed = select_fastest_within_ratio(
                 improving_packed_candidates,
                 estimated_bytes=estimated_cost,
                 estimated_seconds=estimated_seconds,
                 ratio_tolerance=self.speed_ratio_tolerance,
             )
-        packed = packed_selection.selected if packed_selection is not None else None
-        ratio_best_base_cost = float(
-            base_selection.metrics["ratio_best_estimated_bytes"]
-        )
-        packed_candidate_diagnostics = tuple(
-            {
-                "ngram_n": int(candidate["ngram_n"]),
-                "top_k": int(self.top_k),
-                "estimated_bytes": float(estimated_cost(candidate)),
-                "estimated_seconds": float(estimated_seconds(candidate)),
-                "saved_bytes_vs_selected_base": float(
-                    base_cost - estimated_cost(candidate)
-                ),
-                "saved_bytes_vs_ratio_best_base": float(
-                    ratio_best_base_cost - estimated_cost(candidate)
-                ),
-                "improves_selected_base": bool(
-                    estimated_cost(candidate) < base_cost
-                ),
-                "improves_ratio_best_base": bool(
-                    estimated_cost(candidate) < ratio_best_base_cost
-                ),
-                "ratio_best": bool(candidate is ratio_best_packed),
-                "selected_for_time_budget": bool(candidate is packed),
-                "sample_token_count": int(candidate.get("sample_token_count", 0)),
-                "sample_ngram_hits": int(candidate.get("sample_ngram_hits", 0)),
-                "sample_ngram_misses": int(
-                    candidate.get("sample_ngram_misses", 0)
-                ),
-                "sample_ngram_hit_rate": (
-                    candidate.get("sample_ngram_hits", 0)
-                    / (
-                        candidate.get("sample_ngram_hits", 0)
-                        + candidate.get("sample_ngram_misses", 0)
-                    )
-                    if candidate.get("sample_ngram_hits", 0)
-                    + candidate.get("sample_ngram_misses", 0)
-                    else 0.0
-                ),
-                "sample_escape_bytes": int(candidate.get("sample_escape_bytes", 0)),
-                "sample_tail_bytes": int(candidate.get("sample_tail_bytes", 0)),
-            }
-            for candidate in packed_candidates
-        )
         opportunity = None
         if packed is not None:
             packed_cost = estimated_cost(packed)
@@ -743,21 +624,12 @@ class NeuralZipCodec(ZipNNCodec):
                     "saved_bytes": saved_bytes,
                     "source_bytes": int(total_size),
                     "savings_per_source_byte": saved_bytes / total_size,
-                    "packed_seconds": packed_seconds,
                     "extra_seconds": max(0.0, packed_seconds - base_seconds),
                 }
         return {
             "key": key,
             "base": base,
-            "base_cost": base_cost,
             "base_seconds": base_seconds,
-            "base_selection": dict(base_selection.metrics),
-            "packed_selection": (
-                dict(packed_selection.metrics)
-                if packed_selection is not None
-                else None
-            ),
-            "packed_candidate_diagnostics": packed_candidate_diagnostics,
             "total_size": int(total_size),
             "is_exponent": bool(is_exponent),
             "opportunity": opportunity,
@@ -773,18 +645,14 @@ class NeuralZipCodec(ZipNNCodec):
         payload = self._candidate_payload(key, selected, codebook_id=codebook_id)
         self._codebook_payloads.append(payload)
         self._codebook_payload_by_id[codebook_id] = payload
-        self._decode_codebooks[codebook_id] = huff0.build_decodebook(
-            payload.codebook
-        )
+        self._decode_codebooks[codebook_id] = huff0.build_decodebook(payload.codebook)
         return selected
 
     def _record_selected_mode(self, mode):
         kind = mode["kind"]
         if kind == "packed_huff0":
             kind = f"packed_huff0_n{mode['ngram_n']}"
-        self._selected_mode_counts[kind] = (
-            self._selected_mode_counts.get(kind, 0) + 1
-        )
+        self._selected_mode_counts[kind] = self._selected_mode_counts.get(kind, 0) + 1
 
     def prepare_clusters(self, named_tensors):
         self._prepare_clusters(named_tensors)
@@ -910,9 +778,7 @@ class NeuralZipCodec(ZipNNCodec):
             fallback_chunks = super()._compress_local_huff0_chunks(
                 source_chunks[index] for index in fallback_indices
             )
-            for index, fallback in zip(
-                fallback_indices, fallback_chunks, strict=True
-            ):
+            for index, fallback in zip(fallback_indices, fallback_chunks, strict=True):
                 encoded_chunks[index] = fallback
         return ByteGroupPayload(
             stream_kind=stream_kind,
@@ -920,56 +786,8 @@ class NeuralZipCodec(ZipNNCodec):
             chunks=tuple(encoded_chunks),
         )
 
-    def _select_transfer_mode(self, sample, source_mode, *, element_size, stream_kind):
-        raw_mode = {"kind": "raw", "fixed_cost": 0}
-        local_mode = {"kind": "local_huff0", "fixed_cost": 0}
-        raw_cost = self._compress_stream_with_mode(
-            sample,
-            stream_kind,
-            element_size=element_size,
-            mode=raw_mode,
-        ).compressed_bytes
-        local_cost = self._compress_stream_with_mode(
-            sample,
-            stream_kind,
-            element_size=element_size,
-            mode=local_mode,
-        ).compressed_bytes
-        if local_cost < raw_cost:
-            selected = local_mode
-            selected_cost = local_cost
-        else:
-            selected = raw_mode
-            selected_cost = raw_cost
-
-        transfer_cost = None
-        if source_mode is not None and source_mode["kind"] != "raw":
-            transfer_cost = self._compress_stream_with_mode(
-                sample,
-                stream_kind,
-                element_size=element_size,
-                mode=source_mode,
-            ).compressed_bytes
-            if transfer_cost < selected_cost:
-                selected = source_mode
-                selected_cost = transfer_cost
-
-        return selected, {
-            "raw_cost": int(raw_cost),
-            "local_cost": int(local_cost),
-            "transfer_cost": (
-                int(transfer_cost) if transfer_cost is not None else None
-            ),
-            "selected_cost": int(selected_cost),
-            "uses_source_codebook": selected is source_mode,
-        }
-
     def _prepare_tensor_modes(self, named_tensors):
         used_codebook_ids = set()
-        mode_counts = {}
-        mode_symbols = {}
-        probe_bytes = 0
-
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if (
                 not torch.is_tensor(tensor)
@@ -990,9 +808,6 @@ class NeuralZipCodec(ZipNNCodec):
 
                 plan_key = self._transfer_plan_key(name, original, stream_id)
                 self._mode_by_tensor_stream[plan_key] = selected
-                kind = selected["kind"]
-                mode_counts[kind] = mode_counts.get(kind, 0) + 1
-                mode_symbols[kind] = mode_symbols.get(kind, 0) + int(original.numel())
                 codebook_id = selected.get("codebook_id")
                 if codebook_id is not None:
                     used_codebook_ids.add(int(codebook_id))
@@ -1021,22 +836,9 @@ class NeuralZipCodec(ZipNNCodec):
         self._selected_mode_counts = {}
         for mode in self._mode_by_key.values():
             self._record_selected_mode(mode)
-        self._selection_stats.update(
-            {
-                "tensor_probe_bytes": probe_bytes,
-                "tensor_selected_modes": mode_counts,
-                "tensor_selected_symbols": mode_symbols,
-                "pruned_codebooks": len(removed_codebook_ids),
-            }
-        )
 
-    def prepare_direct_transfer_target(
-        self,
-        named_tensors,
-        *,
-        require_full_match=True,
-    ):
-        """Map a family target to the frozen source plan by exact tensor name.
+    def prepare_direct_transfer_target(self, named_tensors):
+        """Map a family target to a reusable source setup by exact tensor name.
 
         This path reads only target metadata (name, dtype, size, and number of
         byte streams). It does not inspect tensor values, compute exponent
@@ -1056,8 +858,6 @@ class NeuralZipCodec(ZipNNCodec):
         transfer_modes = {}
         transfer_clusters = {}
         missing = []
-        selected_modes = {}
-        selected_symbols = {}
         target_tensors = 0
         matched_tensors = 0
         target_symbols = 0
@@ -1082,8 +882,7 @@ class NeuralZipCodec(ZipNNCodec):
                 plan.append((plan_key, source_mode))
 
             tensor_matched = all(
-                plan_key in self._mode_by_tensor_stream
-                for plan_key, _ in plan
+                plan_key in self._mode_by_tensor_stream for plan_key, _ in plan
             )
             symbols = int(tensor.numel())
             target_tensors += 1
@@ -1103,11 +902,8 @@ class NeuralZipCodec(ZipNNCodec):
 
             for plan_key, selected in plan:
                 transfer_modes[plan_key] = selected
-                kind = str(selected["kind"])
-                selected_modes[kind] = selected_modes.get(kind, 0) + 1
-                selected_symbols[kind] = selected_symbols.get(kind, 0) + symbols
 
-        if missing and require_full_match:
+        if missing:
             preview = ", ".join(
                 f"{name}:{dtype}:stream{stream_id}"
                 for name, dtype, stream_id in missing[:8]
@@ -1120,152 +916,19 @@ class NeuralZipCodec(ZipNNCodec):
 
         self._transfer_mode_by_tensor_stream = transfer_modes
         self._transfer_cluster_by_name = transfer_clusters
-        self._transfer_stats = {
+        stats = {
             "mapping": "exact source tensor name, dtype, and stream",
             "target_tensors": target_tensors,
             "matched_tensors": matched_tensors,
-            "matched_tensor_pct": (
-                100.0 * matched_tensors / target_tensors if target_tensors else 0.0
-            ),
             "target_exponents": target_symbols,
             "matched_exponents": matched_symbols,
-            "matched_exponent_pct": (
-                100.0 * matched_symbols / target_symbols if target_symbols else 0.0
-            ),
             "missing_streams": len(missing),
-            "selected_modes": selected_modes,
-            "selected_symbols": selected_symbols,
             "target_histograms_computed": False,
             "target_js_matching": False,
             "target_mode_probing": False,
         }
         self._transfer_active = True
-        return self.transfer_stats
-
-    def prepare_transfer_target(self, named_tensors, *, js_threshold=None):
-        """Prepare a target model against this codec's frozen source codebooks."""
-        if not self._clusters_prepared or not self._cluster_centroids:
-            raise RuntimeError("Source clusters must be prepared before transfer.")
-        if not self._mode_by_key:
-            raise RuntimeError("Source codebooks must be built before transfer.")
-
-        threshold = (
-            self.cluster_js_threshold
-            if js_threshold is None
-            else float(js_threshold)
-        )
-        if threshold < 0:
-            raise ValueError("Transfer JS threshold must be non-negative.")
-
-        self._transfer_mode_by_tensor_stream = {}
-        self._transfer_cluster_by_name = {}
-        mode_counts = {}
-        mode_symbols = {}
-        distances = []
-        matched_tensors = 0
-        target_tensors = 0
-        target_symbols = 0
-        matched_symbols = 0
-        probe_bytes = 0
-
-        for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
-            if (
-                not torch.is_tensor(tensor)
-                or not tensor.is_floating_point()
-                or tensor.numel() == 0
-            ):
-                continue
-
-            original = tensor.detach().cpu().contiguous()
-            config = _zipnn_dtype_config(original.dtype)
-            dtype = dtype_name(original.dtype)
-            exponent_stream_id = int(config["element_size"]) - 1
-            candidates = [
-                (cluster_id, centroid)
-                for cluster_id, centroid in self._cluster_centroids.items()
-                if (cluster_id, dtype, exponent_stream_id) in self._mode_by_key
-            ]
-            distribution = _exponent_distribution(original)
-            if candidates:
-                cluster_id, distance = min(
-                    (
-                        (
-                            cluster_id,
-                            jensen_shannon_distance(distribution, centroid),
-                        )
-                        for cluster_id, centroid in candidates
-                    ),
-                    key=lambda item: (item[1], item[0]),
-                )
-            else:
-                cluster_id, distance = None, float("inf")
-
-            matched = cluster_id is not None and distance <= threshold
-            target_tensors += 1
-            tensor_symbols = int(original.numel())
-            target_symbols += tensor_symbols
-            distances.append(float(distance))
-            if matched:
-                matched_tensors += 1
-                matched_symbols += tensor_symbols
-                self._transfer_cluster_by_name[str(name)] = str(cluster_id)
-            else:
-                self._transfer_cluster_by_name[str(name)] = f"transfer-local:{name}"
-
-            reordered = _zipnn_reordered_bytes(original, config)
-            element_size = int(config["element_size"])
-            for stream_id in range(int(config["num_buffers"])):
-                is_exponent = self._is_exponent_stream(config, stream_id)
-                stream = reordered[stream_id::element_size]
-                stream, _ = self._apply_exponent_layout(original, stream, is_exponent)
-                sample = stream[: self.max_codebook_sample_bytes]
-                source_mode = (
-                    self._mode_by_key.get((cluster_id, dtype, int(stream_id)))
-                    if matched
-                    else None
-                )
-                selected, _ = self._select_transfer_mode(
-                    sample,
-                    source_mode,
-                    element_size=element_size,
-                    stream_kind="exponent" if is_exponent else "byte_group",
-                )
-                plan_key = self._transfer_plan_key(name, original, stream_id)
-                self._transfer_mode_by_tensor_stream[plan_key] = selected
-                kind = selected["kind"]
-                mode_counts[kind] = mode_counts.get(kind, 0) + 1
-                mode_symbols[kind] = mode_symbols.get(kind, 0) + len(stream)
-                probe_bytes += len(sample)
-
-        finite_distances = [distance for distance in distances if np.isfinite(distance)]
-        self._transfer_stats = {
-            "mapping": "target Jensen-Shannon match and bounded mode probe",
-            "js_threshold": threshold,
-            "target_tensors": target_tensors,
-            "matched_tensors": matched_tensors,
-            "matched_tensor_pct": (
-                100.0 * matched_tensors / target_tensors if target_tensors else 0.0
-            ),
-            "target_exponents": target_symbols,
-            "matched_exponents": matched_symbols,
-            "matched_exponent_pct": (
-                100.0 * matched_symbols / target_symbols if target_symbols else 0.0
-            ),
-            "mean_nearest_js": (
-                float(np.mean(finite_distances)) if finite_distances else None
-            ),
-            "max_nearest_js": (
-                float(np.max(finite_distances)) if finite_distances else None
-            ),
-            "probe_bytes": probe_bytes,
-            "selected_modes": mode_counts,
-            "selected_symbols": mode_symbols,
-            "target_histograms_computed": True,
-            "target_js_matching": True,
-            "target_mode_probing": True,
-        }
-        self._transfer_active = True
-        return self.transfer_stats
+        return stats
 
     def _collect_codebook_samples(self, named_tensors):
         """Collect the bounded, reordered streams used to fit codebooks."""
@@ -1331,18 +994,17 @@ class NeuralZipCodec(ZipNNCodec):
         packed_source_budget = int(
             exponent_source_bytes * self.packed_source_budget_ratio
         )
-        time_selection = select_packed_time_budget(
+        time_selected_keys = select_packed_time_budget(
             evaluations,
             packed_time_budget_ratio=self.packed_time_budget_ratio,
         )
         packed_used = 0
-        packed_saved = 0.0
         selected_packed_keys = set()
         opportunities = [
             evaluation
             for evaluation in evaluations
             if evaluation["opportunity"] is not None
-            and evaluation["key"] in time_selection.selected_keys
+            and evaluation["key"] in time_selected_keys
         ]
         opportunities.sort(
             key=lambda evaluation: (
@@ -1360,65 +1022,6 @@ class NeuralZipCodec(ZipNNCodec):
                 continue
             selected_packed_keys.add(evaluation["key"])
             packed_used += source_bytes
-            packed_saved += opportunity["saved_bytes"]
-
-        selection_diagnostics = []
-        for evaluation in evaluations:
-            if not evaluation["is_exponent"]:
-                continue
-            key = evaluation["key"]
-            candidate_diagnostics = evaluation[
-                "packed_candidate_diagnostics"
-            ]
-            opportunity = evaluation["opportunity"]
-            if not candidate_diagnostics:
-                decision = "no-packed-mode"
-            elif opportunity is None:
-                decision = "no-ratio-saving"
-            elif key not in time_selection.selected_keys:
-                decision = "time-budget"
-            elif key not in selected_packed_keys:
-                decision = "source-budget"
-            else:
-                decision = "selected"
-            cluster_id, dtype, stream_id = key
-            selection_diagnostics.append(
-                {
-                    "cluster_id": str(cluster_id),
-                    "dtype": str(dtype),
-                    "stream_id": int(stream_id),
-                    "source_bytes": int(evaluation["total_size"]),
-                    "base_kind": str(evaluation["base"]["kind"]),
-                    "base_estimated_bytes": float(evaluation["base_cost"]),
-                    "ratio_best_base_kind": str(
-                        evaluation["base_selection"]["ratio_best_kind"]
-                    ),
-                    "ratio_best_base_estimated_bytes": float(
-                        evaluation["base_selection"][
-                            "ratio_best_estimated_bytes"
-                        ]
-                    ),
-                    "base_estimated_seconds": float(
-                        evaluation["base_seconds"]
-                    ),
-                    "selected_candidate_ngram_n": (
-                        int(opportunity["mode"]["ngram_n"])
-                        if opportunity is not None
-                        else None
-                    ),
-                    "ratio_best_ngram_n": next(
-                        (
-                            int(candidate["ngram_n"])
-                            for candidate in candidate_diagnostics
-                            if candidate["ratio_best"]
-                        ),
-                        None,
-                    ),
-                    "decision": decision,
-                    "candidates": candidate_diagnostics,
-                }
-            )
-        self._selection_diagnostics = tuple(selection_diagnostics)
 
         for evaluation in evaluations:
             selected = evaluation["base"]
@@ -1428,75 +1031,7 @@ class NeuralZipCodec(ZipNNCodec):
             self._mode_by_key[evaluation["key"]] = selected
             self._record_selected_mode(selected)
 
-        base_selections = [evaluation["base_selection"] for evaluation in evaluations]
-        self._selection_stats = {
-            **dict(time_selection.metrics),
-            "selection_strategy": "fastest-within-ratio-and-time-budget",
-            "speed_ratio_tolerance": self.speed_ratio_tolerance,
-            "base_modes_avoiding_local_huff0": sum(
-                bool(selection["avoided_local_huff0"])
-                for selection in base_selections
-            ),
-            "base_estimated_ratio_overhead_bytes": sum(
-                float(selection["selected_byte_overhead"])
-                for selection in base_selections
-            ),
-            "exponent_source_bytes": exponent_source_bytes,
-            "packed_source_budget_ratio": self.packed_source_budget_ratio,
-            "packed_source_budget_bytes": packed_source_budget,
-            "packed_source_bytes": packed_used,
-            "packed_estimated_bytes_saved": packed_saved,
-            "packed_modes_evaluated": sum(
-                len(evaluation["packed_candidate_diagnostics"])
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-            ),
-            "packed_improving_selected_base_modes": sum(
-                int(candidate["improves_selected_base"])
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-                for candidate in evaluation["packed_candidate_diagnostics"]
-            ),
-            "packed_improving_ratio_best_base_modes": sum(
-                int(candidate["improves_ratio_best_base"])
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-                for candidate in evaluation["packed_candidate_diagnostics"]
-            ),
-            "packed_rejected_no_ratio_saving_modes": sum(
-                not candidate["improves_selected_base"]
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-                for candidate in evaluation["packed_candidate_diagnostics"]
-            ),
-            "packed_opportunities": sum(
-                evaluation["opportunity"] is not None
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-            ),
-            "packed_keys_rejected_no_ratio_saving": sum(
-                bool(evaluation["packed_candidate_diagnostics"])
-                and evaluation["opportunity"] is None
-                for evaluation in evaluations
-                if evaluation["is_exponent"]
-            ),
-            "packed_time_selected": len(time_selection.selected_keys),
-            "packed_rejected_by_source_budget": (
-                len(time_selection.selected_keys) - len(selected_packed_keys)
-            ),
-            "packed_selected": len(selected_packed_keys),
-        }
-
         self._prepare_tensor_modes(named_tensors)
-        self._selection_stats["packed_selected"] = sum(
-            mode["kind"] == "packed_huff0" for mode in self._mode_by_key.values()
-        )
-        self._selection_stats["actual_packed_source_bytes"] = (
-            self._selection_stats["tensor_selected_symbols"].get(
-                "packed_huff0",
-                0,
-            )
-        )
         self.load_codebooks(self._codebook_payloads)
 
     def _mode_for_tensor_stream(self, name, tensor, stream_id):
@@ -1594,9 +1129,7 @@ class NeuralZipCodec(ZipNNCodec):
                     self._mode_for_tensor_stream(name, original, stream_id)
                     for stream_id in range(stream_count)
                 )
-                batch.append(
-                    (name, original, config, tensor_modes)
-                )
+                batch.append((name, original, config, tensor_modes))
                 batch_bytes += raw_bytes
                 # One oversized tensor is still bounded to that tensor rather
                 # than being retained alongside the following tensors.
@@ -1756,7 +1289,9 @@ class NeuralZipCodec(ZipNNCodec):
                 ] = group
 
             if offset != len(flat_payloads):
-                raise RuntimeError("Packed batch result count did not match its inputs.")
+                raise RuntimeError(
+                    "Packed batch result count did not match its inputs."
+                )
 
         for tensor_index, spec in tensor_specs.items():
             tensor = spec["tensor"]
@@ -1829,8 +1364,7 @@ class NeuralZipCodec(ZipNNCodec):
             raise RuntimeError("Mixed ZipNN returned an invalid stream count.")
 
         baseline_format = all(
-            mode.get("kind") in {"local_huff0", "raw"}
-            for mode in tensor_modes
+            mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes
         )
         allowed_finals = {
             "raw": {"raw"},
@@ -1949,10 +1483,7 @@ class NeuralZipCodec(ZipNNCodec):
         baseline_format = (
             self.exponent_layout == "original"
             and tensor_modes
-            and all(
-                mode.get("kind") in {"local_huff0", "raw"}
-                for mode in tensor_modes
-            )
+            and all(mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes)
         )
         if self.exponent_layout == "original" and any(
             mode.get("kind") != "local_huff0" for mode in tensor_modes
@@ -2064,14 +1595,20 @@ class NeuralZipCodec(ZipNNCodec):
                     )
                 else:
                     if chunk.token_count is None:
-                        raise ValueError("Packed Huff0 chunk is missing its token count.")
+                        raise ValueError(
+                            "Packed Huff0 chunk is missing its token count."
+                        )
                     if codebook.mode not in {
                         "packed_huff0",
                         "packed_huff0_4x",
                     }:
-                        raise ValueError("Packed Huff0 chunk references a non-packed codebook.")
+                        raise ValueError(
+                            "Packed Huff0 chunk references a non-packed codebook."
+                        )
                     if int(codebook.ngram_n) != int(chunk.ngram_n):
-                        raise ValueError("Packed Huff0 chunk and codebook disagree on n.")
+                        raise ValueError(
+                            "Packed Huff0 chunk and codebook disagree on n."
+                        )
                     decoder = (
                         huff0.decompress_ngram_with_decodebook_4x
                         if codebook.mode == "packed_huff0_4x"
@@ -2080,7 +1617,6 @@ class NeuralZipCodec(ZipNNCodec):
                     decoded = decoder(
                         huff0.Huff0NGramPayload(
                             payload=chunk.payload,
-                            codebook=codebook.codebook,
                             symbol_count=int(chunk.token_count),
                             escape_bytes=chunk.escape_payload,
                             tail=chunk.tail_payload,
@@ -2126,12 +1662,12 @@ class NeuralZipCodec(ZipNNCodec):
                     compressed.shape,
                     compressed.exponent_layout,
                 )
-            expected = len(raw[stream_id::compressed.element_size])
+            expected = len(raw[stream_id :: compressed.element_size])
             if len(stream) != expected:
                 raise ValueError(
                     f"Byte group {stream_id} has {len(stream)} bytes; expected {expected}."
                 )
-            raw[stream_id::compressed.element_size] = stream
+            raw[stream_id :: compressed.element_size] = stream
 
         restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

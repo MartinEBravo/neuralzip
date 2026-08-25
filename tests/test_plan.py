@@ -38,7 +38,7 @@ class NeuralZipPlanTests(unittest.TestCase):
             )
 
         target = self.tensors(offset=1.0)
-        transfer = plan.map_target(target, strategy="structural")
+        transfer = plan.map_target(target)
         self.assertEqual(transfer["matched_tensors"], len(target))
         transferred = plan.encode(target)
         transferred_restored = plan.decode(transferred.payloads)
@@ -99,6 +99,7 @@ class NeuralZipPlanTests(unittest.TestCase):
 
         self.assertEqual(plan.digest, expected_digest)
         self.assertEqual(plan.encode(source).payloads, expected_payloads)
+
 
 if __name__ == "__main__":
     unittest.main()

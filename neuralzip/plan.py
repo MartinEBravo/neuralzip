@@ -1,8 +1,8 @@
 """Public facade for fitting, transferring, encoding, and persisting setup."""
 
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
-import pickle
 
 import torch
 
@@ -18,7 +18,6 @@ from .hashing import sha256_bytes
 from .neuralzip_codec import NeuralZipCodec
 from .packed_exponents import tokenize_ngrams
 from .zipnn_codec import _zipnn_dtype_config
-
 
 PLAN_MARKER = "frozen-huff0-codebook-v1"
 
@@ -127,26 +126,13 @@ class NeuralZipPlan:
     def digest(self):
         return codebook_digest(self.codebooks)
 
-    def map_target(
-        self,
-        named_tensors,
-        *,
-        strategy="structural",
-        require_full_match=True,
-        js_threshold=None,
-    ):
+    def map_target(self, named_tensors):
+        """Apply the frozen setup by exact tensor name, dtype, and stream."""
+
         named_tensors = named_tensor_items(named_tensors)
-        if strategy in {"structural", "direct"}:
-            return self.codec.prepare_direct_transfer_target(
-                named_tensors,
-                require_full_match=require_full_match,
-            )
-        if strategy in {"js", "jensen-shannon"}:
-            return self.codec.prepare_transfer_target(
-                named_tensors,
-                js_threshold=js_threshold,
-            )
-        raise ValueError("strategy must be 'structural' or 'js'.")
+        return self.codec.prepare_direct_transfer_target(
+            named_tensors,
+        )
 
     def encode(self, named_tensors):
         return encode_tensor_batch(self.codec, named_tensor_items(named_tensors))

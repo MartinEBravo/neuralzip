@@ -1,12 +1,14 @@
 import unittest
 
-from neuralzip.archive import serialized_group_size
 from neuralzip.payloads import (
     ByteGroupPayload,
+    StreamChunk,
+)
+from neuralzip.serialization import (
     PACKED_CHUNK_METADATA_BYTES,
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
-    StreamChunk,
+    serialized_group_size,
     stream_chunk_metadata_bytes,
 )
 

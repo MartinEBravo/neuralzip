@@ -24,6 +24,9 @@ gpu = [
     "cupy-cuda12x>=13",
 ]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["neuralzip*"]
@@ -31,9 +34,10 @@ include = ["neuralzip*"]
 [tool.setuptools.package-data]
 "neuralzip.gpu" = ["cuda/*.cu"]
 
+[tool.setuptools.exclude-package-data]
+neuralzip = ["*.cpp"]
+
 [tool.setuptools.data-files]
 "share/neuralzip/licenses/dfloat11" = ["third_party/dfloat11/LICENSE"]
-"share/neuralzip/licenses/zstd" = [
-    "third_party/zstd/LICENSE",
-    "third_party/zstd/NEURALZIP_VENDOR_REVISION",
-]
+"share/neuralzip/licenses/go" = ["third_party/go/LICENSE", "third_party/go/PATENTS"]
+"share/neuralzip/licenses/klauspost-compress" = ["third_party/klauspost-compress/LICENSE"]

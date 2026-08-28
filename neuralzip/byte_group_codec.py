@@ -3,9 +3,7 @@ import math
 import numpy as np
 import torch
 
-from . import huff0
 from .dtypes import FLOAT_DTYPES_BY_NAME
-from .payloads import ByteGroupPayload, StreamChunk
 
 DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
 
@@ -141,72 +139,3 @@ class ByteGroupCodec:
 
     def _stream_chunk_size(self, element_size):
         return max(1, self.chunk_size // int(element_size))
-
-    def _compress_stream(self, stream, stream_kind, *, chunk_size=None):
-        return self._compress_streams(((stream, stream_kind, chunk_size),))[0]
-
-    def _compress_local_huff0_chunks(self, chunks):
-        chunks = tuple(bytes(chunk) for chunk in chunks)
-        encoded_chunks = huff0.compress_many(
-            chunks,
-            min_saving_bytes=self.min_saving_bytes,
-            threads=self.threads,
-        )
-        output = []
-        for chunk, encoded in zip(chunks, encoded_chunks, strict=True):
-            if (
-                encoded is not None
-                and len(encoded) < len(chunk) * self.compression_threshold
-            ):
-                output.append(
-                    StreamChunk(
-                        mode="local_huff0",
-                        symbol_count=len(chunk),
-                        payload=encoded,
-                    )
-                )
-            else:
-                output.append(
-                    StreamChunk(
-                        mode="raw",
-                        symbol_count=len(chunk),
-                        payload=chunk,
-                    )
-                )
-        return tuple(output)
-
-    def _compress_streams(self, stream_specs):
-        prepared = []
-        flat_chunks = []
-        max_block_size = huff0.max_block_size()
-
-        for stream, stream_kind, chunk_size in stream_specs:
-            if chunk_size is None:
-                chunk_size = self.chunk_size
-            chunk_size = min(int(chunk_size), max_block_size)
-            stream_chunks = []
-            for start in range(0, len(stream), chunk_size):
-                chunk = stream[start : start + chunk_size]
-                if chunk:
-                    stream_chunks.append(chunk)
-            stream_chunks = tuple(stream_chunks)
-            prepared.append((stream_kind, len(stream), stream_chunks))
-            flat_chunks.extend(stream_chunks)
-
-        encoded_chunks = self._compress_local_huff0_chunks(flat_chunks)
-        groups = []
-        offset = 0
-        for stream_kind, symbol_count, stream_chunks in prepared:
-            chunks = []
-            for _ in stream_chunks:
-                encoded = encoded_chunks[offset]
-                offset += 1
-                chunks.append(encoded)
-            groups.append(
-                ByteGroupPayload(
-                    stream_kind=stream_kind,
-                    symbol_count=symbol_count,
-                    chunks=tuple(chunks),
-                )
-            )
-        return tuple(groups)

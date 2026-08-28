@@ -22,8 +22,10 @@ cd nzip
 python -m pip install -e .
 ```
 
-Python 3.10 or newer and a C/C++ compiler are required. Installation builds the
-bundled Huff0 extension from the vendored Zstd sources.
+Python 3.10 or newer, Go 1.24 or newer, and a C/C++ compiler are required when
+installing from source. The native extension links the maintained
+[klauspost/compress Huff0](https://github.com/klauspost/compress/tree/v1.19.2/huff0)
+implementation.
 
 Install the GPU runtime when compressed inference is needed:
 

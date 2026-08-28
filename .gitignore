@@ -13,7 +13,3 @@ __pycache__/
 /dist/
 /results/
 *.setup.pkl
-
-# Only the curated Zstandard sources already tracked by Git are part of Huff0.
-# Ignore files from full upstream source-tree extractions in this directory.
-third_party/zstd/

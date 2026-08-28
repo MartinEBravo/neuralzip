@@ -6,7 +6,6 @@ from . import _huff0_cpp
 @dataclass(frozen=True)
 class Huff0Payload:
     payload: bytes
-    codebook: bytes
     symbol_count: int
 
 
@@ -49,27 +48,22 @@ def _immutable_bytes(value):
     return value if isinstance(value, bytes) else bytes(value)
 
 
-def _byte_chunks(chunks):
-    return [_bytes(chunk) for chunk in chunks]
-
-
 def _native_variant(name, *, frame_4x):
     suffix = "_4x" if frame_4x else ""
     return getattr(_huff0_cpp, f"{name}{suffix}")
 
 
-def _payload(result, codebook):
+def _payload(result):
     if result is None:
         return None
     encoded, symbol_count = result
     return Huff0Payload(
         payload=encoded,
-        codebook=codebook.codebook,
         symbol_count=symbol_count,
     )
 
 
-def _ngram_payload(result, codebook):
+def _ngram_payload(result):
     if result is None:
         return None
     encoded, symbol_count, escape_bytes, tail, hits, misses = result
@@ -87,38 +81,6 @@ def max_block_size():
     return int(_huff0_cpp.max_block_size())
 
 
-def backend_info():
-    """Return the native Huff0 CPU-dispatch configuration."""
-    return dict(_huff0_cpp.backend_info())
-
-
-def compress(data, *, min_saving_bytes=0, prior_count=0):
-    data = _bytes(data)
-    min_saving_bytes = int(min_saving_bytes)
-    if min_saving_bytes < 0:
-        raise ValueError("min_saving_bytes must be non-negative.")
-
-    codebook = build_codebook(data, prior_count=prior_count)
-    result = encode_with_codebook(data, codebook)
-    if result is None or len(result.payload) + len(
-        result.codebook
-    ) + min_saving_bytes >= len(data):
-        return None
-    return result
-
-
-def compress_many(chunks, *, min_saving_bytes=0, threads=0):
-    normalized = [
-        chunk if isinstance(chunk, (bytes, bytearray, memoryview)) else bytes(chunk)
-        for chunk in chunks
-    ]
-    return _huff0_cpp.compress_many(
-        normalized,
-        min_saving_bytes=int(min_saving_bytes),
-        threads=int(threads),
-    )
-
-
 def _normalize_mixed_stream_modes(element_size, stream_modes):
     element_size = int(element_size)
     modes = tuple(stream_modes)
@@ -126,7 +88,7 @@ def _normalize_mixed_stream_modes(element_size, stream_modes):
         raise ValueError("stream_modes must contain one mode per byte stream.")
 
     native_modes = []
-    supported = {"raw", "local_huff0", "shared_huff0", "packed_huff0"}
+    supported = {"raw", "shared_huff0", "packed_huff0"}
     for mode in modes:
         kind = str(mode.get("kind"))
         if kind not in supported:
@@ -175,7 +137,8 @@ def compress_mixed_streams_many(
     Each input is ``(data, element_size, bit_reorder, chunk_size,
     stream_modes)`` and produces one list per reordered byte stream. Input
     buffers and the native job queue live only for this call; no reordered or
-    tokenized target representation is retained afterwards.
+    tokenized target representation is retained afterwards. Callers must not
+    mutate input buffers until the call returns.
     """
     native_specs = []
     for spec in tensor_specs:
@@ -361,7 +324,7 @@ def encode_with_codebook_4x(
     min_saving_bytes=0,
     max_output_bytes=None,
 ):
-    """Encode with a precomputed CTable using Huff0's four-stream frame."""
+    """Encode with a precomputed codebook using Huff0's four-stream frame."""
     return _encode_with_codebook(
         data,
         codebook,
@@ -386,68 +349,7 @@ def _encode_with_codebook(
         min_saving_bytes=int(min_saving_bytes),
         max_output_bytes=max_bytes,
     )
-    return _payload(result, codebook)
-
-
-def encode_many_with_codebook(
-    chunks,
-    codebook,
-    *,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-    metadata_bytes=0,
-    threads=0,
-):
-    return _encode_many_with_codebook(
-        chunks,
-        codebook,
-        min_saving_bytes=min_saving_bytes,
-        compression_threshold=compression_threshold,
-        metadata_bytes=metadata_bytes,
-        threads=threads,
-        frame_4x=False,
-    )
-
-
-def encode_many_with_codebook_4x(
-    chunks,
-    codebook,
-    *,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-    metadata_bytes=0,
-    threads=0,
-):
-    """Encode independent blocks with one CTable as four-stream frames."""
-    return _encode_many_with_codebook(
-        chunks,
-        codebook,
-        min_saving_bytes=min_saving_bytes,
-        compression_threshold=compression_threshold,
-        metadata_bytes=metadata_bytes,
-        threads=threads,
-        frame_4x=True,
-    )
-
-
-def _encode_many_with_codebook(
-    chunks,
-    codebook,
-    *,
-    min_saving_bytes,
-    compression_threshold,
-    metadata_bytes,
-    threads,
-    frame_4x,
-):
-    return _native_variant("encode_many_with_codebook", frame_4x=frame_4x)(
-        _byte_chunks(chunks),
-        codebook.handle,
-        min_saving_bytes=int(min_saving_bytes),
-        compression_threshold=float(compression_threshold),
-        metadata_bytes=int(metadata_bytes),
-        threads=int(threads),
-    )
+    return _payload(result)
 
 
 def encode_ngram_with_codebook(
@@ -510,85 +412,7 @@ def _encode_ngram_with_codebook(
         min_saving_bytes=int(min_saving_bytes),
         max_output_bytes=max_bytes,
     )
-    return _ngram_payload(result, codebook)
-
-
-def encode_many_ngram_with_codebook(
-    chunks,
-    codebook,
-    vocab,
-    *,
-    n,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-    metadata_bytes=0,
-    threads=0,
-):
-    return _encode_many_ngram_with_codebook(
-        chunks,
-        codebook,
-        vocab,
-        n=n,
-        min_saving_bytes=min_saving_bytes,
-        compression_threshold=compression_threshold,
-        metadata_bytes=metadata_bytes,
-        threads=threads,
-        frame_4x=False,
-    )
-
-
-def encode_many_ngram_with_codebook_4x(
-    chunks,
-    codebook,
-    vocab,
-    *,
-    n,
-    min_saving_bytes=0,
-    compression_threshold=0.95,
-    metadata_bytes=0,
-    threads=0,
-):
-    """Tokenize and encode n-gram blocks as Huff0 four-stream frames."""
-    return _encode_many_ngram_with_codebook(
-        chunks,
-        codebook,
-        vocab,
-        n=n,
-        min_saving_bytes=min_saving_bytes,
-        compression_threshold=compression_threshold,
-        metadata_bytes=metadata_bytes,
-        threads=threads,
-        frame_4x=True,
-    )
-
-
-def _encode_many_ngram_with_codebook(
-    chunks,
-    codebook,
-    vocab,
-    *,
-    n,
-    min_saving_bytes,
-    compression_threshold,
-    metadata_bytes,
-    threads,
-    frame_4x,
-):
-    results = _native_variant("encode_many_ngram_with_codebook", frame_4x=frame_4x)(
-        _byte_chunks(chunks),
-        codebook.handle,
-        _bytes(vocab),
-        int(n),
-        min_saving_bytes=int(min_saving_bytes),
-        compression_threshold=float(compression_threshold),
-        metadata_bytes=int(metadata_bytes),
-        threads=int(threads),
-    )
-    return [_ngram_payload(result, codebook) for result in results]
-
-
-def decompress(payload):
-    return decompress_with_decodebook(payload, build_decodebook(payload.codebook))
+    return _ngram_payload(result)
 
 
 def decompress_block(payload, symbol_count):

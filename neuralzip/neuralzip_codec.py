@@ -338,17 +338,6 @@ class NeuralZipCodec(ByteGroupCodec):
         sample_parts=None,
     ):
         parts = tuple(sample_parts) if sample_parts is not None else (sample,)
-        if mode["kind"] == "local_huff0":
-            total = 0
-            for part in parts:
-                group = super()._compress_stream(
-                    part,
-                    "sample",
-                    chunk_size=self._stream_chunk_size(element_size),
-                )
-                total += sum(chunk.compressed_bytes for chunk in group.chunks)
-            return total
-
         total = codebook_payload.metadata_bytes if codebook_payload is not None else 0
         step = self._source_chunk_size(element_size, mode)
         for part in parts:
@@ -627,9 +616,7 @@ class NeuralZipCodec(ByteGroupCodec):
                     sample_parts,
                 )
 
-        # A frozen NeuralZip setup may only select modes whose target encode
-        # uses precomputed state, or raw storage. Local Huff0 is used only while
-        # estimating candidates and is never a post-setup mode.
+        # A frozen setup only selects precomputed modes or raw storage.
         base_candidates = [raw_mode]
         if shared is not None:
             base_candidates.append(shared)
@@ -726,9 +713,6 @@ class NeuralZipCodec(ByteGroupCodec):
     def _finalize_mode(self, key, selected):
         if selected["kind"] == "raw":
             return selected
-        if selected["kind"] == "local_huff0":
-            raise RuntimeError("NeuralZip setup cannot finalize local Huff0.")
-
         codebook_id = self._next_codebook_id
         self._next_codebook_id += 1
         selected["codebook_id"] = codebook_id
@@ -1200,12 +1184,8 @@ class NeuralZipCodec(ByteGroupCodec):
         if len(native_groups) != stream_count:
             raise RuntimeError("Mixed-stream encoder returned an invalid stream count.")
 
-        local_format = all(
-            mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes
-        )
         allowed_finals = {
             "raw": {"raw"},
-            "local_huff0": {"local_huff0", "raw"},
             "shared_huff0": {"shared_huff0", "raw"},
             "packed_huff0": {"packed_huff0", "raw"},
         }
@@ -1275,11 +1255,7 @@ class NeuralZipCodec(ByteGroupCodec):
                     "Mixed-stream symbol count does not match the tensor."
                 )
             is_exponent = self._is_exponent_stream(config, stream_id)
-            stream_kind = (
-                "byte_group"
-                if local_format
-                else ("exponent" if is_exponent else "byte_group")
-            )
+            stream_kind = "exponent" if is_exponent else "byte_group"
             groups.append(
                 ByteGroupPayload(
                     stream_kind=stream_kind,
@@ -1333,7 +1309,6 @@ class NeuralZipCodec(ByteGroupCodec):
                     decoded = decoder(
                         huff0.Huff0Payload(
                             payload=chunk.payload,
-                            codebook=codebook.codebook,
                             symbol_count=chunk.symbol_count,
                         ),
                         decodebook,

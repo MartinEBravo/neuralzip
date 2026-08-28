@@ -66,9 +66,7 @@ class EncodedModel:
     encode_seconds: float
     source_kind: str
     codebooks: tuple = field(default=(), repr=False)
-    setup_seconds: float = 0.0
     mapping_seconds: float = 0.0
-    used_batch: bool = False
     requires_grad: tuple[bool, ...] = ()
     tensor_kinds: tuple[str, ...] = ()
     auxiliary_state: tuple[_StoredTensor, ...] = field(default=(), repr=False)
@@ -149,7 +147,6 @@ class EncodedModel:
             "raw_bytes": int(self.raw_bytes),
             "compressed_bytes": int(self.compressed_bytes),
             "encode_seconds": float(self.encode_seconds),
-            "setup_seconds": float(self.setup_seconds),
             "mapping_seconds": float(self.mapping_seconds),
         }
         if any(value < 0 for value in numeric.values()):
@@ -157,7 +154,6 @@ class EncodedModel:
         object.__setattr__(self, "names", names)
         object.__setattr__(self, "payloads", payloads)
         object.__setattr__(self, "codebooks", codebooks)
-        object.__setattr__(self, "used_batch", bool(self.used_batch))
         object.__setattr__(self, "requires_grad", requires_grad)
         object.__setattr__(self, "tensor_kinds", tensor_kinds)
         object.__setattr__(self, "auxiliary_state", auxiliary_state)
@@ -175,11 +171,7 @@ class EncodedModel:
 
     @property
     def total_seconds(self):
-        return self.setup_seconds + self.mapping_seconds + self.encode_seconds
-
-    @property
-    def encoder_path(self):
-        return "compress_tensors" if self.used_batch else "compress_tensor"
+        return self.mapping_seconds + self.encode_seconds
 
     def prepare_inference(
         self,
@@ -326,9 +318,7 @@ def make_encoded_model(
     compressed_bytes,
     encode_seconds,
     codebooks=(),
-    setup_seconds=0.0,
     mapping_seconds=0.0,
-    used_batch=False,
     requires_grad=None,
 ):
     """Build an EncodedModel without retaining ``source`` or its weights."""
@@ -348,9 +338,7 @@ def make_encoded_model(
         raw_bytes=int(raw_bytes) + auxiliary_bytes,
         compressed_bytes=int(compressed_bytes) + auxiliary_bytes,
         encode_seconds=encode_seconds,
-        setup_seconds=setup_seconds,
         mapping_seconds=mapping_seconds,
-        used_batch=used_batch,
         requires_grad=requires_grad,
         **source_metadata,
     )

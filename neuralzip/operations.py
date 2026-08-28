@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .dtypes import dtype_name
-from .serialization import serialized_tensor_size
 
 
 @dataclass(frozen=True)
@@ -22,13 +21,7 @@ class SetupReport:
 class EncodedTensorBatch:
     payloads: tuple
     raw_bytes: int
-    compressed_bytes: int
     encode_seconds: float
-    used_batch: bool
-
-    @property
-    def encoder_path(self):
-        return "compress_tensors" if self.used_batch else "compress_tensor"
 
 
 @dataclass(frozen=True)
@@ -43,7 +36,6 @@ class EncodeStats:
     raw_bytes: int
     compressed_bytes: int
     compression_ratio: float
-    setup_seconds: float
     mapping_seconds: float
     encode_seconds: float
     total_seconds: float
@@ -61,16 +53,8 @@ def encode_tensor_batch(codec, tensors):
     """Encode one named tensor batch under a stable timing/size contract."""
 
     named_tensors = named_tensor_items(tensors)
-    batch_encoder = getattr(codec, "compress_tensors", None)
-    used_batch = callable(batch_encoder)
-
     started = time.perf_counter()
-    if used_batch:
-        payloads = tuple(batch_encoder(named_tensors))
-    else:
-        payloads = tuple(
-            codec.compress_tensor(name, tensor) for name, tensor in named_tensors
-        )
+    payloads = tuple(codec.compress_tensors(named_tensors))
     encode_seconds = time.perf_counter() - started
     if len(payloads) != len(named_tensors):
         raise RuntimeError("Codec returned a different number of tensor payloads.")
@@ -102,13 +86,10 @@ def encode_tensor_batch(codec, tensors):
             )
 
     raw_bytes = sum(int(payload.raw_bytes) for payload in payloads)
-    compressed_bytes = sum(serialized_tensor_size(payload) for payload in payloads)
     return EncodedTensorBatch(
         payloads=payloads,
         raw_bytes=raw_bytes,
-        compressed_bytes=int(compressed_bytes),
         encode_seconds=float(encode_seconds),
-        used_batch=used_batch,
     )
 
 
@@ -128,21 +109,3 @@ def prepare_neuralzip_codec(codec, named_tensors):
         clustering_seconds=float(clustering_seconds),
         codebook_setup_seconds=float(codebook_setup_seconds),
     )
-
-
-def decode_tensor_batch(codec, payloads):
-    """Decode payloads and return the exact decode-call wall time."""
-
-    payloads = tuple(payloads)
-    batch_decoder = getattr(codec, "decompress_tensors", None)
-    started = time.perf_counter()
-    if callable(batch_decoder):
-        decoded = tuple(batch_decoder(payloads))
-    else:
-        decoded = tuple(codec.decompress_tensor(payload) for payload in payloads)
-    if len(decoded) != len(payloads):
-        raise RuntimeError("Codec returned a different number of decoded tensors.")
-    tensors = {
-        payload.name: tensor for payload, tensor in zip(payloads, decoded, strict=True)
-    }
-    return tensors, float(time.perf_counter() - started)

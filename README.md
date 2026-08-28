@@ -89,8 +89,9 @@ model = NeuralZip.from_pretrained(
 
 ## Encode and decode manually
 
-Use the instance API when setup, encoding, and decoding must be controlled or
-measured separately:
+Use the explicit setup API when setup, encoding, and decoding must be
+controlled or measured separately. `NeuralZip` is a stateless namespace: the
+setup is the only reusable compression state and is always passed explicitly.
 
 ```python
 import torch
@@ -102,10 +103,18 @@ model = AutoModelForCausalLM.from_pretrained(
     dtype=torch.bfloat16,
 )
 
-neuralzip = NeuralZip(threads=4)
-setup = neuralzip.fit(model)
-encoded, stats = neuralzip.encode(model, return_stats=True)
-restored, decode_stats = neuralzip.decode(encoded, return_stats=True)
+setup = NeuralZip.fit(model, threads=4)
+encoded, stats = NeuralZip.encode(
+    model,
+    setup=setup,
+    threads=4,
+    return_stats=True,
+)
+restored, decode_stats = NeuralZip.decode(
+    encoded,
+    threads=4,
+    return_stats=True,
+)
 
 print(f"Ratio: {encoded.compression_ratio:.3f}")
 print(f"Setup: {setup.setup_report.setup_seconds:.3f} s")
@@ -119,25 +128,39 @@ for original, recovered in zip(model.parameters(), restored.parameters()):
     )
 ```
 
-`fit()` activates and returns an opaque setup. `encode()` returns an immutable,
-weight-free encoded value containing its payloads, codebooks, reconstruction
-metadata, byte counts, and timing. It does not retain the source model or its
-tensor objects.
+`fit()` returns an immutable setup; it does not mutate global or object state.
+It also accepts a Hugging Face model identifier when only the reusable setup
+is needed: `setup = NeuralZip.fit("openai-community/gpt2")`.
+The default is sharing-only so the setup also works with GPU inference. For a
+storage-only setup with packed exponent n-grams, pass
+`ngram_values=(2, 3, 4)` explicitly.
+`encode()` returns an immutable, weight-free encoded value containing its
+payloads, codebooks, reconstruction metadata, byte counts, and timing. It does
+not retain the source model or its tensor objects. `decode()` is self-contained:
+the encoded value carries the codebooks and metadata needed for reconstruction,
+so the original setup is not required.
 
 ### Reuse and transfer a setup
 
 ```python
-neuralzip = NeuralZip(threads=8)
-setup = neuralzip.fit(reference_model)
-neuralzip.save_setup("family.setup.pkl")
+setup = NeuralZip.fit(reference_model, threads=8)
+NeuralZip.save_setup(setup, "family.setup.pkl")
 
 # Same process.
-encoded_checkpoint = neuralzip.encode(next_checkpoint)
+encoded_checkpoint = NeuralZip.encode(
+    next_checkpoint,
+    setup=setup,
+    threads=8,
+)
 
 # Another process or a compatible family member.
-neuralzip = NeuralZip(setup="family.setup.pkl", threads=8)
-mapping = neuralzip.map_target(related_model)
-encoded_related = neuralzip.encode(related_model)
+setup = NeuralZip.load_setup("family.setup.pkl")
+mapping = NeuralZip.map_target(related_model, setup=setup)
+encoded_related = NeuralZip.encode(
+    related_model,
+    setup=setup,
+    threads=8,
+)
 
 assert mapping["matched_tensors"] == mapping["target_tensors"]
 ```
@@ -158,9 +181,10 @@ An arbitrary PyTorch module has no universal safe constructor, so provide an
 empty destination or factory:
 
 ```python
-encoded = neuralzip.encode(custom_model)
-restored = neuralzip.decode(encoded, model_factory=CustomModel)
-# Or: neuralzip.decode(encoded, destination=CustomModel(...))
+setup = NeuralZip.fit(custom_model)
+encoded = NeuralZip.encode(custom_model, setup=setup)
+restored = NeuralZip.decode(encoded, model_factory=CustomModel)
+# Or: NeuralZip.decode(encoded, destination=CustomModel(...))
 ```
 
 Floating parameters and persistent floating buffers are encoded. Remaining
@@ -191,6 +215,11 @@ versioned compressed export, and sharded Safetensors for resident state.
 Loading reconstructs the architecture without allocating the omitted BF16
 weights. Manifests are canonical JSON and every file is SHA-256 verified; the
 checkpoint format never deserializes pickle.
+
+`from_pretrained()` starts from an ordinary Hugging Face checkpoint and
+compresses it; `load_pretrained()` starts from this NeuralZip artifact and does
+neither fitting nor recompression. The trusted setup pickle is deliberately not
+embedded in the safe checkpoint, so save it separately when it will be reused.
 
 Saving an attached model is supported with direct `device=` placement.
 Accelerate-managed models should be saved before dispatch or copied from their

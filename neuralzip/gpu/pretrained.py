@@ -1207,8 +1207,9 @@ def _apply_placement(
 
 def attach_gpu_model(
     model: nn.Module,
-    neuralzip,
+    setup,
     *,
+    threads: int = 0,
     device: object | None = None,
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
@@ -1221,20 +1222,23 @@ def attach_gpu_model(
     cpu_offload_blocks: int | None = None,
     pin_memory: bool = True,
 ) -> nn.Module:
-    """Export, place, and attach a fitted NeuralZip model in memory."""
-
-    from ..core import NeuralZip
+    """Export, place, and attach a model using an explicit NeuralZip setup."""
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
-    if not isinstance(neuralzip, NeuralZip):
-        raise TypeError("neuralzip must be a fitted NeuralZip instance.")
+    if setup is None:
+        raise TypeError("setup is required.")
+    if hasattr(model, "neuralzip_runtime"):
+        raise RuntimeError("This model already has a NeuralZip runtime.")
     exported = export_model_for_gpu(
         model,
-        neuralzip,
+        setup,
+        threads=threads,
         adapter=adapter,
         include_embeddings=include_embeddings,
     )
+    if not exported.groups:
+        raise ValueError("The setup produced no GPU-compressible weights.")
     placement = _resolve_placement(
         model,
         exported,
@@ -1247,9 +1251,8 @@ def attach_gpu_model(
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
     )
-    _validate_and_remove_compressed_weights(model, exported)
-    model = _apply_placement(model, placement, offload_folder=offload_folder)
-    NeuralZipRuntime.attach(
+    compressed_parameters = _validated_compressed_weights(model, exported)
+    runtime = NeuralZipRuntime._prepare_runtime(
         model,
         exported,
         block_devices=placement.block_devices,
@@ -1260,6 +1263,23 @@ def attach_gpu_model(
         cpu_offload_block_names=placement.cpu_stored_blocks,
         pin_memory=pin_memory,
     )
+    removed = False
+    try:
+        for module, _parameter in compressed_parameters:
+            module._parameters.pop("weight")
+            module.__dict__.pop("weight", None)
+        removed = True
+        model = _apply_placement(model, placement, offload_folder=offload_folder)
+        runtime.model = model
+        runtime._install()
+    except Exception:
+        if removed:
+            for module, parameter in compressed_parameters:
+                module.__dict__.pop("weight", None)
+                if "weight" not in module._parameters:
+                    module.register_parameter("weight", parameter)
+        runtime._release_device_state()
+        raise
     return model
 
 

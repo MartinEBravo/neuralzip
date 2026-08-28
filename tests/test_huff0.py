@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from neuralzip import huff0
 from neuralzip.packed_exponents import tokenize_ngrams, topk_vocab
@@ -15,7 +16,76 @@ def _raw_from_bit_reordered_streams(*streams):
     return bytes(raw)
 
 
+def _canonical_code_values(code_lengths):
+    """Reproduce Huff0's valPerRank assignment independently."""
+    max_bits = max(code_lengths)
+    counts = [0] * (max_bits + 2)
+    for length in code_lengths:
+        counts[length] += 1
+
+    starts = [0] * (max_bits + 2)
+    minimum = 0
+    for length in range(max_bits, 0, -1):
+        starts[length] = minimum
+        minimum = (minimum + counts[length]) >> 1
+
+    values = []
+    for length in code_lengths:
+        if length == 0:
+            values.append(0)
+            continue
+        values.append(starts[length])
+        starts[length] += 1
+    return tuple(values)
+
+
 class Huff0Tests(unittest.TestCase):
+    def test_backend_info_reports_safe_cpu_dispatch(self):
+        info = huff0.backend_info()
+
+        self.assertEqual(
+            set(info),
+            {
+                "dynamic_bmi2_compiled",
+                "runtime_cpu_bmi2",
+                "active_bmi2",
+                "asm_disabled",
+            },
+        )
+        self.assertTrue(all(isinstance(value, bool) for value in info.values()))
+        self.assertTrue(info["asm_disabled"])
+        if info["active_bmi2"]:
+            self.assertTrue(info["dynamic_bmi2_compiled"])
+            self.assertTrue(info["runtime_cpu_bmi2"])
+
+    @mock.patch.object(
+        huff0._huff0_cpp,
+        "decompress_zipnn_mixed_many",
+        return_value=(bytearray(2),),
+    )
+    def test_native_decode_copies_mutable_payloads_before_releasing_gil(
+        self, native_decode
+    ):
+        first = bytearray(b"a")
+        second = memoryview(bytearray(b"b"))
+        specs = (
+            (
+                2,
+                False,
+                1,
+                (
+                    (("raw", first, 1, None, False),),
+                    (("raw", second, 1, None, False),),
+                ),
+            ),
+        )
+
+        huff0.decompress_zipnn_mixed_many(specs, threads=2)
+
+        native_specs = native_decode.call_args.args[0]
+        self.assertIsInstance(native_specs[0][3][0][0][1], bytes)
+        self.assertIsInstance(native_specs[0][3][1][0][1], bytes)
+
     def test_single_block_facade_composes_codebook_encode_and_decode(self):
         source = b"abcde" * 4096
         codebook = huff0.build_codebook(source, prior_count=1)
@@ -62,6 +132,202 @@ class Huff0Tests(unittest.TestCase):
                 decodebook,
             )
             self.assertEqual(restored, source)
+
+    def test_complete_histogram_build_matches_byte_build(self):
+        source = (b"a" * 8192) + (b"b" * 4096) + bytes(range(256))
+        counts = [source.count(symbol) for symbol in range(256)]
+
+        from_bytes = huff0.build_codebook(source, prior_count=1, max_bits=12)
+        from_counts = huff0.build_codebook_from_counts(
+            counts, prior_count=1, max_bits=12
+        )
+
+        self.assertEqual(from_counts.codebook, from_bytes.codebook)
+        encoded = huff0.encode_with_codebook(source, from_counts)
+        self.assertEqual(huff0.decompress(encoded), source)
+
+    def test_large_histogram_is_normalized_without_losing_support(self):
+        counts = [0] * 256
+        counts[1] = 1 << 35
+        counts[2] = 1 << 34
+        counts[255] = 1
+
+        codebook = huff0.build_codebook_from_counts(counts, prior_count=1, max_bits=12)
+        safely_scaled = [0 if count == 0 else max(1, count >> 6) for count in counts]
+        expected = huff0.build_codebook_from_counts(
+            safely_scaled, prior_count=1, max_bits=12
+        )
+        table = huff0.export_code_table(codebook, max_bits=12)
+
+        self.assertEqual(codebook.codebook, expected.codebook)
+        self.assertTrue(all(length > 0 for length in table.code_lengths))
+        source = bytes((1, 2, 255, 0)) * 4096
+        encoded = huff0.encode_with_codebook(source, codebook)
+        self.assertEqual(huff0.decompress(encoded), source)
+
+    def test_encoder_handle_rebuilds_directly_from_header(self):
+        source = (b"abcde" * 4096) + bytes(range(256))
+        original = huff0.build_codebook(source, prior_count=1, max_bits=12)
+
+        restored = huff0.build_codebook_from_header(original.codebook)
+
+        self.assertEqual(restored.codebook, original.codebook)
+        self.assertEqual(
+            huff0.encode_with_codebook(source, restored).payload,
+            huff0.encode_with_codebook(source, original).payload,
+        )
+
+    def test_twelve_bit_table_can_improve_skewed_histogram(self):
+        counts = [max(1, int(1.1 ** min(index, 40))) for index in range(256)]
+        table_11 = huff0.build_codebook_from_counts(counts, prior_count=1, max_bits=11)
+        table_12 = huff0.build_codebook_from_counts(counts, prior_count=1, max_bits=12)
+        lengths_11 = huff0.export_code_table(table_11, max_bits=12).code_lengths
+        lengths_12 = huff0.export_code_table(table_12, max_bits=12).code_lengths
+
+        cost_11 = sum(count * length for count, length in zip(counts, lengths_11))
+        cost_12 = sum(count * length for count, length in zip(counts, lengths_12))
+        self.assertLess(cost_12, cost_11)
+        self.assertEqual(max(lengths_12), 12)
+        source = b"".join(
+            bytes((symbol,)) * count for symbol, count in enumerate(counts)
+        )
+        encoded = huff0.encode_with_codebook(source, table_12)
+        self.assertIsNotNone(encoded)
+        self.assertEqual(huff0.decompress(encoded), source)
+
+    def test_export_code_table_matches_huff0_canonical_codes(self):
+        source = (b"a" * 8192) + (b"b" * 4096) + bytes(range(256))
+        codebook = huff0.build_codebook(source, prior_count=1)
+
+        table = huff0.export_code_table(codebook)
+
+        self.assertEqual(len(table.code_lengths), 256)
+        self.assertEqual(len(table.code_values), 256)
+        self.assertEqual(table.max_bits, max(table.code_lengths))
+        self.assertLessEqual(table.max_bits, 12)
+        self.assertEqual(
+            table.code_values,
+            _canonical_code_values(table.code_lengths),
+        )
+        for length, value in zip(table.code_lengths, table.code_values, strict=True):
+            self.assertGreater(length, 0)
+            self.assertLess(value, 1 << length)
+
+    def test_export_code_table_marks_absent_symbols(self):
+        codebook = huff0.build_codebook(b"a" * 1024 + b"b" * 512)
+
+        table = huff0.export_code_table(codebook.codebook)
+
+        self.assertGreater(table.code_lengths[ord("a")], 0)
+        self.assertGreater(table.code_lengths[ord("b")], 0)
+        self.assertEqual(table.code_lengths[255], 0)
+        self.assertEqual(table.code_values[255], 0)
+
+    def test_export_code_table_validates_header_and_bit_limit(self):
+        codebook = huff0.build_codebook(
+            (b"a" * 8192) + bytes(range(256)), prior_count=1
+        )
+        table = huff0.export_code_table(codebook.codebook)
+
+        with self.assertRaisesRegex(ValueError, "max_bits"):
+            huff0.export_code_table(codebook.codebook, max_bits=table.max_bits - 1)
+        with self.assertRaisesRegex(ValueError, "max_bits"):
+            huff0.export_code_table(codebook.codebook, max_bits=0)
+        with self.assertRaisesRegex(ValueError, "full codebook header"):
+            huff0.export_code_table(codebook.codebook + b"\\x00")
+        with self.assertRaises(ValueError):
+            huff0.export_code_table(codebook.codebook[:-1])
+
+    def test_native_sharing_decode_many_recombines_and_scales_threads(self):
+        length = (96 << 10) + 3
+        mantissa_stream = (bytes(range(251)) * ((length + 250) // 251))[:length]
+        exponent_stream = (
+            bytes([127, 127, 126, 127, 124, 127, 126, 127]) * ((length + 7) // 8)
+        )[:length]
+        raw = _raw_from_bit_reordered_streams(
+            mantissa_stream,
+            exponent_stream,
+        )
+        codebook = huff0.build_codebook(exponent_stream, prior_count=1)
+        decodebook = huff0.build_decodebook(codebook.codebook)
+        encoded_groups = huff0.compress_zipnn_mixed(
+            raw,
+            element_size=2,
+            bit_reorder=1,
+            chunk_size=32 << 10,
+            stream_modes=(
+                {"kind": "raw"},
+                {
+                    "kind": "shared_huff0",
+                    "codebook": codebook,
+                    "frame_4x": True,
+                },
+            ),
+            compression_threshold=1.0,
+            threads=4,
+        )
+        self.assertTrue(any(chunk[0] == "shared_huff0" for chunk in encoded_groups[1]))
+
+        decode_groups = tuple(
+            tuple(
+                (
+                    mode,
+                    payload,
+                    symbol_count,
+                    decodebook if mode == "shared_huff0" else None,
+                    mode == "shared_huff0",
+                )
+                for (
+                    mode,
+                    payload,
+                    symbol_count,
+                    _token_count,
+                    _escapes,
+                    _tail,
+                    _ngram_n,
+                    _hits,
+                    _misses,
+                ) in chunks
+            )
+            for chunks in encoded_groups
+        )
+        spec = (2, True, length, decode_groups)
+
+        one_thread = huff0.decompress_zipnn_mixed_many((spec,), threads=1)
+        four_threads = huff0.decompress_zipnn_mixed_many((spec,), threads=4)
+
+        self.assertIsInstance(one_thread[0], bytearray)
+        self.assertEqual(one_thread, four_threads)
+        self.assertEqual(one_thread[0], raw)
+
+    def test_native_decode_many_supports_zero_local_and_rejects_packed(self):
+        source = b"abcde" * 4096
+        local = huff0.compress_many((source,), threads=2)[0]
+        self.assertIsNotNone(local)
+        zeros = b"\x00" * len(source)
+        groups = (
+            (("local_huff0", local, len(source), None, False),),
+            (("zero", b"", len(source), None, False),),
+        )
+        expected = bytearray(len(source) * 2)
+        expected[0::2] = source
+        expected[1::2] = zeros
+
+        restored = huff0.decompress_zipnn_mixed_many(
+            ((2, False, len(source), groups),),
+            threads=4,
+        )
+
+        self.assertEqual(restored, [expected])
+        packed = (
+            (("raw", source, len(source), None, False),),
+            (("packed_huff0", b"frame", len(source), None, True),),
+        )
+        with self.assertRaisesRegex(ValueError, "does not support packed"):
+            huff0.decompress_zipnn_mixed_many(
+                ((2, False, len(source), packed),),
+                threads=2,
+            )
 
     def test_output_limit_returns_none(self):
         source = b"abcde" * 4096
@@ -393,13 +659,13 @@ class Huff0Tests(unittest.TestCase):
         self.assertEqual(actual, [expected])
         self.assertTrue(
             all(
-                chunk[0] in {"raw", "local_huff0"}
+                chunk[0] == "raw"
                 for stream_chunks in actual[0]
                 for chunk in stream_chunks
             )
         )
 
-    def test_mixed_shared_rejection_uses_exact_local_then_raw_fallback(self):
+    def test_mixed_shared_rejection_falls_back_directly_to_raw(self):
         length = 8192
         local_stream = (b"ab" * ((length + 1) // 2))[:length]
         raw_stream = (bytes(range(256)) * ((length + 255) // 256))[:length]
@@ -426,21 +692,9 @@ class Huff0Tests(unittest.TestCase):
             compression_threshold=1.0,
             threads=2,
         )
-        expected_local = huff0.compress_many([local_stream], threads=1)[0]
-        self.assertIsNotNone(expected_local)
         self.assertEqual(
             groups[0][0],
-            (
-                "local_huff0",
-                expected_local,
-                length,
-                None,
-                b"",
-                b"",
-                1,
-                0,
-                0,
-            ),
+            ("raw", local_stream, length, None, b"", b"", 1, 0, 0),
         )
         self.assertEqual(
             groups[1][0],

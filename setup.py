@@ -2,7 +2,6 @@ import os
 
 from setuptools import Extension, setup
 
-
 compile_args = ["/std:c++17"] if os.name == "nt" else ["-O3", "-std=c++17"]
 # This extension contains both C++ bindings and upstream Zstd C sources.
 # Clang rejects a C++ language-standard flag while compiling the latter.

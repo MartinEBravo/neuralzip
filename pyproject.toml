@@ -5,16 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neuralzip"
 version = "0.1.0"
-description = "Lossless checkpoint compression experiments for foundation models."
+description = "Lossless model-weight compression with reusable setup."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
+    "safetensors>=0.4",
     "torch",
     "transformers",
 ]
 
 [project.optional-dependencies]
+diffusion = [
+    "diffusers",
+]
+gpu = [
+    "accelerate>=1",
+    "cupy-cuda12x>=13",
+]
 experiments = [
     "huggingface-hub",
     "matplotlib",
@@ -38,3 +46,13 @@ test = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["neuralzip*"]
+
+[tool.setuptools.package-data]
+neuralzip = ["cuda/*.cu"]
+
+[tool.setuptools.data-files]
+"share/neuralzip/licenses/dfloat11" = ["third_party/dfloat11/LICENSE"]
+"share/neuralzip/licenses/zstd" = [
+    "third_party/zstd/LICENSE",
+    "third_party/zstd/NEURALZIP_VENDOR_REVISION",
+]

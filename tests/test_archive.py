@@ -16,14 +16,14 @@ from neuralzip.serialization import (
 
 class ArchiveTests(unittest.TestCase):
     def test_official_zipnn_frames_are_not_neuralzip_archives(self):
-        for alias in ("zipnn-src", "zipnn_src", "zipnn src"):
+        for method in ("zipnn", "zipnn-src", "zipnn_src", "zipnn src"):
             with (
-                self.subTest(alias=alias),
+                self.subTest(method=method),
                 self.assertRaisesRegex(NotImplementedError, "Official ZipNN frames"),
             ):
                 dumps(
                     {
-                        "method": alias,
+                        "method": method,
                         "tensor_results": [{"payload": b"ZNframe"}],
                     }
                 )

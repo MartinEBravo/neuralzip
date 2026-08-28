@@ -23,13 +23,13 @@ from pathlib import Path
 
 import torch
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.direct_compression import zipnn_src_pass
-from examples.model_catalog import SPECS_BY_KEY
-from examples.model_loading import (
+from examples.experiments.direct_compression import zipnn_pass
+from examples.experiments.model_catalog import SPECS_BY_KEY
+from examples.experiments.model_loading import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COMPRESSION_THRESHOLD,
     MappingModel,
@@ -203,8 +203,8 @@ def runner_sha256() -> str:
 
 def dependency_sha256() -> dict[str, str]:
     paths = (
-        REPOSITORY_ROOT / "examples" / "model_loading.py",
-        REPOSITORY_ROOT / "examples" / "direct_compression.py",
+        REPOSITORY_ROOT / "examples" / "experiments" / "model_loading.py",
+        REPOSITORY_ROOT / "examples" / "experiments" / "direct_compression.py",
     )
     return {str(path.relative_to(REPOSITORY_ROOT)): sha256_file(path) for path in paths}
 
@@ -481,11 +481,11 @@ def benchmark_target(
         raise RuntimeError(f"Target-specific round-trip failed for {spec.label}.")
     native = compress_with_codec(native_codec, tensors)
 
-    print(f"[{family.key}] ZipNN source control {spec.label}", flush=True)
-    zipnn_warmup = zipnn_src_pass(target, threads=threads, verify=True)
+    print(f"[{family.key}] ZipNN control {spec.label}", flush=True)
+    zipnn_warmup = zipnn_pass(target, threads=threads, verify=True)
     if zipnn_warmup["roundtrip_ok"] is not True:
-        raise RuntimeError(f"ZipNN source round-trip failed for {spec.label}.")
-    zipnn = zipnn_src_pass(target, threads=threads, verify=False)
+        raise RuntimeError(f"ZipNN round-trip failed for {spec.label}.")
+    zipnn = zipnn_pass(target, threads=threads, verify=False)
 
     output = {
         "target_key": target_key,

@@ -1,4 +1,4 @@
-"""Shared compression protocol for checkpoint trajectories.
+"""Shared compression protocol for checkpoint experiment trajectories.
 
 Vision and language checkpoints deliberately share this implementation so
 their timing and byte-accounting boundaries cannot drift independently.
@@ -60,7 +60,7 @@ BASE_RESULT_FIELDS = (
     "status",
 )
 
-ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN": "zipnn-src"}
+ENCODER_PATHS = {"NeuralZip": "compress_tensors", "ZipNN": "zipnn"}
 
 
 def is_current_codec_result(row) -> bool:
@@ -148,7 +148,7 @@ def exponent_metrics(payloads, codebooks=()) -> dict[str, int | float]:
     }
 
 
-def zipnn_src_exponent_size(
+def zipnn_exponent_size(
     payload: bytes,
     tensor: torch.Tensor,
     chunk_size: int,
@@ -275,7 +275,7 @@ def benchmark_neuralzip(
     return output
 
 
-def benchmark_zipnn_src(
+def benchmark_zipnn(
     tensors: Mapping[str, torch.Tensor],
     *,
     threads: int,
@@ -284,7 +284,7 @@ def benchmark_zipnn_src(
     named_tensors = list(tensors.items())
     before = tensor_digest(named_tensors)
     warmup = Compressor(
-        "zipnn-src",
+        "zipnn",
         verify=False,
         keep_payloads=False,
         threads=threads,
@@ -296,7 +296,7 @@ def benchmark_zipnn_src(
     gc.collect()
 
     result = Compressor(
-        "zipnn-src",
+        "zipnn",
         verify=True,
         keep_payloads=True,
         threads=threads,
@@ -308,7 +308,7 @@ def benchmark_zipnn_src(
     exponent_compressed_bytes = 0
     for tensor_result in result["tensor_results"]:
         name = str(tensor_result["name"])
-        raw, compressed = zipnn_src_exponent_size(
+        raw, compressed = zipnn_exponent_size(
             tensor_result["payload"],
             tensors[name],
             chunk_size,
@@ -324,7 +324,7 @@ def benchmark_zipnn_src(
         )
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
-        "encoder_path": "zipnn-src",
+        "encoder_path": "zipnn",
         "raw_bytes": int(result["raw_bytes"]),
         "compressed_bytes": int(result["compressed_bytes"]),
         "full_ratio_pct": 100.0 * float(result["compression_ratio"]),
@@ -377,7 +377,7 @@ def benchmark_checkpoint_codecs(
                 setup=setup,
             ),
         ),
-        ("ZipNN", lambda: benchmark_zipnn_src(tensors, threads=threads)),
+        ("ZipNN", lambda: benchmark_zipnn(tensors, threads=threads)),
     )
     for compressor, benchmark in methods:
         if compressor in completed:

@@ -13,11 +13,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
-from examples.checkpoint_common import (
+from examples.experiments.checkpoint_common import (
     add_checkpoint_run_arguments,
     atomic_torch_save,
     initialize_checkpoint_run,
@@ -32,7 +32,7 @@ from examples.checkpoint_common import (
     upsert_model_epoch_row,
     validate_checkpoint_results,
 )
-from examples.checkpoint_compression import (
+from examples.experiments.checkpoint_compression import (
     BASE_RESULT_FIELDS,
     CODEC_PROTOCOL_VERSION,
     ENCODER_PATHS,
@@ -653,7 +653,7 @@ def write_metadata(args: argparse.Namespace, dataset_name: str | None) -> None:
                 "measured_repetitions": 1,
                 "neuralzip_setup": "once at epoch 0, outside encode time",
                 "neuralzip_target_mapping": "outside encode time and reported separately",
-                "zipnn_src_input_clone": (
+                "zipnn_input_clone": (
                     "inside encode time; required because ZipNN 0.5.4 mutates its input"
                 ),
             },

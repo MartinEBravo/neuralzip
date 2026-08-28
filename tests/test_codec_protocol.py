@@ -4,6 +4,7 @@ from dataclasses import replace
 import torch
 
 from neuralzip.codec_protocol import (
+    decode_tensor_batch,
     encode_tensor_batch,
     measure_compressor_exponents,
     measure_exponent_streams,
@@ -72,6 +73,29 @@ class _SequentialCodec:
         return _payload(name, tensor)
 
 
+class _BatchDecoder:
+    def __init__(self):
+        self.batch_calls = 0
+        self.tensor_calls = 0
+
+    def decompress_tensors(self, payloads):
+        self.batch_calls += 1
+        return tuple(f"batch:{payload.name}" for payload in payloads)
+
+    def decompress_tensor(self, payload):
+        self.tensor_calls += 1
+        return f"single:{payload.name}"
+
+
+class _SequentialDecoder:
+    def __init__(self):
+        self.tensor_calls = 0
+
+    def decompress_tensor(self, payload):
+        self.tensor_calls += 1
+        return f"single:{payload.name}"
+
+
 class CodecProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tensors = {
@@ -108,6 +132,49 @@ class CodecProtocolTests(unittest.TestCase):
         self.assertEqual(sequential.payloads, batch.payloads)
         self.assertEqual(sequential.compressed_bytes, batch.compressed_bytes)
         self.assertGreaterEqual(sequential.encode_seconds, 0.0)
+
+    def test_decode_prefers_batch_and_preserves_payload_order(self):
+        payloads = tuple(
+            _payload(name, tensor) for name, tensor in self.tensors.items()
+        )
+        codec = _BatchDecoder()
+
+        decoded, seconds = decode_tensor_batch(codec, payloads)
+
+        self.assertEqual(codec.batch_calls, 1)
+        self.assertEqual(codec.tensor_calls, 0)
+        self.assertEqual(
+            decoded,
+            {name: f"batch:{name}" for name in self.tensors},
+        )
+        self.assertGreaterEqual(seconds, 0.0)
+
+    def test_decode_falls_back_to_per_tensor_frontend(self):
+        payloads = tuple(
+            _payload(name, tensor) for name, tensor in self.tensors.items()
+        )
+        codec = _SequentialDecoder()
+
+        decoded, seconds = decode_tensor_batch(codec, payloads)
+
+        self.assertEqual(codec.tensor_calls, len(payloads))
+        self.assertEqual(
+            decoded,
+            {name: f"single:{name}" for name in self.tensors},
+        )
+        self.assertGreaterEqual(seconds, 0.0)
+
+    def test_decode_rejects_wrong_batch_cardinality(self):
+        payloads = tuple(
+            _payload(name, tensor) for name, tensor in self.tensors.items()
+        )
+
+        class MissingDecoder(_BatchDecoder):
+            def decompress_tensors(self, payloads):
+                return super().decompress_tensors(payloads)[:-1]
+
+        with self.assertRaisesRegex(RuntimeError, "different number"):
+            decode_tensor_batch(MissingDecoder(), payloads)
 
     def test_every_frontend_gets_the_same_payload_validation(self):
         class ReorderedCodec(_BatchCodec):

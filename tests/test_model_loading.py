@@ -9,8 +9,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.model_catalog import ModelSpec
-from examples.model_loading import snapshot_weight_files
+from examples.experiments.model_catalog import ModelSpec
+from examples.experiments.model_loading import snapshot_weight_files
 
 
 def _snapshot(

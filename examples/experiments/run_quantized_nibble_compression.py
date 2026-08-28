@@ -21,8 +21,8 @@ from huggingface_hub import HfApi, HfFileSystem
 
 try:
     from model_catalog import QUANTIZED_MODEL_SPECS
-except ModuleNotFoundError:  # Imported as examples.run_quantized_nibble_compression.
-    from examples.model_catalog import QUANTIZED_MODEL_SPECS
+except ModuleNotFoundError:  # Imported as an examples.experiments module.
+    from examples.experiments.model_catalog import QUANTIZED_MODEL_SPECS
 
 from neuralzip import huff0
 from neuralzip.checkpoint_loading import resolve_weight_map
@@ -42,7 +42,7 @@ from neuralzip.serialization import (
 )
 from neuralzip.system import cpu_affinity
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = ROOT / "results" / "quantized-nibbles"
 ALLOWED_ARTIFACT_EXTENSIONS = (".safetensors", ".gguf")
 RAW_CHUNK_BYTES = 256 << 10

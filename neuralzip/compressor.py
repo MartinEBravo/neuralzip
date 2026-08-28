@@ -3,7 +3,11 @@ from collections.abc import Mapping
 
 import torch
 
-from .codec_protocol import encode_tensor_batch, prepare_neuralzip_codec
+from .codec_protocol import (
+    decode_tensor_batch,
+    encode_tensor_batch,
+    prepare_neuralzip_codec,
+)
 from .neuralzip_codec import NeuralZipCodec
 from .serialization import (
     serialized_codebooks_size,
@@ -13,10 +17,11 @@ from .tensors import bitwise_equal
 from .zipnn_codec import ZipNNCodec
 from .zipnn_source import ZipNNSourceCodec
 
-_ZIPNN_SRC_MODEL_IO_ERROR = (
-    "zipnn-src produces opaque per-tensor benchmark frames; model "
+_ZIPNN_MODEL_IO_ERROR = (
+    "zipnn produces opaque per-tensor benchmark frames; model "
     "save/load/decompress is supported only for NeuralZip and zipnn-local archives."
 )
+_ZIPNN_RESULT_METHOD_KEYS = {"zipnn", "zipnn_src"}
 
 
 def _method_key(method):
@@ -25,11 +30,11 @@ def _method_key(method):
 
 def _normalize_method(method):
     method_key = _method_key(method)
-    methods = {"neuralzip", "zipnn_local", "zipnn_src"}
+    methods = {"neuralzip", "zipnn", "zipnn_local"}
     if method_key not in methods:
-        choices = ", ".join(sorted(methods))
         raise ValueError(
-            f"Unsupported compression method {method!r}. Expected one of: {choices}."
+            f"Unsupported compression method {method!r}. Expected one of: "
+            "neuralzip, zipnn, zipnn-local."
         )
     return method_key
 
@@ -144,16 +149,18 @@ class Compressor:
             return self._codec_compression(
                 model,
                 method_name="neuralzip",
-                method_detail=("js-clustered-shared-local-huffman-packed-exponents"),
+                method_detail=("js-clustered-shared-huffman-packed-exponents"),
             )
-        if self.method == "zipnn_src":
-            return self._zipnn_src(model)
+        if self.method == "zipnn":
+            return self._zipnn(model)
         raise AssertionError(f"Unhandled compression method {self.method!r}.")
 
     def decompress(self, compressed_model):
-        result_is_zipnn_src = _method_key(compressed_model.get("method")) == "zipnn_src"
-        if self.method == "zipnn_src" or result_is_zipnn_src:
-            raise NotImplementedError(_ZIPNN_SRC_MODEL_IO_ERROR)
+        result_is_zipnn = (
+            _method_key(compressed_model.get("method")) in _ZIPNN_RESULT_METHOD_KEYS
+        )
+        if self.method == "zipnn" or result_is_zipnn:
+            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
 
         if hasattr(self.codec, "reset_decompression"):
             self.codec.reset_decompression()
@@ -162,7 +169,7 @@ class Compressor:
             codebooks = compressed_model.get("codebooks") or header.get("codebooks")
             self.codec.load_codebooks(codebooks)
 
-        tensors = {}
+        payloads = []
         for tensor_result in compressed_model.get("tensor_results", []):
             payload = tensor_result.get("payload")
             if payload is None:
@@ -170,13 +177,14 @@ class Compressor:
                     "Cannot decompress this result because tensor payloads were not "
                     "kept. Run Compressor(..., keep_payloads=True)."
                 )
-            tensors[payload.name] = self.codec.decompress_tensor(payload)
+            payloads.append(payload)
+        tensors, _ = decode_tensor_batch(self.codec, payloads)
         return tensors
 
     @staticmethod
     def save(compressed_model, path):
-        if _method_key(compressed_model.get("method")) == "zipnn_src":
-            raise NotImplementedError(_ZIPNN_SRC_MODEL_IO_ERROR)
+        if _method_key(compressed_model.get("method")) in _ZIPNN_RESULT_METHOD_KEYS:
+            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
         from .archive import dump
 
         dump(compressed_model, path)
@@ -188,8 +196,8 @@ class Compressor:
         return load(path)
 
     def decompress_file(self, path):
-        if self.method == "zipnn_src":
-            raise NotImplementedError(_ZIPNN_SRC_MODEL_IO_ERROR)
+        if self.method == "zipnn":
+            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
         return self.decompress(self.load(path))
 
     def _codec_compression(self, model, *, method_name, method_detail):
@@ -237,6 +245,13 @@ class Compressor:
         compressed_payloads = list(encoded_batch.payloads)
         total_encode_seconds = encoded_batch.encode_seconds
 
+        decoded_tensors = None
+        if self.verify:
+            decoded_tensors, total_decode_seconds = decode_tensor_batch(
+                self.codec,
+                encoded_batch.payloads,
+            )
+
         for tensor_index, (name, tensor) in enumerate(named_tensors):
             raw_bytes = _raw_tensor_bytes(tensor)
             total_raw_bytes += raw_bytes
@@ -251,13 +266,10 @@ class Compressor:
             total_ngram_hits += getattr(compressed, "ngram_hits", 0)
             total_ngram_escapes += getattr(compressed, "ngram_escapes", 0)
             if self.verify:
-                start = time.perf_counter()
-                decompressed = self.codec.decompress_tensor(compressed)
-                decode_seconds = time.perf_counter() - start
+                decompressed = decoded_tensors[name]
                 original = tensor.detach().cpu().contiguous()
                 tensor_roundtrip_ok = bitwise_equal(original, decompressed)
                 roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
-                total_decode_seconds += decode_seconds
 
             result = {"name": name, "raw_bytes": raw_bytes}
             if self.keep_payloads:
@@ -307,7 +319,7 @@ class Compressor:
             "tensor_results": tensor_results,
         }
 
-    def _zipnn_src(self, model):
+    def _zipnn(self, model):
         tensor_results = []
         total_raw_bytes = 0
         total_compressed_bytes = 0
@@ -317,6 +329,7 @@ class Compressor:
         total_decode_seconds = 0.0
         roundtrip_ok = True if self.verify else None
         codec = self.codec
+        encoded_rows = []
 
         for name, tensor in _named_input_tensors(model):
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
@@ -326,7 +339,7 @@ class Compressor:
             raw_bytes = _raw_tensor_bytes(original)
             total_raw_bytes += raw_bytes
 
-            encoded = codec.encode_tensor(original, verify=self.verify)
+            encoded = codec.encode_tensor(original, verify=False)
             payload = encoded.payload
             input_copy_seconds = encoded.input_copy_seconds
             codec_encode_seconds = encoded.codec_encode_seconds
@@ -338,22 +351,29 @@ class Compressor:
             total_codec_encode_seconds += codec_encode_seconds
             total_input_copy_seconds += input_copy_seconds
 
-            tensor_roundtrip_ok = encoded.roundtrip_ok
-            decode_seconds = encoded.decode_seconds
-            if self.verify:
-                roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
-                total_decode_seconds += decode_seconds
+            encoded_rows.append((name, original, encoded))
 
             result = {"name": name, "raw_bytes": raw_bytes}
             if self.keep_payloads:
                 result["payload"] = payload
             tensor_results.append(result)
 
+        if self.verify:
+            decode_started = time.perf_counter()
+            decoded_tensors = {
+                name: codec.decode(encoded.payload) for name, _, encoded in encoded_rows
+            }
+            total_decode_seconds = time.perf_counter() - decode_started
+            for name, original, _ in encoded_rows:
+                roundtrip_ok = bool(
+                    roundtrip_ok and bitwise_equal(original, decoded_tensors[name])
+                )
+
         model_compression_ratio = (
             total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
         )
         return {
-            "method": "zipnn-src",
+            "method": "zipnn",
             "zipnn_method": self.zipnn_method,
             "num_tensors": len(tensor_results),
             "raw_bytes": total_raw_bytes,

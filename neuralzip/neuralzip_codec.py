@@ -22,7 +22,11 @@ from .payloads import (
     StreamChunk,
     TensorPayload,
 )
-from .serialization import PACKED_CHUNK_METADATA_BYTES, SHARED_CHUNK_METADATA_BYTES
+from .serialization import (
+    PACKED_CHUNK_METADATA_BYTES,
+    RAW_CHUNK_METADATA_BYTES,
+    SHARED_CHUNK_METADATA_BYTES,
+)
 from .zipnn_codec import (
     DTYPE_BY_NAME,
     ZipNNCodec,
@@ -82,8 +86,8 @@ class NeuralZipCodec(ZipNNCodec):
         self.enable_shared_codebooks = bool(enable_shared_codebooks)
         self.direct_batch_bytes = int(direct_batch_bytes)
 
-        if self.prior_count < 0 or self.exponent_prior_count < 0:
-            raise ValueError("Huffman prior counts must be non-negative.")
+        if self.prior_count <= 0 or self.exponent_prior_count <= 0:
+            raise ValueError("Transferable Huffman prior counts must be positive.")
         if self.cluster_js_threshold < 0:
             raise ValueError("cluster_js_threshold must be non-negative.")
         if self.max_codebook_sample_bytes <= 0:
@@ -348,14 +352,11 @@ class NeuralZipCodec(ZipNNCodec):
                 )
                 if encoded is not None:
                     total += encoded.compressed_bytes
-                elif mode["kind"] == "raw":
-                    total += self._raw_chunk(chunk).compressed_bytes
                 else:
-                    # Runtime shared/packed rejection first tries the exact
-                    # local Huff0 fallback and stores raw only if local coding
-                    # also loses.  Candidate sizing must model that same path.
-                    fallback = super()._compress_local_huff0_chunks((chunk,))[0]
-                    total += fallback.compressed_bytes
+                    # Post-setup encoding never builds a target-local tree.
+                    # Raw is the exact runtime fallback for every rejected
+                    # precomputed shared or packed representation.
+                    total += self._raw_chunk(chunk).compressed_bytes
         return total
 
     def _measure_direct_mode_seconds(self, mode, element_size, sample_parts):
@@ -365,8 +366,8 @@ class NeuralZipCodec(ZipNNCodec):
         tensor before the timer; the remaining lanes use raw mode and therefore
         contribute the same background work to every candidate.  The timed
         call is the model-wide mixed primitive itself, so shared/packed
-        rejection, local-tree construction, the strict compression threshold,
-        and final raw fallback are identical to the real direct encoder.
+        rejection, the strict compression threshold, and direct raw fallback
+        are identical to the real direct encoder.
         """
         element_size = int(element_size)
         raw_mode = {"kind": "raw"}
@@ -436,7 +437,16 @@ class NeuralZipCodec(ZipNNCodec):
         )
         return mode
 
-    def _build_candidate(self, sample, *, kind, prior_count, ngram_n=1):
+    def _build_candidate(
+        self,
+        sample,
+        *,
+        kind,
+        prior_count,
+        ngram_n=1,
+        symbol_counts=None,
+        max_bits=11,
+    ):
         if kind == "shared_huff0":
             tokens = sample
             vocab = b""
@@ -452,7 +462,18 @@ class NeuralZipCodec(ZipNNCodec):
         if not tokens:
             return None
         try:
-            codebook = huff0.build_codebook(tokens, prior_count=prior_count)
+            if symbol_counts is not None and kind == "shared_huff0":
+                codebook = huff0.build_codebook_from_counts(
+                    symbol_counts,
+                    prior_count=prior_count,
+                    max_bits=max_bits,
+                )
+            else:
+                codebook = huff0.build_codebook(
+                    tokens,
+                    prior_count=prior_count,
+                    max_bits=max_bits,
+                )
         except ValueError:
             return None
         return {
@@ -484,6 +505,49 @@ class NeuralZipCodec(ZipNNCodec):
             vocab=bytes(mode.get("vocab", b"")),
         )
 
+    def _shared_histogram_cost(
+        self,
+        mode,
+        symbol_counts,
+        *,
+        total_size,
+        shared_chunk_count,
+        codebook_payload,
+    ):
+        """Return a sample-independent upper bound for shared Huff0 bytes.
+
+        The symbol contribution is exact for the complete histogram. Huff0's
+        4X frame adds a six-byte jump table and at most one padded byte for
+        each of its four bitstreams, hence the ten-byte per-chunk bound. Raw
+        fallback can only make the emitted chunks smaller than this bound.
+        """
+
+        table = huff0.export_code_table(mode["codebook"], max_bits=12)
+        symbol_bits = sum(
+            int(count) * int(length)
+            for count, length in zip(
+                symbol_counts,
+                table.code_lengths,
+                strict=True,
+            )
+        )
+        symbol_bytes = (symbol_bits + 7) // 8
+        frame_overhead = (10 if mode.get("frame_4x", False) else 1) * int(
+            shared_chunk_count
+        )
+        shared_chunks = (
+            symbol_bytes
+            + frame_overhead
+            + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
+        )
+        fallback_chunks = (
+            int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
+        )
+        return int(codebook_payload.metadata_bytes) + min(
+            shared_chunks,
+            fallback_chunks,
+        )
+
     @staticmethod
     def _estimated_metric(mode, sample_size, total_size, metric):
         if sample_size <= 0:
@@ -504,6 +568,8 @@ class NeuralZipCodec(ZipNNCodec):
         element_size,
         is_exponent,
         sample_parts=None,
+        symbol_counts=None,
+        chunk_counts=None,
     ):
         if sample_parts is None:
             sample_parts = (sample,)
@@ -514,13 +580,10 @@ class NeuralZipCodec(ZipNNCodec):
             element_size,
             sample_parts=sample_parts,
         )
-        local_mode = {"kind": "local_huff0", "fixed_cost": 0}
-        self._score_mode(
-            sample,
-            local_mode,
-            element_size,
-            sample_parts=sample_parts,
-        )
+        if chunk_counts is not None:
+            raw_mode["full_cost"] = (
+                int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
+            )
         prior_count = self.exponent_prior_count if is_exponent else self.prior_count
 
         shared = None
@@ -529,23 +592,45 @@ class NeuralZipCodec(ZipNNCodec):
                 sample,
                 kind="shared_huff0",
                 prior_count=prior_count,
+                symbol_counts=symbol_counts,
+                max_bits=12 if is_exponent else 11,
             )
         if shared is not None:
             payload = self._candidate_payload(key, shared)
-            self._score_mode(
-                sample,
-                shared,
-                element_size,
-                payload,
-                sample_parts,
-            )
+            if symbol_counts is not None and chunk_counts is not None:
+                shared["fixed_cost"] = payload.metadata_bytes
+                shared["sample_seconds"] = self._measure_direct_mode_seconds(
+                    shared,
+                    element_size,
+                    tuple(sample_parts),
+                )
+                shared["full_cost"] = self._shared_histogram_cost(
+                    shared,
+                    symbol_counts,
+                    total_size=total_size,
+                    shared_chunk_count=chunk_counts[1],
+                    codebook_payload=payload,
+                )
+            else:
+                self._score_mode(
+                    sample,
+                    shared,
+                    element_size,
+                    payload,
+                    sample_parts,
+                )
 
-        base_candidates = [raw_mode, local_mode]
+        # A frozen NeuralZip setup may only select modes whose target encode
+        # uses precomputed state, or raw storage.  Local Huff0 remains available
+        # to the ZipNN baseline but is never a post-setup NeuralZip mode.
+        base_candidates = [raw_mode]
         if shared is not None:
             base_candidates.append(shared)
         sample_size = len(sample)
 
         def estimated_cost(candidate):
+            if "full_cost" in candidate:
+                return float(candidate["full_cost"])
             return self._estimated_metric(
                 candidate,
                 sample_size,
@@ -632,8 +717,10 @@ class NeuralZipCodec(ZipNNCodec):
         }
 
     def _finalize_mode(self, key, selected):
-        if selected["kind"] in {"raw", "local_huff0"}:
+        if selected["kind"] == "raw":
             return selected
+        if selected["kind"] == "local_huff0":
+            raise RuntimeError("NeuralZip setup cannot finalize local Huff0.")
 
         codebook_id = self._next_codebook_id
         self._next_codebook_id += 1
@@ -701,7 +788,7 @@ class NeuralZipCodec(ZipNNCodec):
             for key, mode in tuple(self._mode_by_key.items()):
                 if mode.get("codebook_id") in removed_codebook_ids:
                     self._mode_by_key[key] = {
-                        "kind": "local_huff0",
+                        "kind": "raw",
                         "fixed_cost": 0,
                     }
 
@@ -750,7 +837,7 @@ class NeuralZipCodec(ZipNNCodec):
                 source_mode = self._mode_by_tensor_stream.get(plan_key)
                 if source_mode is None:
                     missing.append(plan_key)
-                    source_mode = {"kind": "local_huff0", "fixed_cost": 0}
+                    source_mode = {"kind": "raw", "fixed_cost": 0}
                 plan.append((plan_key, source_mode))
 
             tensor_matched = all(
@@ -803,12 +890,20 @@ class NeuralZipCodec(ZipNNCodec):
         return stats
 
     def _collect_codebook_samples(self, named_tensors):
-        """Collect the bounded, reordered streams used to fit codebooks."""
+        """Collect bounded probes and complete exponent histograms.
+
+        Bounded byte samples remain only for direct-time probes and packed
+        vocabulary/cost discovery. Shared exponent codebooks and their symbol
+        costs use all 256 bins, so their ratio decision no longer depends on
+        the sample budget or tensor traversal position.
+        """
 
         sample_parts = {}
         sample_sizes = {}
         total_sizes = {}
         stream_info = {}
+        exponent_counts = {}
+        chunk_counts = {}
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 continue
@@ -821,6 +916,23 @@ class NeuralZipCodec(ZipNNCodec):
                 stream = reordered[stream_id::element_size]
                 key = self._codebook_key(name, original, stream_id)
                 total_sizes[key] = total_sizes.get(key, 0) + len(stream)
+                stream_info[key] = (element_size, is_exponent)
+                raw_step = self._stream_chunk_size(element_size)
+                shared_step = min(raw_step, huff0.max_block_size())
+                raw_chunks, shared_chunks = chunk_counts.get(key, (0, 0))
+                chunk_counts[key] = (
+                    raw_chunks + (len(stream) + raw_step - 1) // raw_step,
+                    shared_chunks + (len(stream) + shared_step - 1) // shared_step,
+                )
+                if is_exponent:
+                    counts = np.bincount(
+                        np.frombuffer(stream, dtype=np.uint8),
+                        minlength=256,
+                    ).astype(np.uint64, copy=False)
+                    if key in exponent_counts:
+                        exponent_counts[key] += counts
+                    else:
+                        exponent_counts[key] = counts
                 remaining = self.max_codebook_sample_bytes - sample_sizes.get(key, 0)
                 if remaining <= 0:
                     continue
@@ -829,8 +941,13 @@ class NeuralZipCodec(ZipNNCodec):
                     continue
                 sample_parts.setdefault(key, []).append(bytes(part))
                 sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
-                stream_info[key] = (element_size, is_exponent)
-        return sample_parts, total_sizes, stream_info
+        return (
+            sample_parts,
+            total_sizes,
+            stream_info,
+            exponent_counts,
+            chunk_counts,
+        )
 
     def build_codebooks_and_select_modes(self, named_tensors):
         if not self._clusters_prepared:
@@ -838,9 +955,13 @@ class NeuralZipCodec(ZipNNCodec):
                 "Clusters must be prepared before building NeuralZip codebooks."
             )
         named_tensors = list(named_tensors)
-        sample_parts, total_sizes, stream_info = self._collect_codebook_samples(
-            named_tensors
-        )
+        (
+            sample_parts,
+            total_sizes,
+            stream_info,
+            exponent_counts,
+            chunk_counts,
+        ) = self._collect_codebook_samples(named_tensors)
 
         evaluations = []
         for key in sorted(sample_parts):
@@ -854,6 +975,8 @@ class NeuralZipCodec(ZipNNCodec):
                     element_size=element_size,
                     is_exponent=is_exponent,
                     sample_parts=parts,
+                    symbol_counts=exponent_counts.get(key),
+                    chunk_counts=chunk_counts.get(key),
                 )
             )
 
@@ -911,7 +1034,7 @@ class NeuralZipCodec(ZipNNCodec):
             plan_key = self._transfer_plan_key(name, tensor, stream_id)
             return self._transfer_mode_by_tensor_stream.get(
                 plan_key,
-                {"kind": "local_huff0", "fixed_cost": 0},
+                {"kind": "raw", "fixed_cost": 0},
             )
 
         key = self._codebook_key(name, tensor, stream_id)
@@ -1027,8 +1150,8 @@ class NeuralZipCodec(ZipNNCodec):
         allowed_finals = {
             "raw": {"raw"},
             "local_huff0": {"local_huff0", "raw"},
-            "shared_huff0": {"shared_huff0", "local_huff0", "raw"},
-            "packed_huff0": {"packed_huff0", "local_huff0", "raw"},
+            "shared_huff0": {"shared_huff0", "raw"},
+            "packed_huff0": {"packed_huff0", "raw"},
         }
         groups = []
         for stream_id, (planned_mode, native_chunks) in enumerate(
@@ -1206,11 +1329,24 @@ class NeuralZipCodec(ZipNNCodec):
             )
         return bytes(output)
 
-    def decompress_tensor(self, compressed):
+    @staticmethod
+    def _native_decode_eligible(compressed):
+        """Return whether the first-stage native decoder supports a payload."""
+
+        if compressed.strategy != "neuralzip":
+            return False
+        if getattr(compressed, "exponent_layout", "original") != "original":
+            return False
+        supported = {"raw", "zero", "local_huff0", "shared_huff0"}
+        return all(
+            chunk.mode in supported
+            for group in compressed.groups
+            for chunk in group.chunks
+        )
+
+    def _validate_decompression_payload(self, compressed):
         if compressed.dtype not in DTYPE_BY_NAME:
             raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
-        if compressed.strategy != "neuralzip":
-            return super().decompress_tensor(compressed)
 
         dtype = DTYPE_BY_NAME[compressed.dtype]
         config = _zipnn_dtype_config(dtype)
@@ -1218,6 +1354,128 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError("Payload element size does not match its dtype.")
         if len(compressed.groups) != int(config["num_buffers"]):
             raise ValueError("Payload byte-group count does not match its dtype.")
+        if int(compressed.numel) < 0:
+            raise ValueError("Payload element count must be non-negative.")
+        for stream_id, group in enumerate(compressed.groups):
+            if int(group.symbol_count) != int(compressed.numel):
+                raise ValueError(
+                    f"Byte group {stream_id} has {group.symbol_count} symbols; "
+                    f"expected {compressed.numel}."
+                )
+        return dtype, config
+
+    def _native_decode_spec(self, compressed):
+        """Translate one stable payload into the sharing-only native ABI."""
+
+        dtype, config = self._validate_decompression_payload(compressed)
+        native_groups = []
+        for group in compressed.groups:
+            native_chunks = []
+            for chunk in group.chunks:
+                mode = str(chunk.mode)
+                decodebook_handle = None
+                frame_4x = False
+                if mode == "shared_huff0":
+                    codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
+                    decodebook = self._decode_codebooks.get(chunk.codebook_id)
+                    if codebook is None or decodebook is None:
+                        raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
+                    if codebook.mode not in {
+                        "shared_huff0",
+                        "shared_huff0_4x",
+                    }:
+                        raise ValueError(
+                            "Shared Huff0 chunk references a non-shared codebook."
+                        )
+                    decodebook_handle = decodebook.handle
+                    frame_4x = codebook.mode == "shared_huff0_4x"
+                native_chunks.append(
+                    (
+                        mode,
+                        chunk.payload,
+                        int(chunk.symbol_count),
+                        decodebook_handle,
+                        bool(frame_4x),
+                    )
+                )
+            native_groups.append(tuple(native_chunks))
+        return (
+            int(config["element_size"]),
+            int(config["bit_reorder"]),
+            int(compressed.numel),
+            tuple(native_groups),
+        ), dtype
+
+    def _decompress_direct_native_batch(self, payloads):
+        prepared = [
+            (compressed, *self._native_decode_spec(compressed))
+            for compressed in payloads
+        ]
+        raw_buffers = huff0.decompress_zipnn_mixed_many(
+            tuple(spec for _, spec, _ in prepared),
+            threads=self.threads,
+        )
+        if len(raw_buffers) != len(prepared):
+            raise RuntimeError("Mixed ZipNN decoder returned an invalid tensor count.")
+        outputs = []
+        for (compressed, _, dtype), raw in zip(
+            prepared,
+            raw_buffers,
+            strict=True,
+        ):
+            if len(raw) != int(compressed.raw_bytes):
+                raise RuntimeError(
+                    f"Decoded tensor {compressed.name!r} has {len(raw)} bytes; "
+                    f"expected {compressed.raw_bytes}."
+                )
+            outputs.append(_tensor_from_raw_bytes(raw, dtype, compressed.shape))
+        return outputs
+
+    def decompress_tensors(self, payloads):
+        """Decode supported tensors through input-size-windowed native queues."""
+
+        payloads = tuple(payloads)
+        outputs = []
+        batch = []
+        batch_bytes = 0
+
+        def flush_native_batch():
+            nonlocal batch, batch_bytes
+            if batch:
+                outputs.extend(self._decompress_direct_native_batch(batch))
+                batch = []
+                batch_bytes = 0
+
+        for compressed in payloads:
+            if not self._native_decode_eligible(compressed):
+                flush_native_batch()
+                outputs.append(self._decompress_tensor_python(compressed))
+                continue
+
+            raw_bytes = int(compressed.raw_bytes)
+            if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
+                flush_native_batch()
+            batch.append(compressed)
+            batch_bytes += raw_bytes
+            if batch_bytes >= self.direct_batch_bytes:
+                flush_native_batch()
+        flush_native_batch()
+        return tuple(outputs)
+
+    def decompress_tensor(self, compressed):
+        if self._native_decode_eligible(compressed):
+            return self.decompress_tensors((compressed,))[0]
+        return self._decompress_tensor_python(compressed)
+
+    def _decompress_tensor_python(self, compressed):
+        """Compatibility decoder for packed modes and legacy layouts."""
+
+        if compressed.dtype not in DTYPE_BY_NAME:
+            raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
+        if compressed.strategy != "neuralzip":
+            return super().decompress_tensor(compressed)
+
+        dtype, config = self._validate_decompression_payload(compressed)
 
         raw = bytearray(compressed.raw_bytes)
         for stream_id, group in enumerate(compressed.groups):
@@ -1228,7 +1486,7 @@ class NeuralZipCodec(ZipNNCodec):
                     compressed.shape,
                     compressed.exponent_layout,
                 )
-            expected = len(raw[stream_id :: compressed.element_size])
+            expected = int(compressed.numel)
             if len(stream) != expected:
                 raise ValueError(
                     f"Byte group {stream_id} has {len(stream)} bytes; expected {expected}."

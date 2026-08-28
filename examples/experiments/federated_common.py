@@ -1,4 +1,4 @@
-"""Shared lossless-codec adapters and reporting helpers for federated suites.
+"""Shared lossless-codec adapters and reporting helpers for federated experiments.
 
 This module contains only protocol-neutral mechanics shared by the vision and
 language runners.  Dataset partitioning, model state layout, training, and the
@@ -24,9 +24,9 @@ from neuralzip.neuralzip_codec import NeuralZipCodec
 from neuralzip.tensors import bitwise_equal
 from neuralzip.zipnn_source import ZipNNSourceCodec, parse_zipnn_exponent_stream
 
-COMPRESSOR_SRC = "ZipNN"
+COMPRESSOR_ZIPNN = "ZipNN"
 COMPRESSOR_NEURALZIP = "NeuralZip"
-COMPRESSORS = (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP)
+COMPRESSORS = (COMPRESSOR_ZIPNN, COMPRESSOR_NEURALZIP)
 DTYPE_NAME = "float32"
 
 _CUMULATIVE_FIELDS = (
@@ -61,7 +61,7 @@ class EncodedState:
     raw_floating_bytes: int
 
 
-class ZipNNSrcStateCodec:
+class ZipNNStateCodec:
     """Federated-state wrapper around the shared official ZipNN adapter."""
 
     def __init__(self, *, threads: int, chunk_size: int, threshold: float):
@@ -191,7 +191,7 @@ class FederatedCodecProtocol:
 
     def __init__(self, *, threads: int, chunk_size: int, threshold: float):
         self.codecs = {
-            COMPRESSOR_SRC: ZipNNSrcStateCodec(
+            COMPRESSOR_ZIPNN: ZipNNStateCodec(
                 threads=threads,
                 chunk_size=chunk_size,
                 threshold=threshold,
@@ -264,7 +264,7 @@ class FederatedCodecProtocol:
                 + ", ".join(sorted(missing))
             )
         _assert_same_tensors(
-            decoded[COMPRESSOR_SRC],
+            decoded[COMPRESSOR_ZIPNN],
             decoded[COMPRESSOR_NEURALZIP],
             context=f"{context} cross-codec {phase}",
         )

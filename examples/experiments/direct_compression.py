@@ -21,7 +21,7 @@ try:
         MappingModel,
         iter_float_tensors,
     )
-except ImportError:  # Direct execution from the examples directory.
+except ImportError:  # Direct execution from the experiments directory.
     from model_loading import (
         DEFAULT_CHUNK_SIZE,
         DEFAULT_COMPRESSION_THRESHOLD,
@@ -30,7 +30,7 @@ except ImportError:  # Direct execution from the examples directory.
     )
 
 
-def zipnn_src_pass(
+def zipnn_pass(
     model: MappingModel,
     *,
     threads: int,
@@ -78,7 +78,7 @@ def zipnn_src_pass(
         if verify and not encoded.roundtrip_ok:
             roundtrip_ok = False
             if encoded.roundtrip_ok is False:
-                raise RuntimeError(f"ZipNN src round-trip failed for tensor {name}.")
+                raise RuntimeError(f"ZipNN round-trip failed for tensor {name}.")
 
     exponent_compressed = exponent_data + exponent_metadata
     return {

@@ -10,15 +10,15 @@ import math
 import sys
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.model_loading import (
+from examples.experiments.model_loading import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_COMPRESSION_THRESHOLD,
 )
-from examples.run_setup_transfer_suite import (
+from examples.experiments.run_setup_transfer_suite import (
     FAMILY_SPECS,
     MODELS_BY_KEY,
     PINNED_REVISIONS,

@@ -1,7 +1,7 @@
 import unittest
 
-from examples.direct_compression import exponent_metrics as direct_metrics
-from examples.run_setup_transfer_suite import (
+from examples.experiments.direct_compression import exponent_metrics as direct_metrics
+from examples.experiments.run_setup_transfer_suite import (
     exponent_metrics as family_metrics,
 )
 from neuralzip.codec_protocol import measure_exponent_streams

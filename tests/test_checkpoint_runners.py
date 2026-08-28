@@ -7,10 +7,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import examples.run_checkpoint_language as language_runner
-import examples.run_checkpoint_vision as vision_runner
-from examples import checkpoint_common, checkpoint_compression
-from examples.run_checkpoint_language import (
+import examples.experiments.run_checkpoint_language as language_runner
+import examples.experiments.run_checkpoint_vision as vision_runner
+from examples.experiments import checkpoint_common, checkpoint_compression
+from examples.experiments.run_checkpoint_language import (
     MODEL_SPECS,
     apply_mlm_mask,
     build_model,

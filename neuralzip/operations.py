@@ -1,31 +1,11 @@
-"""Shared, versioned protocol primitives for checkpoint experiments.
-
-This module deliberately contains no model- or task-specific policy.  It
-defines the timing and byte-accounting boundary used by experiment runners so
-that two frontends cannot silently benchmark different NeuralZip paths.
-"""
+"""Shared timing, validation, and batching primitives for NeuralZip."""
 
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .dtypes import dtype_name
-from .serialization import (
-    serialized_codebooks_size,
-    serialized_group_size,
-    serialized_tensor_size,
-)
-
-CODEC_PROTOCOL_VERSION = 2
-
-
-def is_current_codec_protocol(value):
-    """Accept integer-like CSV values while rejecting missing/legacy rows."""
-
-    try:
-        return float(value) == float(CODEC_PROTOCOL_VERSION)
-    except (TypeError, ValueError, OverflowError):
-        return False
+from .serialization import serialized_tensor_size
 
 
 @dataclass(frozen=True)
@@ -58,7 +38,7 @@ class DecodeStats:
 
 @dataclass(frozen=True)
 class EncodeStats:
-    """Stable size and timing summary returned by ``Compressor.encode``."""
+    """Stable size and timing summary returned by ``NeuralZip.encode``."""
 
     raw_bytes: int
     compressed_bytes: int
@@ -67,24 +47,6 @@ class EncodeStats:
     mapping_seconds: float
     encode_seconds: float
     total_seconds: float
-
-
-@dataclass(frozen=True)
-class ExponentSizeReport:
-    """Exact serialized accounting for the exponent stream of a payload set."""
-
-    raw_bytes: int
-    group_bytes: int
-    codebook_bytes: int
-    referenced_codebooks: int
-
-    @property
-    def compressed_bytes(self):
-        return self.group_bytes + self.codebook_bytes
-
-    @property
-    def ratio_pct(self):
-        return 100.0 * self.compressed_bytes / self.raw_bytes if self.raw_bytes else 0.0
 
 
 def named_tensor_items(tensors):
@@ -184,92 +146,3 @@ def decode_tensor_batch(codec, payloads):
         payload.name: tensor for payload, tensor in zip(payloads, decoded, strict=True)
     }
     return tensors, float(time.perf_counter() - started)
-
-
-def payload_exponent_sizes(payload):
-    """Return raw and serialized bytes for a tensor's exponent stream."""
-
-    if not payload.groups:
-        return 0, 0
-    exponent_group = payload.groups[int(payload.element_size) - 1]
-    return (
-        int(exponent_group.symbol_count),
-        int(serialized_group_size(exponent_group)),
-    )
-
-
-def measure_exponent_streams(payloads, codebooks=(), *, codebook_scope="referenced"):
-    """Measure exponent groups and only the codebooks they reference.
-
-    Tensor-global archive headers are intentionally excluded.  This is the
-    common exponent-only scope used throughout the experiment tables.
-    ``codebook_scope="stream"`` includes every configured codebook for the
-    observed exponent dtype/stream pairs, including a codebook whose chunks
-    all fell back to raw encoding.
-    """
-
-    if codebook_scope not in {"referenced", "stream"}:
-        raise ValueError("codebook_scope must be 'referenced' or 'stream'.")
-
-    codebooks = tuple(codebooks)
-    raw_bytes = 0
-    group_bytes = 0
-    referenced_ids = set()
-    stream_keys = set()
-    for payload in payloads:
-        if not payload.groups:
-            continue
-        stream_id = int(payload.element_size) - 1
-        group = payload.groups[stream_id]
-        raw_bytes += int(group.symbol_count)
-        group_bytes += int(serialized_group_size(group))
-        stream_keys.add((str(payload.dtype), stream_id))
-        referenced_ids.update(
-            int(chunk.codebook_id)
-            for chunk in group.chunks
-            if chunk.codebook_id is not None
-        )
-
-    supplied_ids = {int(codebook.codebook_id) for codebook in codebooks}
-    missing_ids = referenced_ids - supplied_ids
-    if missing_ids:
-        raise ValueError(
-            "Exponent payloads reference missing codebooks: "
-            + ", ".join(str(value) for value in sorted(missing_ids))
-        )
-
-    if codebook_scope == "referenced":
-        included = tuple(
-            codebook
-            for codebook in codebooks
-            if int(codebook.codebook_id) in referenced_ids
-        )
-    else:
-        included = tuple(
-            codebook
-            for codebook in codebooks
-            if (str(codebook.dtype), int(codebook.stream_id)) in stream_keys
-        )
-    return ExponentSizeReport(
-        raw_bytes=int(raw_bytes),
-        group_bytes=int(group_bytes),
-        codebook_bytes=int(serialized_codebooks_size(included)),
-        referenced_codebooks=len(referenced_ids),
-    )
-
-
-def measure_compressor_exponents(result, *, dtypes=None, codebook_scope="stream"):
-    """Adapt a ``Compressor.compress`` result to exponent accounting."""
-
-    accepted = None if dtypes is None else {str(dtype) for dtype in dtypes}
-    payloads = tuple(
-        row.get("payload")
-        for row in result.get("tensor_results", ())
-        if row.get("payload") is not None
-        and (accepted is None or str(row["payload"].dtype) in accepted)
-    )
-    return measure_exponent_streams(
-        payloads,
-        result.get("codebooks") or (),
-        codebook_scope=codebook_scope,
-    )

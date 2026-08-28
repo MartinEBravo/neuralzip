@@ -1,4 +1,4 @@
-"""Weight-free encoded model values used by the public Compressor API."""
+"""Weight-free encoded model values returned by ``NeuralZip.encode``."""
 
 import copy
 import math
@@ -59,7 +59,6 @@ class _StoredTensor:
 class EncodedModel:
     """Compressed parameter payloads plus minimal reconstruction metadata."""
 
-    method: str
     names: tuple[str, ...]
     payloads: tuple = field(repr=False)
     raw_bytes: int
@@ -81,9 +80,6 @@ class EncodedModel:
     module_training: tuple[tuple[str, bool], ...] = ()
 
     def __post_init__(self):
-        method = str(self.method).strip().lower().replace("-", "_")
-        if method != "neuralzip":
-            raise ValueError("method must be 'neuralzip'.")
         names = tuple(str(name) for name in self.names)
         payloads = tuple(self.payloads)
         codebooks = tuple(self.codebooks)
@@ -158,7 +154,6 @@ class EncodedModel:
         }
         if any(value < 0 for value in numeric.values()):
             raise ValueError("Encoded sizes and times cannot be negative.")
-        object.__setattr__(self, "method", method)
         object.__setattr__(self, "names", names)
         object.__setattr__(self, "payloads", payloads)
         object.__setattr__(self, "codebooks", codebooks)
@@ -206,19 +201,22 @@ class EncodedModel:
         layout, and uses ``model`` only as the executable module skeleton.
         """
 
-        if self.method != "neuralzip":
-            raise ValueError(
-                "prepare_inference() is supported only for NeuralZip models."
-            )
         if self.source_kind == "mapping":
             raise ValueError("prepare_inference() requires an encoded torch.nn.Module.")
-        from .gpu.inference import NeuralZipModel
+        from .gpu.inference import (
+            NeuralZipRuntime,
+            export_encoded_model_for_gpu,
+        )
 
-        return NeuralZipModel.from_encoded(
+        exported = export_encoded_model_for_gpu(
             model,
             self,
             adapter=adapter,
             include_embeddings=include_embeddings,
+        )
+        NeuralZipRuntime.attach(
+            model,
+            exported,
             device=device,
             block_devices=block_devices,
             decoder=decoder,
@@ -226,10 +224,11 @@ class EncodedModel:
             cpu_offload_blocks=cpu_offload_blocks,
             pin_memory=pin_memory,
         )
+        return model
 
     def __repr__(self):
         return (
-            f"EncodedModel(method={self.method!r}, tensors={len(self.names)}, "
+            f"EncodedModel(tensors={len(self.names)}, "
             f"compression_ratio={self.compression_ratio:.4f}, "
             f"encode_seconds={self.encode_seconds:.4f})"
         )
@@ -321,7 +320,6 @@ def _source_metadata(source, names):
 def make_encoded_model(
     source,
     *,
-    method,
     names,
     payloads,
     raw_bytes,
@@ -344,7 +342,6 @@ def make_encoded_model(
         len(value.data) for value in source_metadata.get("auxiliary_state", ())
     )
     return EncodedModel(
-        method=method,
         names=names,
         payloads=tuple(payloads),
         codebooks=tuple(codebooks),

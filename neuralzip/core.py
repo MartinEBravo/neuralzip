@@ -16,29 +16,16 @@ from ._setup import (
     validate_setup,
 )
 from ._setup import save_setup as save_setup_state
-from .codec_protocol import (
+from .encoded_model import EncodedModel, decode_model, make_encoded_model
+from .neuralzip_codec import NeuralZipCodec
+from .operations import (
     DecodeStats,
     EncodeStats,
     decode_tensor_batch,
     encode_tensor_batch,
     prepare_neuralzip_codec,
 )
-from .encoded_model import EncodedModel, decode_model, make_encoded_model
-from .neuralzip_codec import NeuralZipCodec
-from .serialization import (
-    serialized_codebooks_size,
-    serialized_size,
-)
-from .tensors import bitwise_equal
-
-
-def _normalize_method(method):
-    method_key = str(method).strip().lower().replace("-", "_").replace(" ", "_")
-    if method_key != "neuralzip":
-        raise ValueError(
-            f"Unsupported compression method {method!r}. Expected 'neuralzip'."
-        )
-    return method_key
+from .serialization import serialized_size
 
 
 def _named_input_tensors(model):
@@ -74,12 +61,8 @@ def _named_tensors(value, prefix=""):
             yield from _named_tensors(child, name)
 
 
-def _raw_tensor_bytes(tensor):
-    return int(tensor.numel() * tensor.element_size())
-
-
 def _synchronized(method):
-    """Serialize operations that read or replace a Compressor's codec state."""
+    """Serialize operations that read or replace a NeuralZip instance's state."""
 
     @wraps(method)
     def locked(self, *args, **kwargs):
@@ -89,15 +72,12 @@ def _synchronized(method):
     return locked
 
 
-class Compressor:
-    """Compress floating parameters from modules or tensor leaves from mappings."""
+class NeuralZip:
+    """Losslessly encode model weights with a reusable statistical setup."""
 
     def __init__(
         self,
-        method="neuralzip",
         *,
-        verify=True,
-        keep_payloads=False,
         min_saving_bytes=None,
         chunk_size=None,
         compression_threshold=None,
@@ -117,9 +97,6 @@ class Compressor:
         direct_batch_bytes=None,
         setup=None,
     ):
-        self.method = _normalize_method(method)
-        self.verify = bool(verify)
-        self.keep_payloads = bool(keep_payloads)
         self.threads = int(threads)
         self._state_lock = RLock()
         self._setup_path = None
@@ -183,6 +160,104 @@ class Compressor:
             self._setup_ready = True
             self._reuse_setup = True
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path,
+        *,
+        setup=None,
+        model_class=None,
+        device=None,
+        device_map=None,
+        max_memory=None,
+        offload_folder=None,
+        execution_device=None,
+        adapter=None,
+        include_embeddings=False,
+        decoder=None,
+        cpu_offload=False,
+        cpu_offload_blocks=None,
+        pin_memory=True,
+        neuralzip_kwargs=None,
+        **model_kwargs,
+    ):
+        """Load, compress, and return a native model ready for inference.
+
+        ``setup=None`` fits a sharing-only setup on the source model. Passing a
+        setup object or trusted setup path reuses it without fitting again.
+        Model-loading options are forwarded to the selected Hugging Face auto
+        class; NeuralZip options belong in ``neuralzip_kwargs``.
+        """
+
+        if model_class is None:
+            from transformers import AutoModelForCausalLM
+
+            model_class = AutoModelForCausalLM
+        loader = getattr(model_class, "from_pretrained", None)
+        if not callable(loader):
+            raise TypeError("model_class must provide from_pretrained().")
+        if "device_map" in model_kwargs:
+            raise ValueError(
+                "Pass deployment device_map to NeuralZip.from_pretrained(), not "
+                "to the Hugging Face loader. Source weights are loaded on CPU."
+            )
+        if "dtype" not in model_kwargs and "torch_dtype" not in model_kwargs:
+            model_kwargs["dtype"] = torch.bfloat16
+
+        options = dict(neuralzip_kwargs or {})
+        if "setup" in options:
+            raise ValueError("Pass setup directly, not through neuralzip_kwargs.")
+        if setup is None:
+            requested_ngrams = tuple(options.get("ngram_values", ()))
+            if requested_ngrams:
+                raise ValueError(
+                    "GPU inference currently requires a sharing-only setup; "
+                    "ngram_values must be empty."
+                )
+            options["ngram_values"] = ()
+            options.setdefault("exponent_layout", "original")
+
+        model = loader(pretrained_model_name_or_path, **model_kwargs).eval()
+        neuralzip = cls(setup=setup, **options)
+        if setup is None:
+            neuralzip.fit(model)
+
+        from .gpu.pretrained import attach_gpu_model
+
+        model = attach_gpu_model(
+            model,
+            neuralzip,
+            device=device,
+            device_map=device_map,
+            max_memory=max_memory,
+            offload_folder=offload_folder,
+            execution_device=execution_device,
+            adapter=adapter,
+            include_embeddings=include_embeddings,
+            decoder=decoder,
+            cpu_offload=cpu_offload,
+            cpu_offload_blocks=cpu_offload_blocks,
+            pin_memory=pin_memory,
+        )
+        model.neuralzip_setup = neuralzip.setup
+        return model
+
+    @staticmethod
+    def save_pretrained(model, directory, **kwargs):
+        """Persist an attached NeuralZip model without restoring BF16 weights."""
+
+        from .gpu.pretrained import save_gpu_pretrained
+
+        return save_gpu_pretrained(model, directory=directory, **kwargs)
+
+    @staticmethod
+    def load_pretrained(pretrained_model_name_or_path, **kwargs):
+        """Load a previously persisted NeuralZip inference checkpoint."""
+
+        from .gpu.pretrained import load_gpu_pretrained
+
+        return load_gpu_pretrained(pretrained_model_name_or_path, **kwargs)
+
     @staticmethod
     def _floating_tensors(model):
         wrapped = getattr(model, "model", None)
@@ -209,7 +284,7 @@ class Compressor:
         if not isinstance(source, (Mapping, torch.nn.Module)):
             source = getattr(model, "model", None)
         if not isinstance(source, torch.nn.Module):
-            return Compressor._floating_tensors(model)
+            return NeuralZip._floating_tensors(model)
 
         tensors = []
         seen = set()
@@ -245,7 +320,7 @@ class Compressor:
 
     @property
     def setup(self):
-        """The compressor's default reusable setup, if one is active."""
+        """The instance's active reusable setup, if one is available."""
 
         return self._active_setup
 
@@ -337,7 +412,7 @@ class Compressor:
 
     @contextmanager
     def _target_mapping_transaction(self, model, *, include_buffers=True):
-        """Map one target and roll back the compressor if its consumer fails."""
+        """Map one target and roll back the instance if its consumer fails."""
 
         state = self._setup_state()
         try:
@@ -454,12 +529,11 @@ class Compressor:
         codebooks = self.codec.export_codebooks()
         return make_encoded_model(
             source,
-            method="neuralzip",
             names=names,
             payloads=batch.payloads,
             codebooks=codebooks,
             raw_bytes=batch.raw_bytes,
-            compressed_bytes=serialized_size("neuralzip", codebooks, batch.payloads),
+            compressed_bytes=serialized_size(codebooks, batch.payloads),
             encode_seconds=batch.encode_seconds,
             mapping_seconds=mapping_seconds,
             used_batch=batch.used_batch,
@@ -470,7 +544,7 @@ class Compressor:
     def encode(self, model, *, setup=None, return_stats=False):
         """Encode a model or tensor mapping through one common public API.
 
-        The compressor accepts the data-only value returned by :meth:`fit` (or
+        NeuralZip accepts the data-only value returned by :meth:`fit` (or
         a trusted setup path). Set ``return_stats=True`` to also receive a
         stable timing and size summary.
         """
@@ -530,187 +604,3 @@ class Compressor:
         tensors, _ = decode_tensor_batch(decoder, tuple(payloads))
         stats = DecodeStats(time.perf_counter() - decode_started)
         return (tensors, stats) if return_stats else tensors
-
-    @_synchronized
-    def compress(self, model):
-        try:
-            if self._reuse_setup:
-                with self._setup_transaction():
-                    return self._codec_compression(model)
-            return self._codec_compression(model)
-        except BaseException:
-            if not self._reuse_setup:
-                self.codec = NeuralZipCodec(**self._neuralzip_codec_options)
-                self._setup_ready = False
-                self._setup_report = None
-                self._last_mapping = None
-                self._last_mapping_signature = None
-            raise
-
-    def decompress(self, compressed_model):
-        decoder = NeuralZipCodec(threads=self.threads)
-        header = compressed_model.get("header") or {}
-        codebooks = compressed_model.get("codebooks") or header.get("codebooks")
-        decoder.load_codebooks(codebooks)
-
-        payloads = []
-        for tensor_result in compressed_model.get("tensor_results", []):
-            payload = tensor_result.get("payload")
-            if payload is None:
-                raise ValueError(
-                    "Cannot decompress this result because tensor payloads were not "
-                    "kept. Run Compressor(..., keep_payloads=True)."
-                )
-            payloads.append(payload)
-        tensors, _ = decode_tensor_batch(decoder, payloads)
-        return tensors
-
-    @staticmethod
-    def save(compressed_model, path):
-        from .archive import dump
-
-        dump(compressed_model, path)
-
-    @staticmethod
-    def load(path):
-        from .archive import load
-
-        return load(path)
-
-    def decompress_file(self, path):
-        return self.decompress(self.load(path))
-
-    def _codec_compression(self, model):
-        tensor_results = []
-        total_raw_bytes = 0
-        total_payload_bytes = 0
-        total_decode_seconds = 0.0
-        total_huffman_chunks = 0
-        total_raw_chunks = 0
-        total_zero_chunks = 0
-        total_local_huff0_chunks = 0
-        total_packed_ngram_chunks = 0
-        total_ngram_hits = 0
-        total_ngram_escapes = 0
-        clustering_seconds = 0.0
-        codebook_setup_seconds = 0.0
-        codebook_metadata_bytes = 0
-        codebooks = ()
-        roundtrip_ok = True if self.verify else None
-
-        named_tensors = self._floating_tensors(model)
-        mapping_seconds = 0.0
-        mapped_tensors = None
-        setup_reused = False
-
-        if self._reuse_setup:
-            setup_reused = True
-            mapping_started = time.perf_counter()
-            self._last_mapping = dict(
-                self.codec.prepare_direct_transfer_target(named_tensors)
-            )
-            self._last_mapping_signature = self._target_signature(named_tensors)
-            mapping_seconds = time.perf_counter() - mapping_started
-            mapped_tensors = int(self._last_mapping["matched_tensors"])
-        else:
-            # Preserve Compressor's one-shot behavior: unless fit() or setup=
-            # made reuse explicit, every call learns its own setup.
-            self.codec.reset_compression()
-            self.codec.reset_decompression()
-            setup_report = prepare_neuralzip_codec(self.codec, named_tensors)
-            validate_setup(self.codec)
-            self._setup_report = setup_report
-            self._setup_ready = True
-            clustering_seconds = setup_report.clustering_seconds
-            codebook_setup_seconds = setup_report.codebook_setup_seconds
-            self._last_mapping = None
-            self._last_mapping_signature = None
-        codebooks = self.codec.export_codebooks()
-        codebook_metadata_bytes = serialized_codebooks_size(codebooks)
-        setup_seconds = clustering_seconds + codebook_setup_seconds
-
-        encoded_batch = encode_tensor_batch(self.codec, named_tensors)
-        compressed_payloads = list(encoded_batch.payloads)
-        total_encode_seconds = encoded_batch.encode_seconds
-
-        decoded_tensors = None
-        if self.verify:
-            decoded_tensors, total_decode_seconds = decode_tensor_batch(
-                self.codec,
-                encoded_batch.payloads,
-            )
-
-        for tensor_index, (name, tensor) in enumerate(named_tensors):
-            raw_bytes = _raw_tensor_bytes(tensor)
-            total_raw_bytes += raw_bytes
-
-            compressed = encoded_batch.payloads[tensor_index]
-            total_payload_bytes += compressed.payload_bytes
-            total_huffman_chunks += compressed.huffman_chunks
-            total_raw_chunks += compressed.raw_chunks
-            total_zero_chunks += compressed.zero_chunks
-            total_local_huff0_chunks += getattr(compressed, "local_huff0_chunks", 0)
-            total_packed_ngram_chunks += getattr(compressed, "packed_ngram_chunks", 0)
-            total_ngram_hits += getattr(compressed, "ngram_hits", 0)
-            total_ngram_escapes += getattr(compressed, "ngram_escapes", 0)
-            if self.verify:
-                decompressed = decoded_tensors[name]
-                original = tensor.detach().cpu().contiguous()
-                tensor_roundtrip_ok = bitwise_equal(original, decompressed)
-                roundtrip_ok = bool(roundtrip_ok and tensor_roundtrip_ok)
-
-            result = {"name": name, "raw_bytes": raw_bytes}
-            if self.keep_payloads:
-                result["payload"] = compressed
-            tensor_results.append(result)
-
-        total_compressed_bytes = serialized_size(
-            "neuralzip",
-            codebooks,
-            compressed_payloads,
-        )
-        total_metadata_bytes = total_compressed_bytes - total_payload_bytes
-        model_compression_ratio = (
-            total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
-        )
-        return {
-            "method": "neuralzip",
-            "method_detail": "js-clustered-shared-huffman-packed-exponents",
-            "num_tensors": len(tensor_results),
-            "raw_bytes": total_raw_bytes,
-            "payload_bytes": total_payload_bytes,
-            "metadata_bytes": total_metadata_bytes,
-            "codebook_metadata_bytes": codebook_metadata_bytes,
-            "compressed_bytes": total_compressed_bytes,
-            "compression_ratio": model_compression_ratio,
-            "huffman_chunks": total_huffman_chunks,
-            "raw_chunks": total_raw_chunks,
-            "zero_chunks": total_zero_chunks,
-            "shared_huff0_chunks": sum(
-                getattr(payload, "shared_huff0_chunks", 0)
-                for payload in compressed_payloads
-            ),
-            "local_huff0_chunks": total_local_huff0_chunks,
-            "packed_ngram_chunks": total_packed_ngram_chunks,
-            "ngram_hits": total_ngram_hits,
-            "ngram_escapes": total_ngram_escapes,
-            "clusters": getattr(self.codec, "cluster_count", 0),
-            "selected_modes": getattr(self.codec, "selected_modes", {}),
-            "clustering_seconds": clustering_seconds,
-            "codebook_setup_seconds": codebook_setup_seconds,
-            "setup_seconds": setup_seconds,
-            "setup_seconds_once": (
-                self._setup_report.setup_seconds
-                if self._setup_report is not None
-                else None
-            ),
-            "setup_reused": setup_reused,
-            "mapping_seconds": mapping_seconds,
-            "mapped_tensors": mapped_tensors,
-            "encode_seconds": total_encode_seconds,
-            "total_seconds": setup_seconds + mapping_seconds + total_encode_seconds,
-            "decode_seconds": total_decode_seconds if self.verify else None,
-            "roundtrip_ok": roundtrip_ok,
-            "codebooks": codebooks,
-            "tensor_results": tensor_results,
-        }

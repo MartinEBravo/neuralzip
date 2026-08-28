@@ -75,9 +75,10 @@ for original, recovered in zip(model.parameters(), restored.parameters()):
 ```
 
 `fit()` returns an opaque, data-only setup. It contains the clustering and
-Huffman codebooks but has no encoding methods of its own; `Compressor` is the
-single object that fits, maps, encodes, decodes, and prepares GPU inference.
-The encoded value does not retain the source model or any source tensor objects.
+Huffman codebooks but has no encoding methods of its own. `Compressor` fits,
+maps, encodes, and decodes; the resulting `EncodedModel` can additionally
+prepare compressed GPU inference. The encoded value does not retain the source
+model or any source tensor objects.
 Its byte ratio covers encoded tensor streams and verbatim auxiliary tensor data;
 it is not a serialized full-model file size. Use the `.nzip` archive or GPU
 checkpoint APIs below when exact on-disk accounting is required.
@@ -177,8 +178,10 @@ assert mapping["matched_tensors"] == mapping["target_tensors"]
 ```
 
 `encode()` returns a model-level encoded value with byte accounting and separate
-mapping and encoding times. For the full legacy experiment report and an
-archive-ready dictionary, call `compress()` on the fitted or loaded compressor:
+mapping and encoding times. Pass `return_stats=True` to receive the same values
+as a compact statistics object alongside the encoded model. For the full legacy
+experiment report and an archive-ready dictionary, call `compress()` on the
+fitted or loaded compressor:
 
 ```python
 compressor = Compressor(
@@ -190,12 +193,15 @@ compressed = compressor.compress(target)
 Compressor.save(compressed, "target.nzip")
 ```
 
-Transfer is deterministic and value-independent: every target stream must match
-a source stream by tensor name, dtype, and stream index; shapes and values may
-differ. NeuralZip does not automatically search for the nearest architecture;
-the application chooses the compatible source setup. Setup files use Python
-pickle and must only be loaded from trusted sources; never pass an untrusted
-setup file through `setup=`.
+Transfer is deterministic and value-independent: target streams normally match
+by tensor name, dtype, and stream index; shapes and values may differ. Explicit
+structural aliases can reuse a source codebook when related architectures expose
+an equivalent tensor under a different representation—for example, an untied
+`lm_head.weight` can reuse the source input-embedding modes. Mapping reports
+exact and fallback assignments separately. NeuralZip does not automatically
+search for the nearest architecture; the application chooses the compatible
+source setup. Setup files use Python pickle and must only be loaded from trusted
+sources; never pass an untrusted setup file through `setup=`.
 
 ## GPU inference
 
@@ -326,8 +332,21 @@ checkpoint.
 
 ### In-memory attachment
 
-The lower-level flow remains useful for benchmarks that need to measure export
-and attachment independently:
+Compression and execution preparation are separate operations. `fit()` learns
+the reusable setup, `encode()` creates the compressed model, and the encoded
+value converts its payloads to the CUDA runtime layout before attachment:
+
+```python
+setup = compressor.fit(model)
+encoded = compressor.encode(model, setup=setup)
+model = encoded.prepare_inference(model.to("cuda:0"))
+
+with torch.inference_mode():
+    output = model(**inputs)
+```
+
+The lower-level flow remains available to benchmarks that need to measure the
+GPU export and attachment independently:
 
 ```python
 from neuralzip import NeuralZipRuntime, export_model_for_gpu
@@ -349,8 +368,6 @@ print(runtime.export.runtime_candidate_bytes)  # Includes workspace and descript
 model = runtime.restore()
 ```
 
-`compressor.prepare_inference(model)` performs the export and attachment
-together for a fitted or loaded compressor.
 An attached model using direct `device=` placement can be copied without
 materializing its compressed weights:
 

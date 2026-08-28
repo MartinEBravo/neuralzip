@@ -24,6 +24,7 @@ gpu = [
     "cupy-cuda12x>=13",
 ]
 experiments = [
+    "dfloat11==0.5.0",
     "huggingface-hub",
     "matplotlib",
     "pandas",

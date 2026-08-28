@@ -195,6 +195,47 @@ class EncodedModel:
     def encoder_path(self):
         return "compress_tensors" if self.used_batch else "compress_tensor"
 
+    def prepare_inference(
+        self,
+        model,
+        *,
+        adapter=None,
+        include_embeddings=False,
+        device=None,
+        block_devices=None,
+        decoder=None,
+        cpu_offload=False,
+        cpu_offload_blocks=None,
+        pin_memory=True,
+    ):
+        """Convert this encoded model to the GPU layout and attach its runtime.
+
+        ``encode()`` owns model compression. This method consumes those encoded
+        payloads, converts their sharing-only BF16 streams to the CUDA decoder
+        layout, and uses ``model`` only as the executable module skeleton.
+        """
+
+        if self.method != "neuralzip":
+            raise ValueError(
+                "prepare_inference() is supported only for NeuralZip models."
+            )
+        if self.source_kind == "mapping":
+            raise ValueError("prepare_inference() requires an encoded torch.nn.Module.")
+        from .gpu_inference import NeuralZipModel
+
+        return NeuralZipModel.from_encoded(
+            model,
+            self,
+            adapter=adapter,
+            include_embeddings=include_embeddings,
+            device=device,
+            block_devices=block_devices,
+            decoder=decoder,
+            cpu_offload=cpu_offload,
+            cpu_offload_blocks=cpu_offload_blocks,
+            pin_memory=pin_memory,
+        )
+
     def __repr__(self):
         return (
             f"EncodedModel(method={self.method!r}, tensors={len(self.names)}, "

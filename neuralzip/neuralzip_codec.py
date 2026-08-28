@@ -36,6 +36,13 @@ from .zipnn_codec import (
     _zipnn_restored_bytes,
 )
 
+_TRANSFER_NAME_FALLBACKS = {
+    # Tied-output models such as Qwen store this tensor only under the input
+    # embedding name. Untied targets may expose the equivalent output head as
+    # a second tensor, whose streams can safely reuse the embedding modes.
+    "lm_head.weight": ("model.embed_tokens.weight",),
+}
+
 
 def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
@@ -797,14 +804,16 @@ class NeuralZipCodec(ZipNNCodec):
             self._record_selected_mode(mode)
 
     def prepare_direct_transfer_target(self, named_tensors):
-        """Map a family target to a reusable source setup by exact tensor name.
+        """Map a family target to a reusable source setup.
 
         This path reads only target metadata (name, dtype, size, and number of
         byte streams). It does not inspect tensor values, compute exponent
         histograms or Jensen--Shannon distances, or evaluate alternative modes.
         The target can encode immediately from its own tensor buffers while
         retaining the source model's modes, vocabularies, and codebooks. No
-        target data are copied or retained by this mapping step.
+        target data are copied or retained by this mapping step. Exact tensor
+        names are preferred; explicit structural aliases cover equivalent
+        tensors represented differently by related architectures.
         """
         if not self._clusters_prepared:
             raise RuntimeError("Source clusters must be prepared before transfer.")
@@ -819,8 +828,13 @@ class NeuralZipCodec(ZipNNCodec):
         missing = []
         target_tensors = 0
         matched_tensors = 0
+        exact_tensors = 0
+        fallback_tensors = 0
         target_symbols = 0
         matched_symbols = 0
+        exact_symbols = 0
+        fallback_symbols = 0
+        fallback_assignments = {}
 
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if (
@@ -831,28 +845,60 @@ class NeuralZipCodec(ZipNNCodec):
                 continue
 
             config = _zipnn_dtype_config(tensor.dtype)
+            stream_ids = tuple(range(int(config["num_buffers"])))
+            source_name = str(name)
+            exact_keys = tuple(
+                self._transfer_plan_key(name, tensor, stream_id)
+                for stream_id in stream_ids
+            )
+            tensor_exact = all(key in self._mode_by_tensor_stream for key in exact_keys)
+            if not tensor_exact:
+                for candidate in _TRANSFER_NAME_FALLBACKS.get(str(name), ()):
+                    candidate_keys = tuple(
+                        (candidate, dtype_name(tensor.dtype), stream_id)
+                        for stream_id in stream_ids
+                    )
+                    if all(
+                        key in self._mode_by_tensor_stream for key in candidate_keys
+                    ):
+                        source_name = candidate
+                        break
+
             plan = []
-            for stream_id in range(int(config["num_buffers"])):
+            for stream_id in stream_ids:
                 plan_key = self._transfer_plan_key(name, tensor, stream_id)
-                source_mode = self._mode_by_tensor_stream.get(plan_key)
+                source_key = (source_name, plan_key[1], plan_key[2])
+                source_mode = self._mode_by_tensor_stream.get(source_key)
                 if source_mode is None:
                     missing.append(plan_key)
                     source_mode = {"kind": "raw", "fixed_cost": 0}
+                elif source_name != str(name):
+                    fallback_assignments[f"{name}:{plan_key[1]}:stream{stream_id}"] = (
+                        f"{source_name}:{plan_key[1]}:stream{stream_id}"
+                    )
                 plan.append((plan_key, source_mode))
 
-            tensor_matched = all(
-                plan_key in self._mode_by_tensor_stream for plan_key, _ in plan
-            )
+            tensor_matched = all(plan_key not in missing for plan_key, _ in plan)
+            tensor_exact = tensor_matched and source_name == str(name)
             symbols = int(tensor.numel())
             target_tensors += 1
             target_symbols += symbols
             if tensor_matched:
                 matched_tensors += 1
                 matched_symbols += symbols
+                if tensor_exact:
+                    exact_tensors += 1
+                    exact_symbols += symbols
+                else:
+                    fallback_tensors += 1
+                    fallback_symbols += symbols
 
-            source_cluster = self.cluster_map.get(str(name))
+            cluster_name = str(name)
+            if tensor_matched and not tensor_exact:
+                cluster_name = source_name
+            source_cluster = self.cluster_map.get(cluster_name)
             if source_cluster is None:
-                source_cluster = self._computed_cluster_map.get(str(name))
+                source_cluster = self._computed_cluster_map.get(cluster_name)
             transfer_clusters[str(name)] = (
                 str(source_cluster)
                 if tensor_matched and source_cluster is not None
@@ -869,19 +915,29 @@ class NeuralZipCodec(ZipNNCodec):
             )
             suffix = "" if len(missing) <= 8 else f" (+{len(missing) - 8} more)"
             raise ValueError(
-                "Direct transfer requires an exact source mode for every target "
+                "Direct transfer requires a compatible source mode for every target "
                 f"stream; missing {preview}{suffix}."
             )
 
         self._transfer_mode_by_tensor_stream = transfer_modes
         self._transfer_cluster_by_name = transfer_clusters
         stats = {
-            "mapping": "exact source tensor name, dtype, and stream",
+            "mapping": (
+                "exact source tensor name, dtype, and stream"
+                if not fallback_assignments
+                else "exact name or explicit structural alias, dtype, and stream"
+            ),
             "target_tensors": target_tensors,
             "matched_tensors": matched_tensors,
+            "exact_tensors": exact_tensors,
+            "fallback_tensors": fallback_tensors,
             "target_exponents": target_symbols,
             "matched_exponents": matched_symbols,
+            "exact_exponents": exact_symbols,
+            "fallback_exponents": fallback_symbols,
             "missing_streams": len(missing),
+            "fallback_streams": len(fallback_assignments),
+            "fallback_assignments": dict(sorted(fallback_assignments.items())),
             "target_histograms_computed": False,
             "target_js_matching": False,
             "target_mode_probing": False,

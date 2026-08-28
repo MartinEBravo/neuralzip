@@ -32,6 +32,7 @@ from .gpu_export import (
     GPUEncodedExponents,
     encode_bfloat16,
 )
+from .neuralzip_codec import NeuralZipCodec
 
 _RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
@@ -394,6 +395,161 @@ def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF
     )
 
 
+def _parameter_occurrences(model: nn.Module) -> dict[int, int]:
+    occurrences = defaultdict(int)
+    try:
+        named_parameters = model.named_parameters(remove_duplicate=False)
+    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
+        named_parameters = (
+            (name, parameter)
+            for name, module in model.named_modules()
+            for parameter_name, parameter in module._parameters.items()
+            if parameter is not None
+            for name in (_join_name(name, parameter_name),)
+        )
+    for _name, parameter in named_parameters:
+        occurrences[id(parameter)] += 1
+    return dict(occurrences)
+
+
+def _assemble_gpu_export(
+    model: nn.Module,
+    block_order: tuple[str, ...],
+    candidates: tuple[_LinearCandidate, ...],
+    codebook_payloads,
+    resolve,
+) -> NeuralZipModelExport:
+    """Build one GPU export from a source-specific candidate resolver."""
+
+    occurrences = _parameter_occurrences(model)
+    payload_by_id = {
+        int(payload.codebook_id): payload for payload in tuple(codebook_payloads)
+    }
+    codebooks = {}
+    grouped_candidates = defaultdict(list)
+    resident_names = []
+    resident_parameter_bytes = {}
+
+    def keep_resident(candidate: _LinearCandidate) -> None:
+        resident_names.append(candidate.tensor_name)
+        resident_parameter_bytes.setdefault(
+            id(candidate.parameter),
+            candidate.parameter.numel() * candidate.parameter.element_size(),
+        )
+
+    for candidate in candidates:
+        parameter = candidate.parameter
+        if (
+            occurrences[id(parameter)] != 1
+            or parameter.dtype != torch.bfloat16
+            or parameter.numel() == 0
+            or not parameter.is_contiguous()
+        ):
+            keep_resident(candidate)
+            continue
+
+        selected = resolve(candidate)
+        if selected is None:
+            keep_resident(candidate)
+            continue
+        codebook_id, raw_loader = selected
+        if isinstance(codebook_id, bool) or not isinstance(codebook_id, int):
+            raise TypeError(
+                f"Shared exponent mode for {candidate.tensor_name} has no "
+                "integer codebook_id."
+            )
+        if not callable(raw_loader):
+            raise TypeError("A GPU candidate raw-data loader must be callable.")
+
+        payload = payload_by_id.get(codebook_id)
+        if payload is None:
+            raise ValueError(f"Missing codebook payload {codebook_id}.")
+        if (
+            payload.codec != "huff0"
+            or payload.mode not in {"shared_huff0", "shared_huff0_4x"}
+            or payload.dtype != "bfloat16"
+            or int(payload.stream_id) != 1
+        ):
+            raise ValueError(
+                f"Codebook {codebook_id} is not a shared BF16 exponent codebook."
+            )
+        if codebook_id not in codebooks:
+            table = huff0.export_code_table(payload.codebook)
+            codebook = GPUCodebook.from_codes(
+                table.code_lengths,
+                table.code_values,
+            )
+            if codebook.max_bits != table.max_bits:
+                raise RuntimeError("Exported Huff0 maximum code length changed.")
+            codebooks[codebook_id] = codebook
+        grouped_candidates[(candidate.block_name, codebook_id)].append(
+            (candidate, raw_loader)
+        )
+
+    block_index = {name: index for index, name in enumerate(block_order)}
+    groups = []
+    workspace_offsets = defaultdict(int)
+    for (block_name, codebook_id), members in sorted(
+        grouped_candidates.items(),
+        key=lambda item: (block_index[item[0][0]], item[0][1]),
+    ):
+        members.sort(key=lambda item: item[0].module_name)
+        workspace_offset = workspace_offsets[block_name]
+        group_offset = 0
+        bindings = []
+        raw_parts = []
+        for candidate, raw_loader in members:
+            parameter = candidate.parameter
+            bindings.append(
+                LinearWeightBinding(
+                    block_name=block_name,
+                    module_name=candidate.module_name,
+                    tensor_name=candidate.tensor_name,
+                    shape=tuple(parameter.shape),
+                    numel=parameter.numel(),
+                    workspace_offset=workspace_offset + group_offset,
+                    group_offset=group_offset,
+                    requires_grad=bool(parameter.requires_grad),
+                    module_kind=candidate.module_kind,
+                )
+            )
+            raw = raw_loader()
+            if not isinstance(raw, bytes):
+                raw = bytes(raw)
+            expected_bytes = parameter.numel() * parameter.element_size()
+            if len(raw) != expected_bytes:
+                raise RuntimeError(
+                    f"Encoded weight {candidate.tensor_name} has {len(raw)} raw "
+                    f"bytes; expected {expected_bytes}."
+                )
+            raw_parts.append(raw)
+            group_offset += parameter.numel()
+
+        payload = payload_by_id[codebook_id]
+        encoded = _native_gpu_payload(b"".join(raw_parts), payload.codebook)
+        if encoded.exponents.symbol_count != group_offset:
+            raise RuntimeError("GPU encoder returned the wrong BF16 element count.")
+        groups.append(
+            BF16WeightGroup(
+                block_name=block_name,
+                codebook_id=codebook_id,
+                codebook=codebooks[codebook_id],
+                encoded=encoded,
+                bindings=tuple(bindings),
+                workspace_offset=workspace_offset,
+            )
+        )
+        workspace_offsets[block_name] += group_offset
+
+    compressed_blocks = {group.block_name for group in groups}
+    return NeuralZipModelExport(
+        groups=tuple(groups),
+        block_order=tuple(name for name in block_order if name in compressed_blocks),
+        resident_weight_names=tuple(sorted(resident_names)),
+        resident_raw_bytes=sum(resident_parameter_bytes.values()),
+    )
+
+
 def export_model_for_gpu(
     model: nn.Module,
     compressor: Compressor,
@@ -440,56 +596,17 @@ def _export_model_for_gpu_current_setup(
         adapter=adapter,
         include_embeddings=include_embeddings,
     )
-    occurrences = defaultdict(int)
-    try:
-        named_parameters = model.named_parameters(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        named_parameters = (
-            (name, parameter)
-            for name, module in model.named_modules()
-            for parameter_name, parameter in module._parameters.items()
-            if parameter is not None
-            for name in (_join_name(name, parameter_name),)
-        )
-    for _name, parameter in named_parameters:
-        occurrences[id(parameter)] += 1
 
-    payload_by_id = {
-        int(payload.codebook_id): payload for payload in compressor.codebooks
-    }
-    codebooks = {}
-    grouped_candidates = defaultdict(list)
-    resident_names = []
-    resident_parameter_bytes = {}
-
-    def keep_resident(candidate: _LinearCandidate) -> None:
-        resident_names.append(candidate.tensor_name)
-        resident_parameter_bytes.setdefault(
-            id(candidate.parameter),
-            candidate.parameter.numel() * candidate.parameter.element_size(),
-        )
-
-    for candidate in candidates:
+    def resolve(candidate: _LinearCandidate):
         parameter = candidate.parameter
-        if (
-            occurrences[id(parameter)] != 1
-            or parameter.dtype != torch.bfloat16
-            or parameter.numel() == 0
-            or not parameter.is_contiguous()
-        ):
-            keep_resident(candidate)
-            continue
-
-        cpu = parameter.detach().to(device="cpu").contiguous()
         mode = compressor.codec._mode_for_tensor_stream(
             candidate.tensor_name,
-            cpu,
+            parameter,
             1,
         )
         kind = str(mode.get("kind"))
         if kind == "raw":
-            keep_resident(candidate)
-            continue
+            return None
         if kind == "packed_huff0":
             raise ValueError(
                 "GPU inference does not yet decode packed exponents; "
@@ -507,81 +624,115 @@ def _export_model_for_gpu_current_setup(
             raise TypeError(
                 f"Shared exponent mode for {candidate.tensor_name} has no codebook_id."
             )
-        payload = payload_by_id.get(codebook_id)
+        return codebook_id, partial(_tensor_raw_bytes, parameter)
+
+    return _assemble_gpu_export(
+        model,
+        block_order,
+        candidates,
+        compressor.codebooks,
+        resolve,
+    )
+
+
+def _encoded_tensor_raw_bytes(payload, decoder: NeuralZipCodec) -> bytes:
+    tensor = decoder.decompress_tensor(payload)
+    if tuple(tensor.shape) != tuple(payload.shape) or tensor.dtype != torch.bfloat16:
+        raise RuntimeError(f"Decoded GPU weight {payload.name!r} changed schema.")
+    return _tensor_raw_bytes(tensor)
+
+
+def export_encoded_model_for_gpu(
+    model: nn.Module,
+    encoded,
+    *,
+    adapter: GPUModelAdapter | None = None,
+    include_embeddings: bool = False,
+) -> NeuralZipModelExport:
+    """Convert a NeuralZip storage result into the CUDA inference layout."""
+
+    from .encoded_model import EncodedModel
+    from .payloads import TensorPayload
+
+    if not isinstance(model, nn.Module):
+        raise TypeError("model must be a torch.nn.Module.")
+    if not isinstance(encoded, EncodedModel):
+        raise TypeError("encoded must be an EncodedModel.")
+    if encoded.method != "neuralzip":
+        raise ValueError("GPU inference requires a NeuralZip EncodedModel.")
+    if encoded.source_kind == "mapping":
+        raise ValueError("GPU inference requires an encoded torch.nn.Module.")
+
+    block_order, candidates = _gpu_candidates(
+        model,
+        adapter=adapter,
+        include_embeddings=include_embeddings,
+    )
+    payload_by_name = dict(zip(encoded.names, encoded.payloads, strict=True))
+    decoder = NeuralZipCodec(ngram_values=())
+    decoder.load_codebooks(encoded.codebooks)
+
+    def resolve(candidate: _LinearCandidate):
+        payload = payload_by_name.get(candidate.tensor_name)
         if payload is None:
-            raise ValueError(f"Missing codebook payload {codebook_id}.")
+            raise ValueError(
+                f"Encoded model has no tensor payload for {candidate.tensor_name!r}."
+            )
+        if not isinstance(payload, TensorPayload):
+            raise TypeError(
+                f"Encoded payload for {candidate.tensor_name!r} is not a TensorPayload."
+            )
+        parameter = candidate.parameter
         if (
-            payload.codec != "huff0"
-            or payload.mode not in {"shared_huff0", "shared_huff0_4x"}
+            payload.strategy != "neuralzip"
             or payload.dtype != "bfloat16"
-            or int(payload.stream_id) != 1
+            or tuple(payload.shape) != tuple(parameter.shape)
+            or int(payload.numel) != parameter.numel()
+            or int(payload.element_size) != 2
+            or int(payload.bit_reorder) != 1
+            or len(payload.groups) != 2
+            or payload.exponent_layout != "original"
         ):
             raise ValueError(
-                f"Codebook {codebook_id} is not a shared BF16 exponent codebook."
+                f"Encoded tensor {candidate.tensor_name!r} is incompatible with "
+                "BF16 GPU inference."
             )
-        if codebook_id not in codebooks:
-            table = huff0.export_code_table(payload.codebook)
-            codebook = GPUCodebook.from_codes(
-                table.code_lengths,
-                table.code_values,
-            )
-            if codebook.max_bits != table.max_bits:
-                raise RuntimeError("Exported Huff0 maximum code length changed.")
-            codebooks[codebook_id] = codebook
-        grouped_candidates[(candidate.block_name, codebook_id)].append(candidate)
 
-    block_index = {name: index for index, name in enumerate(block_order)}
-    groups = []
-    workspace_offsets = defaultdict(int)
-    for (block_name, codebook_id), members in sorted(
-        grouped_candidates.items(),
-        key=lambda item: (block_index[item[0][0]], item[0][1]),
-    ):
-        members.sort(key=lambda candidate: candidate.module_name)
-        workspace_offset = workspace_offsets[block_name]
-        group_offset = 0
-        bindings = []
-        raw_parts = []
-        for candidate in members:
-            parameter = candidate.parameter
-            bindings.append(
-                LinearWeightBinding(
-                    block_name=block_name,
-                    module_name=candidate.module_name,
-                    tensor_name=candidate.tensor_name,
-                    shape=tuple(parameter.shape),
-                    numel=parameter.numel(),
-                    workspace_offset=workspace_offset + group_offset,
-                    group_offset=group_offset,
-                    requires_grad=bool(parameter.requires_grad),
-                    module_kind=candidate.module_kind,
-                )
+        exponent_chunks = tuple(payload.groups[1].chunks)
+        modes = {str(chunk.mode) for chunk in exponent_chunks}
+        if "packed_huff0" in modes:
+            raise ValueError(
+                "GPU inference does not yet decode packed exponents; "
+                f"{candidate.tensor_name} uses packed_huff0. Encode with a "
+                "sharing-only setup."
             )
-            raw_parts.append(_tensor_raw_bytes(parameter))
-            group_offset += parameter.numel()
-
-        payload = payload_by_id[codebook_id]
-        encoded = _native_gpu_payload(b"".join(raw_parts), payload.codebook)
-        if encoded.exponents.symbol_count != group_offset:
-            raise RuntimeError("GPU encoder returned the wrong BF16 element count.")
-        groups.append(
-            BF16WeightGroup(
-                block_name=block_name,
-                codebook_id=codebook_id,
-                codebook=codebooks[codebook_id],
-                encoded=encoded,
-                bindings=tuple(bindings),
-                workspace_offset=workspace_offset,
+        unsupported = modes - {"raw", "shared_huff0"}
+        if unsupported:
+            raise ValueError(
+                f"GPU inference cannot convert exponent modes {sorted(unsupported)!r} "
+                f"for {candidate.tensor_name}."
             )
-        )
-        workspace_offsets[block_name] += group_offset
+        codebook_ids = {
+            int(chunk.codebook_id)
+            for chunk in exponent_chunks
+            if chunk.mode == "shared_huff0"
+        }
+        if not codebook_ids:
+            return None
+        if len(codebook_ids) != 1:
+            raise ValueError(
+                f"Encoded tensor {candidate.tensor_name!r} references multiple "
+                "exponent codebooks."
+            )
+        codebook_id = codebook_ids.pop()
+        return codebook_id, partial(_encoded_tensor_raw_bytes, payload, decoder)
 
-    compressed_blocks = {group.block_name for group in groups}
-    return NeuralZipModelExport(
-        groups=tuple(groups),
-        block_order=tuple(name for name in block_order if name in compressed_blocks),
-        resident_weight_names=tuple(sorted(resident_names)),
-        resident_raw_bytes=sum(resident_parameter_bytes.values()),
+    return _assemble_gpu_export(
+        model,
+        block_order,
+        candidates,
+        encoded.codebooks,
+        resolve,
     )
 
 
@@ -1389,6 +1540,41 @@ class NeuralZipRuntime:
 
 class NeuralZipModel:
     """Facade for attached and persistent compressed inference models."""
+
+    @classmethod
+    def from_encoded(
+        cls,
+        model: nn.Module,
+        encoded,
+        *,
+        adapter: GPUModelAdapter | None = None,
+        include_embeddings: bool = False,
+        device=None,
+        block_devices: Mapping[str, object] | None = None,
+        decoder=None,
+        cpu_offload: bool = False,
+        cpu_offload_blocks: int | None = None,
+        pin_memory: bool = True,
+    ) -> nn.Module:
+        """Attach an executable runtime sourced from an ``EncodedModel``."""
+
+        exported = export_encoded_model_for_gpu(
+            model,
+            encoded,
+            adapter=adapter,
+            include_embeddings=include_embeddings,
+        )
+        NeuralZipRuntime.attach(
+            model,
+            exported,
+            device=device,
+            block_devices=block_devices,
+            decoder=decoder,
+            cpu_offload=cpu_offload,
+            cpu_offload_blocks=cpu_offload_blocks,
+            pin_memory=pin_memory,
+        )
+        return model
 
     @classmethod
     def from_model(

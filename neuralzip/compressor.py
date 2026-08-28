@@ -17,6 +17,8 @@ from ._setup import (
 )
 from ._setup import save_setup as save_setup_state
 from .codec_protocol import (
+    DecodeStats,
+    EncodeStats,
     decode_tensor_batch,
     encode_tensor_batch,
     prepare_neuralzip_codec,
@@ -505,27 +507,32 @@ class Compressor:
         )
 
     @_synchronized
-    def encode(self, model, *, setup=None):
+    def encode(self, model, *, setup=None, return_stats=False):
         """Encode a model or tensor mapping through one common public API.
 
         NeuralZip accepts the data-only value returned by :meth:`fit` (or a
         trusted setup path). Official ZipNN is one-shot and does not accept a
-        setup.
+        setup. Set ``return_stats=True`` to also receive a stable timing and
+        size summary.
         """
 
+        if not isinstance(return_stats, bool):
+            raise TypeError("return_stats must be a bool.")
         named_tensors = self._model_tensors(model)
         source = self._encoded_source(model, named_tensors)
         names = tuple(name for name, _ in named_tensors)
         if self.method == "neuralzip":
             with self._setup_transaction(setup):
-                return self._encode_neuralzip_model(source, names, named_tensors)
+                encoded = self._encode_neuralzip_model(
+                    source, names, named_tensors
+                )
 
         elif setup is not None:
             raise ValueError("setup is supported only for method='neuralzip'.")
 
         elif self.method == "zipnn_local":
             batch = encode_tensor_batch(self.codec, named_tensors)
-            return make_encoded_model(
+            encoded = make_encoded_model(
                 source,
                 method="zipnn-local",
                 names=names,
@@ -545,7 +552,7 @@ class Compressor:
                 for _, tensor in named_tensors
             )
             encode_seconds = time.perf_counter() - encode_started
-            return make_encoded_model(
+            encoded = make_encoded_model(
                 source,
                 method="zipnn",
                 names=names,
@@ -560,9 +567,33 @@ class Compressor:
         else:
             raise AssertionError(f"Unhandled compression method {self.method!r}.")
 
+        if not return_stats:
+            return encoded
+        stats = EncodeStats(
+            raw_bytes=encoded.raw_bytes,
+            compressed_bytes=encoded.compressed_bytes,
+            compression_ratio=encoded.compression_ratio,
+            setup_seconds=encoded.setup_seconds,
+            mapping_seconds=encoded.mapping_seconds,
+            encode_seconds=encoded.encode_seconds,
+            total_seconds=encoded.total_seconds,
+        )
+        return encoded, stats
+
     @_synchronized
-    def decode(self, encoded, *, destination=None, model_factory=None):
-        """Decode an encoded model, reconstructing Hugging Face models."""
+    def decode(
+        self,
+        encoded,
+        *,
+        destination=None,
+        model_factory=None,
+        return_stats=False,
+    ):
+        """Decode a result and optionally return end-to-end timing stats."""
+
+        if not isinstance(return_stats, bool):
+            raise TypeError("return_stats must be a bool.")
+        decode_started = time.perf_counter()
 
         if isinstance(encoded, EncodedModel):
             if encoded.method == "neuralzip":
@@ -580,12 +611,14 @@ class Compressor:
                         chunk_size=256 << 10,
                     )
                 )
-            return decode_model(
+            decoded = decode_model(
                 encoded,
                 decoder,
                 destination=destination,
                 model_factory=model_factory,
             )
+            stats = DecodeStats(time.perf_counter() - decode_started)
+            return (decoded, stats) if return_stats else decoded
 
         self._require_neuralzip("decode")
         if not self.has_setup:
@@ -594,41 +627,8 @@ class Compressor:
         decoder = NeuralZipCodec(threads=self.threads)
         decoder.load_codebooks(self.codebooks)
         tensors, _ = decode_tensor_batch(decoder, tuple(payloads))
-        return tensors
-
-    @_synchronized
-    def prepare_inference(
-        self,
-        model,
-        *,
-        adapter=None,
-        include_embeddings=False,
-        device=None,
-        block_devices=None,
-        cpu_offload=False,
-        cpu_offload_blocks=None,
-        pin_memory=True,
-    ):
-        """Attach post-setup NeuralZip GPU inference to ``model``."""
-
-        self._require_neuralzip("prepare_inference")
-        if not self.has_setup:
-            raise RuntimeError(
-                "Call fit() or provide setup= before prepare_inference()."
-            )
-        from .gpu_inference import NeuralZipModel
-
-        return NeuralZipModel.from_model(
-            model,
-            self,
-            adapter=adapter,
-            include_embeddings=include_embeddings,
-            device=device,
-            block_devices=block_devices,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            pin_memory=pin_memory,
-        )
+        stats = DecodeStats(time.perf_counter() - decode_started)
+        return (tensors, stats) if return_stats else tensors
 
     @_synchronized
     def compress(self, model):

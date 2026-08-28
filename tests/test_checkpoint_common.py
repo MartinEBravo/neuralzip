@@ -10,7 +10,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples.checkpoint_common import (
+from examples.experiments.checkpoint_common import (
     atomic_torch_save,
     atomic_write_csv,
     checkpoint_files,

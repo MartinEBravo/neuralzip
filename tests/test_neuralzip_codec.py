@@ -1,3 +1,4 @@
+import gc
 import tempfile
 import unittest
 from pathlib import Path
@@ -173,7 +174,7 @@ class NeuralZipCodecTests(unittest.TestCase):
 
         self.assertFalse(codec._transfer_active)
 
-    def test_mode_cost_uses_local_fallback_after_shared_rejection(self):
+    def test_mode_cost_uses_raw_fallback_after_shared_rejection(self):
         codec = NeuralZipCodec(
             threads=2,
             compression_threshold=1.0,
@@ -185,13 +186,10 @@ class NeuralZipCodecTests(unittest.TestCase):
             "codebook": huff0.build_codebook(source, prior_count=1),
             "frame_4x": True,
         }
-        local = codec._compress_local_huff0_chunks((source,))[0]
-
         with mock.patch.object(codec, "_encode_chunk", return_value=None):
             estimated = codec._mode_cost(source, mode, element_size=2)
 
-        self.assertEqual(estimated, local.compressed_bytes)
-        self.assertLess(estimated, codec._raw_chunk(source).compressed_bytes)
+        self.assertEqual(estimated, codec._raw_chunk(source).compressed_bytes)
 
     def test_model_batch_uses_one_native_queue_and_matches_sequential_payloads(self):
         tensors = [
@@ -371,6 +369,63 @@ class NeuralZipCodecTests(unittest.TestCase):
                 torch.equal(restored.view(torch.uint8), tensor.view(torch.uint8))
             )
 
+    def test_model_decode_uses_one_native_queue_for_all_float_dtypes(self):
+        tensors = (
+            (
+                "bf16.weight",
+                torch.randint(
+                    0,
+                    256,
+                    (2 * ((128 << 10) + 3),),
+                    generator=torch.Generator().manual_seed(31),
+                    dtype=torch.uint8,
+                ).view(torch.bfloat16),
+            ),
+            (
+                "fp16.weight",
+                torch.linspace(-4, 4, 96 << 10, dtype=torch.float16),
+            ),
+            (
+                "fp32.weight",
+                torch.linspace(-8, 8, 64 << 10, dtype=torch.float32),
+            ),
+        )
+        codec = NeuralZipCodec(
+            threads=4,
+            direct_batch_bytes=8 << 20,
+        )
+        codec._clusters_prepared = True
+        codec._mode_by_tensor_stream = {
+            (name, str(tensor.dtype).replace("torch.", ""), stream_id): {"kind": "raw"}
+            for name, tensor in tensors
+            for stream_id in range(tensor.element_size())
+        }
+        payloads = codec.compress_tensors(tensors)
+
+        with mock.patch.object(
+            huff0,
+            "decompress_zipnn_mixed_many",
+            wraps=huff0.decompress_zipnn_mixed_many,
+        ) as native_decoder:
+            restored = codec.decompress_tensors(payloads)
+
+        native_decoder.assert_called_once()
+        self.assertEqual(native_decoder.call_args.kwargs["threads"], 4)
+        self.assertEqual(len(restored), len(tensors))
+        for (_, expected), observed in zip(tensors, restored, strict=True):
+            self.assertTrue(
+                torch.equal(expected.view(torch.uint8), observed.view(torch.uint8))
+            )
+
+        # torch.frombuffer must retain the owning native bytearray after every
+        # temporary payload/output container is collected.
+        del payloads
+        gc.collect()
+        for (_, expected), observed in zip(tensors, restored, strict=True):
+            self.assertTrue(
+                torch.equal(expected.view(torch.uint8), observed.view(torch.uint8))
+            )
+
     def test_direct_mode_timing_uses_mixed_path_warmup_and_best_of_three(self):
         codec = NeuralZipCodec(
             threads=3,
@@ -431,7 +486,7 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertEqual(actual.payload_bytes, baseline.payload_bytes)
         self.assertTrue(torch.equal(codec.decompress_tensor(actual), tensor))
 
-    def test_packed_ratio_best_is_not_hidden_by_faster_non_saving_ngram(self):
+    def test_packed_selection_uses_only_precomputed_or_raw_base(self):
         codec = NeuralZipCodec(
             ngram_values=(2, 3),
             enable_shared_codebooks=False,
@@ -480,9 +535,9 @@ class NeuralZipCodecTests(unittest.TestCase):
                 is_exponent=True,
             )
 
-        self.assertEqual(evaluation["base"]["kind"], "local_huff0")
-        self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 3)
-        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 1.0)
+        self.assertEqual(evaluation["base"]["kind"], "raw")
+        self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 2)
+        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 19.0)
 
     def test_packed_selection_keeps_fastest_near_best_saving_ngram(self):
         codec = NeuralZipCodec(
@@ -534,7 +589,7 @@ class NeuralZipCodecTests(unittest.TestCase):
             )
 
         self.assertEqual(evaluation["opportunity"]["mode"]["ngram_n"], 2)
-        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 1.0)
+        self.assertEqual(evaluation["opportunity"]["saved_bytes"], 21.0)
 
     def test_floating_tensor_archive_roundtrip(self):
         repeated = torch.tensor(
@@ -607,6 +662,77 @@ class NeuralZipCodecTests(unittest.TestCase):
         self.assertGreater(len(codec.export_codebooks()), 0)
         codec.compress_tensor(named_tensors[0][0], tensor)
 
+    def test_transferable_codecs_require_positive_symbol_priors(self):
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            NeuralZipCodec(prior_count=0)
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            NeuralZipCodec(exponent_prior_count=0)
+
+    def test_shared_exponent_codebook_uses_complete_cluster_histogram(self):
+        named_tensors = [
+            ("first.weight", torch.ones(1024, dtype=torch.bfloat16)),
+            (
+                "second.weight",
+                torch.full((8192,), 0.5, dtype=torch.bfloat16),
+            ),
+        ]
+        key = ("family", "bfloat16", 1)
+        codec = NeuralZipCodec(
+            cluster_map={
+                "first.weight": "family",
+                "second.weight": "family",
+            },
+            max_codebook_sample_bytes=512,
+            ngram_values=(),
+            packed_source_budget_ratio=0.0,
+        )
+        codec.prepare_clusters(named_tensors)
+
+        sample_parts, total_sizes, _, exponent_counts, _ = (
+            codec._collect_codebook_samples(named_tensors)
+        )
+        self.assertEqual(len(b"".join(sample_parts[key])), 512)
+        self.assertEqual(total_sizes[key], 9216)
+        self.assertEqual(int(exponent_counts[key][126]), 8192)
+        self.assertEqual(int(exponent_counts[key][127]), 1024)
+
+        codec.build_codebooks_and_select_modes(named_tensors)
+        selected = codec._mode_by_key[key]
+        self.assertEqual(selected["kind"], "shared_huff0")
+        table = huff0.export_code_table(selected["codebook"], max_bits=12)
+        self.assertLess(table.code_lengths[126], table.code_lengths[127])
+        self.assertTrue(all(length > 0 for length in table.code_lengths))
+
+    def test_shared_scoring_uses_complete_histogram_not_first_sample(self):
+        def from_exponents(values):
+            bits = torch.tensor(
+                [int(value) << 7 for value in values],
+                dtype=torch.uint16,
+            )
+            return bits.view(torch.bfloat16)
+
+        named_tensors = [
+            ("first.weight", from_exponents(list(range(256)) * 2)),
+            ("second.weight", from_exponents([127] * (1 << 17))),
+        ]
+        key = ("family", "bfloat16", 1)
+        codec = NeuralZipCodec(
+            cluster_map={
+                "first.weight": "family",
+                "second.weight": "family",
+            },
+            max_codebook_sample_bytes=512,
+            ngram_values=(),
+            packed_source_budget_ratio=0.0,
+        )
+        codec.prepare_clusters(named_tensors)
+        codec.build_codebooks_and_select_modes(named_tensors)
+
+        selected = codec._mode_by_key[key]
+        self.assertEqual(selected["kind"], "shared_huff0")
+        self.assertIn("full_cost", selected)
+        self.assertLess(selected["full_cost"], 0.2 * (512 + (1 << 17)))
+
     def test_zero_packed_budget_uses_shared_huff0(self):
         repeated = torch.tensor(
             [[1.0, 1.0, 0.5, 1.0], [1.0, 0.5, 1.0, 1.0]],
@@ -624,8 +750,10 @@ class NeuralZipCodecTests(unittest.TestCase):
         ).compress(model)
 
         self.assertTrue(result["roundtrip_ok"])
-        self.assertEqual(result["compressed_bytes"], 66_183)
+        self.assertEqual(result["compressed_bytes"], 74_479)
         self.assertEqual(result["packed_ngram_chunks"], 0)
+        self.assertEqual(result["local_huff0_chunks"], 0)
+        self.assertNotIn("local_huff0", result["selected_modes"])
         self.assertGreater(result["selected_modes"].get("shared_huff0", 0), 0)
 
     def test_empty_ngram_values_disable_packed_candidates(self):

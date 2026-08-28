@@ -8,7 +8,7 @@ two language objectives over the real WikiText-2 raw training split:
 
 WikiText articles are reconstructed from their top-level headings and assigned
 whole to ten simulated clients.  Each round performs one token-equivalent local
-batch per client and FedAvg.  ZipNN source and NeuralZip encode exactly the same
+batch per client and FedAvg.  ZipNN and NeuralZip encode exactly the same
 unique FP32 storages; tied output/embedding parameters are transmitted once and
 restored as aliases.  NeuralZip's clustering, mode selection, vocabularies, and
 Huffman tables are prepared only on round 0 and remain frozen.
@@ -18,7 +18,7 @@ so an interrupted run can resume only when its complete protocol fingerprint
 matches.  Synthetic data and reduced model configurations are available solely
 behind ``--smoke``::
 
-    python examples/run_federated_language.py \
+    python -m examples.experiments.run_federated_language \
         --models gpt2 bert-base --smoke --clients 2 --rounds 1 \
         --gpt2-sequence-length 16 --bert-sequence-length 16 \
         --tokens-per-client-batch 32 --threads 2 --device cpu \
@@ -63,9 +63,9 @@ from neuralzip.system import (
 )
 
 try:
-    from examples.federated_common import (
+    from examples.experiments.federated_common import (
         COMPRESSOR_NEURALZIP,
-        COMPRESSOR_SRC,
+        COMPRESSOR_ZIPNN,
         DTYPE_NAME,
         EncodedState,
         FederatedCodecProtocol,
@@ -75,10 +75,10 @@ try:
         build_summary_rows,
         new_cumulative_metrics,
     )
-except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
+except ModuleNotFoundError:  # Direct execution from the experiments directory.
     from federated_common import (  # type: ignore
         COMPRESSOR_NEURALZIP,
-        COMPRESSOR_SRC,
+        COMPRESSOR_ZIPNN,
         DTYPE_NAME,
         EncodedState,
         FederatedCodecProtocol,
@@ -90,7 +90,7 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
     )
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATASET_NAME = "WikiText-2"
 DATASET_REPOSITORY = "Salesforce/wikitext"
 DATASET_FILENAME = "wikitext-2-raw-v1/train-00000-of-00001.parquet"
@@ -847,7 +847,7 @@ def _validate_checkpoint_rows(
         raise RuntimeError(
             "Resume checkpoint has an incomplete per-round result table."
         )
-    expected = {COMPRESSOR_SRC, COMPRESSOR_NEURALZIP}
+    expected = {COMPRESSOR_ZIPNN, COMPRESSOR_NEURALZIP}
     for round_index in range(1, int(completed_rounds) + 1):
         observed = {
             str(row["compressor"]) for row in rows if int(row["round"]) == round_index
@@ -1107,11 +1107,11 @@ def _run_model(
         "unique_state_tensors": len(layout.canonical_names),
         "unique_floating_tensors": len(layout.floating_canonical_names),
         "tied_aliases_elided": dict(layout.aliases),
-        "compressors": [COMPRESSOR_SRC, COMPRESSOR_NEURALZIP],
+        "compressors": [COMPRESSOR_ZIPNN, COMPRESSOR_NEURALZIP],
         "neuralzip_setup": "built once on random initialization (round 0) and reused",
         "trajectory": (
             "NeuralZip-decoded canonical FP32 storages after bitwise equality "
-            "with ZipNN-src; exact tied aliases restored before training and FedAvg"
+            "with ZipNN; exact tied aliases restored before training and FedAvg"
         ),
         "time_metric": (
             "one server-side downlink encode per round; client encoding, decode, "

@@ -16,7 +16,7 @@ from .serialization import (
     serialized_tensor_size,
 )
 
-CODEC_PROTOCOL_VERSION = 1
+CODEC_PROTOCOL_VERSION = 2
 
 
 def is_current_codec_protocol(value):
@@ -153,8 +153,18 @@ def prepare_neuralzip_codec(codec, named_tensors):
 def decode_tensor_batch(codec, payloads):
     """Decode payloads and return the exact decode-call wall time."""
 
+    payloads = tuple(payloads)
+    batch_decoder = getattr(codec, "decompress_tensors", None)
     started = time.perf_counter()
-    tensors = {payload.name: codec.decompress_tensor(payload) for payload in payloads}
+    if callable(batch_decoder):
+        decoded = tuple(batch_decoder(payloads))
+    else:
+        decoded = tuple(codec.decompress_tensor(payload) for payload in payloads)
+    if len(decoded) != len(payloads):
+        raise RuntimeError("Codec returned a different number of decoded tensors.")
+    tensors = {
+        payload.name: tensor for payload, tensor in zip(payloads, decoded, strict=True)
+    }
     return tensors, float(time.perf_counter() - started)
 
 

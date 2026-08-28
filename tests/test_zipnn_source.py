@@ -46,7 +46,7 @@ class ZipNNSourceParserTests(unittest.TestCase):
             {"model_name": "test", "model": {"weight": source}},
         )()
 
-        result = Compressor("zipnn-src", threads=2, verify=True).compress(model)
+        result = Compressor("zipnn", threads=2, verify=True).compress(model)
 
         self.assertTrue(result["roundtrip_ok"])
         self.assertEqual(result["num_tensors"], 1)

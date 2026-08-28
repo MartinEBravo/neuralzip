@@ -1,4 +1,4 @@
-"""Canonical model catalog shared by experiment runners."""
+"""Canonical model catalog shared by the thesis experiment runners."""
 
 from __future__ import annotations
 

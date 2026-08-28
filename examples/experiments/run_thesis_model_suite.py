@@ -45,11 +45,11 @@ from neuralzip.zipnn_source import parse_zipnn_exponent_stream
 
 try:
     from .model_catalog import SPECS_BY_KEY, ModelSpec
-except ImportError:  # Direct execution from the examples directory.
+except ImportError:  # Direct execution from the experiments directory.
     from model_catalog import SPECS_BY_KEY, ModelSpec
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MODEL_ROOT = ROOT / "results" / "model-cache"
 OUTPUT_DIR = ROOT / "results" / "thesis-model-suite"
 FIGURE_DIR = OUTPUT_DIR / "figures"
@@ -383,7 +383,7 @@ def production_exponent_measure(
     ).compress(view)
     if result["roundtrip_ok"] is not True:
         raise RuntimeError(f"Round-trip failed for {view.spec.label} {method}.")
-    if method == "zipnn-src":
+    if method == "zipnn":
         raw_bytes, compressed_bytes = zipnn_exponent_metrics(
             result,
             method,
@@ -416,7 +416,7 @@ def run_component(view: ModelView, threads: int):
         for index, (name, _) in enumerate(floating_parameters(view))
     }
     variants = (
-        ("ZipNN", "zipnn-src", {"zipnn_method": "HUFFMAN"}),
+        ("ZipNN", "zipnn", {"zipnn_method": "HUFFMAN"}),
         (
             "Sharing Only",
             "neuralzip",
@@ -454,7 +454,7 @@ def run_component(view: ModelView, threads: int):
             "repetitions": 1,
             "warmup_runs": 1,
             "threads": int(threads),
-            "backend": "official ZipNN source and NeuralZip production encoder",
+            "backend": "official ZipNN and NeuralZip production encoders",
             "zipnn_version": importlib.metadata.version("zipnn"),
             "zipnn_defensive_copy_included": True,
             "ratio_scope": "exponent payload plus compressor-native metadata",
@@ -628,7 +628,7 @@ def compact_compression_result(result):
 
 
 def zipnn_exponent_metrics(result, method: str):
-    """Return the complete BF16 exponent representation for local/src ZipNN."""
+    """Return the complete BF16 exponent representation for local/official ZipNN."""
 
     raw_bytes = 0
     compressed_bytes = 0
@@ -640,7 +640,7 @@ def zipnn_exponent_metrics(result, method: str):
             compressed_bytes += int(exponent_group.compressed_bytes)
         return raw_bytes, compressed_bytes
 
-    if method != "zipnn-src":
+    if method != "zipnn":
         raise ValueError(method)
 
     for tensor_result in result["tensor_results"]:
@@ -661,7 +661,7 @@ def zipnn_exponent_metrics(result, method: str):
 def run_zipnn_implementation(view: ModelView, threads: int):
     rows = []
     detailed = {}
-    for method in ("zipnn-local", "zipnn-src"):
+    for method in ("zipnn-local", "zipnn"):
         warmup = Compressor(
             method,
             verify=False,

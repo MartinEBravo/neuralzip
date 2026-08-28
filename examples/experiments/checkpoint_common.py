@@ -308,7 +308,7 @@ def load_or_fit_frozen_codec(
     is recorded only to describe a newly fitted setup.
     """
 
-    from examples.checkpoint_compression import setup_neuralzip
+    from examples.experiments.checkpoint_compression import setup_neuralzip
     from neuralzip import NeuralZipPlan
 
     files = checkpoint_files(checkpoint_dir, epochs)

@@ -24,11 +24,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
-COMPRESSOR_SRC = "ZipNN"
+COMPRESSOR_ZIPNN = "ZipNN"
 COMPRESSOR_NEURALZIP = "NeuralZip"
-COMPRESSORS = (COMPRESSOR_SRC, COMPRESSOR_NEURALZIP)
+COMPRESSORS = (COMPRESSOR_ZIPNN, COMPRESSOR_NEURALZIP)
 MODEL_ORDER = ("gpt2", "bert-base", "resnet18", "resnet34")
 MODEL_LABELS = {
     "gpt2": "GPT-2",

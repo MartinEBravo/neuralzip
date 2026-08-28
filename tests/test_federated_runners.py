@@ -9,10 +9,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from examples import federated_common
-from examples import run_federated_language as language_runner
-from examples import run_federated_vision as vision_runner
-from examples.run_federated_language import (
+from examples.experiments import federated_common
+from examples.experiments import run_federated_language as language_runner
+from examples.experiments import run_federated_vision as vision_runner
+from examples.experiments.run_federated_language import (
     MODEL_BERT,
     MODEL_GPT2,
     ClientCorpus,
@@ -71,7 +71,7 @@ class _TiedToyModel(torch.nn.Module):
 def test_federated_runners_share_one_codec_and_reporting_implementation():
     shared_names = (
         "COMPRESSOR_NEURALZIP",
-        "COMPRESSOR_SRC",
+        "COMPRESSOR_ZIPNN",
         "DTYPE_NAME",
         "FederatedCodecProtocol",
         "_write_csv_atomic",
@@ -87,8 +87,8 @@ def test_federated_runners_share_one_codec_and_reporting_implementation():
 
 
 def test_federated_zipnn_wrapper_preserves_fp32_exponent_accounting():
-    raw_bytes, compressed_bytes = (
-        federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(_zipnn_fp32_frame())
+    raw_bytes, compressed_bytes = federated_common.ZipNNStateCodec._fp32_exponent_sizes(
+        _zipnn_fp32_frame()
     )
 
     assert raw_bytes == 32
@@ -101,7 +101,7 @@ def test_federated_zipnn_wrapper_rejects_non_fp32_reorder_layouts():
         _zipnn_fp32_frame(bit_reorder=0),
     ):
         try:
-            federated_common.ZipNNSrcStateCodec._fp32_exponent_sizes(payload)
+            federated_common.ZipNNStateCodec._fp32_exponent_sizes(payload)
         except ValueError as error:
             assert "FP32 byte/bit-reorder layout" in str(error)
         else:
@@ -293,15 +293,15 @@ def _identity_protocol():
         federated_common.FederatedCodecProtocol
     )
     protocol.codecs = {
-        federated_common.COMPRESSOR_SRC: _IdentityStateCodec(0.2),
+        federated_common.COMPRESSOR_ZIPNN: _IdentityStateCodec(0.2),
         federated_common.COMPRESSOR_NEURALZIP: _IdentityStateCodec(0.1),
     }
     protocol.setup_seconds = {
-        federated_common.COMPRESSOR_SRC: 0.0,
+        federated_common.COMPRESSOR_ZIPNN: 0.0,
         federated_common.COMPRESSOR_NEURALZIP: 3.0,
     }
     protocol.setup_bytes = {
-        federated_common.COMPRESSOR_SRC: 0,
+        federated_common.COMPRESSOR_ZIPNN: 0,
         federated_common.COMPRESSOR_NEURALZIP: 8,
     }
     return protocol
@@ -312,12 +312,12 @@ def test_shared_federated_protocol_alternates_and_discards_verified_payloads():
     tensors = {"weight": torch.arange(8, dtype=torch.float32)}
 
     assert protocol.encoding_order(1) == (
-        federated_common.COMPRESSOR_SRC,
+        federated_common.COMPRESSOR_ZIPNN,
         federated_common.COMPRESSOR_NEURALZIP,
     )
     assert protocol.encoding_order(2) == (
         federated_common.COMPRESSOR_NEURALZIP,
-        federated_common.COMPRESSOR_SRC,
+        federated_common.COMPRESSOR_ZIPNN,
     )
     assert protocol.encoding_order(2, client_index=1) == protocol.encoding_order(1)
 

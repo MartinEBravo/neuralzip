@@ -1,4 +1,12 @@
-__all__ = ["Compressor", "HFModel", "NeuralZipPlan"]
+__all__ = [
+    "Compressor",
+    "NeuralZipModel",
+    "NeuralZipPlan",
+    "NeuralZipRuntime",
+    "export_model_for_gpu",
+    "load_gpu_pretrained",
+    "save_gpu_pretrained",
+]
 
 
 def __getattr__(name):
@@ -6,12 +14,28 @@ def __getattr__(name):
         from .compressor import Compressor
 
         return Compressor
-    if name == "HFModel":
-        from .model import HFModel
+    if name == "NeuralZipModel":
+        from .gpu_inference import NeuralZipModel
 
-        return HFModel
+        return NeuralZipModel
+    if name == "NeuralZipRuntime":
+        from .gpu_inference import NeuralZipRuntime
+
+        return NeuralZipRuntime
     if name == "NeuralZipPlan":
         from .plan import NeuralZipPlan
 
         return NeuralZipPlan
+    if name == "export_model_for_gpu":
+        from .gpu_inference import export_model_for_gpu
+
+        return export_model_for_gpu
+    if name == "load_gpu_pretrained":
+        from .gpu_pretrained import load_gpu_pretrained
+
+        return load_gpu_pretrained
+    if name == "save_gpu_pretrained":
+        from .gpu_pretrained import save_gpu_pretrained
+
+        return save_gpu_pretrained
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

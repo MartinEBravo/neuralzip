@@ -18,7 +18,7 @@ from neuralzip.system import host_facts, module_path, package_versions
 
 try:
     from .model_catalog import ModelSpec
-except ImportError:  # Direct execution from the examples directory.
+except ImportError:  # Direct execution from the experiments directory.
     from model_catalog import ModelSpec
 
 

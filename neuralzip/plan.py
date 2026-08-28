@@ -16,10 +16,11 @@ from .codec_protocol import (
 )
 from .hashing import sha256_bytes
 from .neuralzip_codec import NeuralZipCodec
-from .packed_exponents import tokenize_ngrams
 from .zipnn_codec import _zipnn_dtype_config
 
-PLAN_MARKER = "frozen-huff0-codebook-v1"
+PLAN_MARKER = "frozen-huff0-codebook-v2"
+LEGACY_PLAN_MARKER = "frozen-huff0-codebook-v1"
+POST_SETUP_MODES = frozenset({"raw", "shared_huff0", "packed_huff0"})
 
 
 def codebook_digest(codebooks):
@@ -28,42 +29,32 @@ def codebook_digest(codebooks):
     return sha256_bytes(pickle.dumps(tuple(codebooks), protocol=5))
 
 
-def _source_samples(codec, named_tensors):
-    sample_parts, _, _ = codec._collect_codebook_samples(named_tensors)
-    return {key: b"".join(parts) for key, parts in sample_parts.items()}
-
-
 def _replace_native_codebooks(codec, named_tensors):
-    samples = _source_samples(codec, named_tensors)
+    available_streams = set()
+    for name, tensor in named_tensors:
+        if (
+            not torch.is_tensor(tensor)
+            or not tensor.is_floating_point()
+            or tensor.numel() == 0
+        ):
+            continue
+        config = _zipnn_dtype_config(tensor.dtype)
+        available_streams.update(
+            (str(name), str(tensor.dtype).removeprefix("torch."), stream_id)
+            for stream_id in range(int(config["num_buffers"]))
+        )
+    missing = sorted(set(codec._mode_by_tensor_stream) - available_streams)
+    if missing:
+        raise KeyError(missing[0])
+
     replaced = []
     try:
-        for key, mode in codec._mode_by_key.items():
+        for mode in codec._mode_by_key.values():
             codebook = mode.get("codebook")
             if codebook is None:
                 continue
-            sample = samples[key]
-            if mode["kind"] == "packed_huff0":
-                tokens, _, _, _, _ = tokenize_ngrams(
-                    sample,
-                    int(mode["ngram_n"]),
-                    mode["vocab"],
-                )
-            else:
-                tokens = sample
-            dtype = str(key[1])
-            stream_id = int(key[2])
-            element_size = int(
-                _zipnn_dtype_config(getattr(torch, dtype))["element_size"]
-            )
-            prior_count = (
-                codec.exponent_prior_count
-                if stream_id == element_size - 1
-                else codec.prior_count
-            )
             marker = (
                 PLAN_MARKER,
-                bytes(tokens),
-                int(prior_count),
                 bytes(codebook.codebook),
             )
             replaced.append((mode, codebook))
@@ -77,6 +68,9 @@ def _replace_native_codebooks(codec, named_tensors):
 
 def _restore_native_codebooks(codec):
     seen = set()
+    payload_by_id = {
+        int(payload.codebook_id): payload for payload in codec.export_codebooks()
+    }
     mode_maps = (
         codec._mode_by_key,
         codec._mode_by_tensor_stream,
@@ -88,20 +82,64 @@ def _restore_native_codebooks(codec):
                 continue
             seen.add(id(mode))
             marker = mode.get("codebook")
-            if not (
-                isinstance(marker, tuple)
-                and len(marker) == 4
-                and marker[0] == PLAN_MARKER
-            ):
+            if not isinstance(marker, tuple):
                 continue
-            _, tokens, prior_count, expected_header = marker
-            codebook = huff0.build_codebook(tokens, prior_count=int(prior_count))
+            if len(marker) == 2 and marker[0] == PLAN_MARKER:
+                _, expected_header = marker
+                codebook = huff0.build_codebook_from_header(expected_header)
+            elif len(marker) == 4 and marker[0] == LEGACY_PLAN_MARKER:
+                _, tokens, prior_count, expected_header = marker
+                codebook = huff0.build_codebook(tokens, prior_count=int(prior_count))
+            else:
+                raise ValueError("Unsupported frozen Huff0 codebook marker.")
             if codebook.codebook != expected_header:
                 raise RuntimeError(
                     "Rebuilt Huff0 codebook differs from the frozen plan."
                 )
+            codebook_id = mode.get("codebook_id")
+            payload = payload_by_id.get(codebook_id)
+            if payload is None:
+                raise ValueError(
+                    f"Frozen plan is missing codebook payload {codebook_id!r}."
+                )
+            if bytes(payload.codebook) != bytes(expected_header):
+                raise ValueError(
+                    f"Frozen codebook {codebook_id} disagrees with its payload."
+                )
             mode["codebook"] = codebook
     codec.load_codebooks(codec.export_codebooks())
+
+
+def _validate_post_setup_modes(codec):
+    """Reject plans that can construct a target-local Huffman tree."""
+
+    if (
+        int(getattr(codec, "prior_count", 1)) <= 0
+        or int(getattr(codec, "exponent_prior_count", 1)) <= 0
+    ):
+        raise ValueError(
+            "Transferable NeuralZip plans require positive Huffman priors."
+        )
+
+    mode_maps = (
+        codec._mode_by_key,
+        codec._mode_by_tensor_stream,
+        codec._transfer_mode_by_tensor_stream,
+    )
+    invalid = sorted(
+        {
+            str(mode.get("kind"))
+            for mode_map in mode_maps
+            for mode in mode_map.values()
+            if str(mode.get("kind")) not in POST_SETUP_MODES
+        }
+    )
+    if invalid:
+        joined = ", ".join(invalid)
+        raise ValueError(
+            "NeuralZip post-setup plans may only use raw, shared, or packed "
+            f"modes; found {joined}. Refit the setup."
+        )
 
 
 @dataclass
@@ -116,6 +154,7 @@ class NeuralZipPlan:
         named_tensors = named_tensor_items(named_tensors)
         codec = NeuralZipCodec(**codec_options) if codec is None else codec
         setup_report = prepare_neuralzip_codec(codec, named_tensors)
+        _validate_post_setup_modes(codec)
         return cls(codec=codec, setup_report=setup_report)
 
     @property
@@ -129,21 +168,57 @@ class NeuralZipPlan:
     def map_target(self, named_tensors):
         """Apply the frozen setup by exact tensor name, dtype, and stream."""
 
+        _validate_post_setup_modes(self.codec)
         named_tensors = named_tensor_items(named_tensors)
         return self.codec.prepare_direct_transfer_target(
             named_tensors,
         )
 
     def encode(self, named_tensors):
+        _validate_post_setup_modes(self.codec)
         return encode_tensor_batch(self.codec, named_tensor_items(named_tensors))
 
     def decode(self, payloads):
         tensors, _ = decode_tensor_batch(self.codec, payloads)
         return tensors
 
+    def prepare_inference(
+        self,
+        model,
+        *,
+        adapter=None,
+        include_embeddings=False,
+        device=None,
+        block_devices=None,
+        cpu_offload=False,
+        cpu_offload_blocks=None,
+        pin_memory=True,
+    ):
+        """Attach post-setup BF16 GPU inference and return ``model``.
+
+        The setup must use sharing-only exponent modes for weights selected by
+        the runtime. Packed exponent groups currently require a storage decode
+        and are rejected by the GPU path.
+        """
+
+        from .gpu_inference import NeuralZipModel
+
+        return NeuralZipModel.from_model(
+            model,
+            self,
+            adapter=adapter,
+            include_embeddings=include_embeddings,
+            device=device,
+            block_devices=block_devices,
+            cpu_offload=cpu_offload,
+            cpu_offload_blocks=cpu_offload_blocks,
+            pin_memory=pin_memory,
+        )
+
     def save(self, path, source_tensors):
         """Persist the plan without serializing process-local native handles."""
 
+        _validate_post_setup_modes(self.codec)
         path = Path(path)
         source_tensors = named_tensor_items(source_tensors)
         replaced = []
@@ -176,5 +251,6 @@ class NeuralZipPlan:
                 "original tensor layout."
             )
         codec.__dict__.pop("exponent_layout", None)
+        _validate_post_setup_modes(codec)
         _restore_native_codebooks(codec)
         return cls(codec=codec)

@@ -16,14 +16,51 @@
 
 extern "C" {
 #include "huf.h"
+#include "zstd_internal.h"
 }
 
 namespace {
 
+class OwnedPyRef {
+public:
+    explicit OwnedPyRef(PyObject* value = nullptr) : value_(value) {}
+    ~OwnedPyRef() {
+        Py_XDECREF(value_);
+    }
+
+    OwnedPyRef(const OwnedPyRef&) = delete;
+    OwnedPyRef& operator=(const OwnedPyRef&) = delete;
+
+    PyObject* get() const {
+        return value_;
+    }
+
+private:
+    PyObject* value_;
+};
+
 constexpr std::size_t kMaxBlockSize = HUF_BLOCKSIZE_MAX;
 constexpr unsigned kMaxSymbolValue = HUF_SYMBOLVALUE_MAX;
 constexpr unsigned kTableLog = HUF_TABLELOG_DEFAULT;
-constexpr int kFlags = HUF_flags_disableAsm;
+// HUF_buildTree() uses 1 << 30 and 1 << 31 as queue sentinels. Keep the
+// complete histogram strictly below the first sentinel before passing its
+// unsigned counters to Huff0.
+constexpr std::uint64_t kMaxHistogramTotal =
+    (static_cast<std::uint64_t>(1) << 30U) - 1U;
+
+constexpr bool kDynamicBmi2Compiled = DYNAMIC_BMI2 != 0;
+
+bool detect_runtime_bmi2() noexcept {
+#if DYNAMIC_BMI2
+    return ZSTD_cpuSupportsBmi2() != 0;
+#else
+    return false;
+#endif
+}
+
+const bool kRuntimeBmi2 = detect_runtime_bmi2();
+const int kFlags = HUF_flags_disableAsm |
+                   (kRuntimeBmi2 ? HUF_flags_bmi2 : 0);
 
 struct Huff0Codebook {
     std::vector<HUF_CElt> ctable;
@@ -31,7 +68,8 @@ struct Huff0Codebook {
 };
 
 struct Huff0Decodebook {
-    std::vector<HUF_DTable> dtable;
+    std::vector<HUF_DTable> dtable_x1;
+    std::vector<HUF_DTable> dtable_x2;
 };
 
 struct LocalBlockResult {
@@ -93,6 +131,49 @@ struct MixedBlockResult {
     Py_ssize_t misses = 0;
     int ngram_n = 1;
     std::string error;
+};
+
+enum class ZipNNDecodeMode {
+    Raw,
+    Zero,
+    LocalHuff0,
+    SharedHuff0,
+};
+
+struct ZipNNDecodeChunk {
+    ZipNNDecodeMode mode = ZipNNDecodeMode::Raw;
+    Py_buffer payload_view{};
+    PyObject* decodebook_capsule = nullptr;
+    Huff0Decodebook* decodebook = nullptr;
+    std::size_t tensor_index = 0;
+    int stream = 0;
+    std::size_t output_offset = 0;
+    std::size_t symbol_count = 0;
+    bool frame_4x = false;
+    std::string error;
+};
+
+struct ZipNNDecodeTensor {
+    int element_size = 0;
+    bool bit_reorder = false;
+    std::size_t numel = 0;
+    std::vector<std::vector<std::uint8_t>> lanes;
+    PyObject* output = nullptr;
+    std::uint8_t* output_data = nullptr;
+};
+
+struct ZipNNAlignedDecodeJob {
+    std::size_t tensor_index = 0;
+    std::size_t output_offset = 0;
+    std::size_t symbol_count = 0;
+    std::array<std::size_t, 4> chunk_indices{};
+    std::string error;
+};
+
+struct ZipNNCombineJob {
+    std::size_t tensor_index = 0;
+    std::size_t start = 0;
+    std::size_t length = 0;
 };
 
 template <typename Worker>
@@ -261,6 +342,133 @@ void extract_zipnn_stream_block(
     }
 }
 
+void restore_zipnn_tensor_range(
+    const ZipNNDecodeTensor& request,
+    std::size_t start,
+    std::size_t length) {
+    const int element_size = request.element_size;
+    const std::size_t end = start + length;
+    std::uint8_t* output = request.output_data;
+    if (element_size == 2) {
+        const auto& first = request.lanes[0];
+        const auto& second = request.lanes[1];
+        if (!request.bit_reorder) {
+            for (std::size_t index = start; index < end; ++index) {
+                std::size_t target = index * 2U;
+                output[target] = first[index];
+                output[target + 1U] = second[index];
+            }
+            return;
+        }
+        for (std::size_t index = start; index < end; ++index) {
+            const std::uint8_t penultimate = first[index];
+            const std::uint8_t last = second[index];
+            std::size_t target = index * 2U;
+            output[target] = static_cast<std::uint8_t>(
+                (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
+            output[target + 1U] = static_cast<std::uint8_t>(
+                (last >> 1U) | (penultimate & 0x80U));
+        }
+        return;
+    }
+
+    const auto& first = request.lanes[0];
+    const auto& second = request.lanes[1];
+    const auto& penultimate_lane = request.lanes[2];
+    const auto& last_lane = request.lanes[3];
+    if (!request.bit_reorder) {
+        for (std::size_t index = start; index < end; ++index) {
+            std::size_t target = index * 4U;
+            output[target] = first[index];
+            output[target + 1U] = second[index];
+            output[target + 2U] = penultimate_lane[index];
+            output[target + 3U] = last_lane[index];
+        }
+        return;
+    }
+    for (std::size_t index = start; index < end; ++index) {
+        const std::uint8_t penultimate = penultimate_lane[index];
+        const std::uint8_t last = last_lane[index];
+        std::size_t target = index * 4U;
+        output[target] = first[index];
+        output[target + 1U] = second[index];
+        output[target + 2U] = static_cast<std::uint8_t>(
+            (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
+        output[target + 3U] = static_cast<std::uint8_t>(
+            (last >> 1U) | (penultimate & 0x80U));
+    }
+}
+
+inline std::uint8_t zipnn_decoded_lane_byte(
+    const std::uint8_t* lane,
+    std::size_t index) {
+    return lane == nullptr ? 0U : lane[index];
+}
+
+void restore_zipnn_aligned_chunk(
+    const ZipNNDecodeTensor& request,
+    const std::array<const std::uint8_t*, 4>& lanes,
+    std::size_t output_offset,
+    std::size_t length) {
+    if (length == 0) {
+        return;
+    }
+    const int element_size = request.element_size;
+    std::uint8_t* output = request.output_data
+        + output_offset * static_cast<std::size_t>(element_size);
+    if (element_size == 2) {
+        const std::uint8_t* first = lanes[0];
+        const std::uint8_t* second = lanes[1];
+        if (!request.bit_reorder) {
+            for (std::size_t index = 0; index < length; ++index) {
+                const std::size_t target = index * 2U;
+                output[target] = zipnn_decoded_lane_byte(first, index);
+                output[target + 1U] = zipnn_decoded_lane_byte(second, index);
+            }
+            return;
+        }
+        for (std::size_t index = 0; index < length; ++index) {
+            const std::uint8_t penultimate = zipnn_decoded_lane_byte(
+                first, index);
+            const std::uint8_t last = zipnn_decoded_lane_byte(second, index);
+            const std::size_t target = index * 2U;
+            output[target] = static_cast<std::uint8_t>(
+                (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
+            output[target + 1U] = static_cast<std::uint8_t>(
+                (last >> 1U) | (penultimate & 0x80U));
+        }
+        return;
+    }
+
+    const std::uint8_t* first = lanes[0];
+    const std::uint8_t* second = lanes[1];
+    const std::uint8_t* penultimate_lane = lanes[2];
+    const std::uint8_t* last_lane = lanes[3];
+    if (!request.bit_reorder) {
+        for (std::size_t index = 0; index < length; ++index) {
+            const std::size_t target = index * 4U;
+            output[target] = zipnn_decoded_lane_byte(first, index);
+            output[target + 1U] = zipnn_decoded_lane_byte(second, index);
+            output[target + 2U] = zipnn_decoded_lane_byte(
+                penultimate_lane, index);
+            output[target + 3U] = zipnn_decoded_lane_byte(last_lane, index);
+        }
+        return;
+    }
+    for (std::size_t index = 0; index < length; ++index) {
+        const std::uint8_t penultimate = zipnn_decoded_lane_byte(
+            penultimate_lane, index);
+        const std::uint8_t last = zipnn_decoded_lane_byte(last_lane, index);
+        const std::size_t target = index * 4U;
+        output[target] = zipnn_decoded_lane_byte(first, index);
+        output[target + 1U] = zipnn_decoded_lane_byte(second, index);
+        output[target + 2U] = static_cast<std::uint8_t>(
+            (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
+        output[target + 3U] = static_cast<std::uint8_t>(
+            (last >> 1U) | (penultimate & 0x80U));
+    }
+}
+
 void release_vector(std::vector<std::uint8_t>& data) {
     std::vector<std::uint8_t>().swap(data);
 }
@@ -323,6 +531,32 @@ std::vector<std::uint8_t> decompress_local_block(
     return output;
 }
 
+void decompress_local_block_into(
+    const std::uint8_t* payload,
+    Py_ssize_t payload_len,
+    std::uint8_t* output,
+    std::size_t symbol_count) {
+    if (symbol_count == 0) {
+        return;
+    }
+    std::vector<HUF_DTable> dtable(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
+    dtable[0] = static_cast<HUF_DTable>(HUF_TABLELOG_MAX * 0x01000001U);
+    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
+    size_t decoded = HUF_decompress4X_hufOnly_wksp(
+        dtable.data(),
+        output,
+        symbol_count,
+        payload,
+        static_cast<std::size_t>(payload_len),
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(decoded);
+    if (decoded != symbol_count) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
+}
+
 std::array<unsigned, 256> count_symbols(const std::uint8_t* data, Py_ssize_t data_len, unsigned prior_count) {
     std::array<unsigned, 256> counts{};
     if (prior_count > 0) {
@@ -357,15 +591,9 @@ unsigned max_observed_symbol(const std::array<unsigned, 256>& counts) {
     return 0;
 }
 
-std::unique_ptr<Huff0Codebook> make_codebook(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    unsigned prior_count) {
-    if (data_len <= 0) {
-        throw std::runtime_error("Cannot build a Huff0 codebook from empty data.");
-    }
-
-    auto counts = count_symbols(data, data_len, prior_count);
+std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
+    const std::array<unsigned, 256>& counts,
+    unsigned max_bits) {
     if (!has_enough_symbols(counts)) {
         throw std::runtime_error("Huff0 requires at least two symbols.");
     }
@@ -379,7 +607,7 @@ std::unique_ptr<Huff0Codebook> make_codebook(
         codebook->ctable.data(),
         counts.data(),
         max_symbol_value,
-        kTableLog,
+        max_bits,
         build_workspace.data(),
         build_workspace.size() * sizeof(unsigned));
     check_huf(table_log);
@@ -398,6 +626,358 @@ std::unique_ptr<Huff0Codebook> make_codebook(
     codebook->serialized.resize(header_size);
 
     return codebook;
+}
+
+std::unique_ptr<Huff0Codebook> make_codebook(
+    const std::uint8_t* data,
+    Py_ssize_t data_len,
+    unsigned prior_count,
+    unsigned max_bits) {
+    if (data_len <= 0) {
+        throw std::runtime_error("Cannot build a Huff0 codebook from empty data.");
+    }
+
+    return make_codebook_from_counts(
+        count_symbols(data, data_len, prior_count), max_bits);
+}
+
+std::unique_ptr<Huff0Codebook> make_codebook_from_header(
+    const std::uint8_t* header,
+    Py_ssize_t header_len) {
+    if (header_len <= 0) {
+        throw std::runtime_error("Huff0 codebook header is empty.");
+    }
+
+    auto codebook = std::make_unique<Huff0Codebook>();
+    codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
+    unsigned max_symbol_value = kMaxSymbolValue;
+    unsigned has_zero_weights = 0;
+    const size_t read_size = HUF_readCTable(
+        codebook->ctable.data(),
+        &max_symbol_value,
+        header,
+        static_cast<std::size_t>(header_len),
+        &has_zero_weights);
+    check_huf(read_size);
+    if (read_size != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 did not consume the full codebook header.");
+    }
+    codebook->serialized.assign(header, header + header_len);
+    return codebook;
+}
+
+struct ExportedCodeTable {
+    std::array<std::uint8_t, HUF_SYMBOLVALUE_MAX + 1> code_lengths{};
+    std::array<std::uint16_t, HUF_SYMBOLVALUE_MAX + 1> code_values{};
+    unsigned max_bits = 0;
+};
+
+ExportedCodeTable export_code_table_from_header(
+    const std::uint8_t* header,
+    Py_ssize_t header_len,
+    unsigned max_bits) {
+    if (header_len <= 0) {
+        throw std::runtime_error("Huff0 codebook header is empty.");
+    }
+    if (max_bits == 0 || max_bits > HUF_TABLELOG_ABSOLUTEMAX) {
+        throw std::runtime_error(
+            "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
+    }
+
+    std::vector<HUF_CElt> ctable(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
+    unsigned max_symbol_value = kMaxSymbolValue;
+    unsigned has_zero_weights = 0;
+    const size_t read_size = HUF_readCTable(
+        ctable.data(),
+        &max_symbol_value,
+        header,
+        static_cast<std::size_t>(header_len),
+        &has_zero_weights);
+    check_huf(read_size);
+    if (read_size != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 did not consume the full codebook header.");
+    }
+
+    const HUF_CTableHeader table_header = HUF_readCTableHeader(ctable.data());
+    if (table_header.tableLog > max_bits) {
+        throw std::runtime_error(
+            "Huff0 codebook exceeds the requested max_bits limit.");
+    }
+
+    // HUF_CElt is a size_t whose low byte stores nbBits. HUF_setValue() in
+    // upstream Huff0 stores the logical (right-aligned) code in the top
+    // nbBits of the word. Extracting those high bits reproduces the exact
+    // canonical code assigned by HUF_readCTable(), independent of endianness.
+    constexpr unsigned ctable_word_bits = sizeof(HUF_CElt) * 8U;
+    ExportedCodeTable output;
+    for (unsigned symbol = 0; symbol <= kMaxSymbolValue; ++symbol) {
+        const unsigned length = HUF_getNbBitsFromCTable(
+            ctable.data(), symbol);
+        if (length > max_bits || length > HUF_TABLELOG_ABSOLUTEMAX) {
+            throw std::runtime_error(
+                "Huff0 symbol code exceeds the supported bit limit.");
+        }
+        output.code_lengths[symbol] = static_cast<std::uint8_t>(length);
+        output.max_bits = std::max(output.max_bits, length);
+        if (length == 0) {
+            continue;
+        }
+
+        const HUF_CElt entry = ctable[static_cast<std::size_t>(symbol) + 1U];
+        const HUF_CElt value = entry >> (ctable_word_bits - length);
+        if (value >= (static_cast<HUF_CElt>(1U) << length)) {
+            throw std::runtime_error("Invalid Huff0 code value.");
+        }
+        output.code_values[symbol] = static_cast<std::uint16_t>(value);
+    }
+    return output;
+}
+
+constexpr unsigned kGPUCodeMaxBits = 12;
+constexpr unsigned kGPUGapBits = 4;
+constexpr unsigned kGPUGapLimit = 1U << kGPUGapBits;
+constexpr std::size_t kGPUDecoderIndexLimit =
+    static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+static_assert(
+    kGPUCodeMaxBits <= kGPUGapLimit,
+    "GPU restart gaps must represent every supported code length.");
+
+struct GPUBFloat16Encoding {
+    std::vector<std::uint8_t> encoded_exponents;
+    std::vector<std::uint8_t> sign_mantissa;
+    std::vector<std::uint8_t> packed_gaps;
+    std::vector<std::uint32_t> output_positions;
+    std::uint64_t bit_length = 0;
+    unsigned max_bits = 0;
+};
+
+std::size_t checked_size_product(
+    std::size_t left,
+    std::size_t right,
+    const char* message) {
+    if (
+        left != 0
+        && right > std::numeric_limits<std::size_t>::max() / left) {
+        throw std::overflow_error(message);
+    }
+    return left * right;
+}
+
+std::size_t checked_ceil_div(
+    std::size_t numerator,
+    std::size_t denominator) {
+    if (denominator == 0) {
+        throw std::runtime_error("GPU layout divisor must be positive.");
+    }
+    return numerator / denominator + (numerator % denominator != 0 ? 1U : 0U);
+}
+
+std::vector<std::uint8_t> pack_gpu_gaps(
+    const std::vector<std::uint8_t>& gaps) {
+    const std::size_t packed_bits = checked_size_product(
+        gaps.size(), kGPUGapBits, "Packed GPU gap size overflowed.");
+    const std::size_t packed_bytes = checked_ceil_div(packed_bits, 8U);
+    std::vector<std::uint8_t> output;
+    output.reserve(packed_bytes);
+
+    std::uint32_t accumulator = 0;
+    unsigned pending = 0;
+    for (const std::uint8_t gap : gaps) {
+        if (gap >= kGPUGapLimit) {
+            throw std::runtime_error("GPU restart gap does not fit in 4 bits.");
+        }
+        accumulator = (accumulator << kGPUGapBits) | gap;
+        pending += kGPUGapBits;
+        while (pending >= 8U) {
+            pending -= 8U;
+            output.push_back(static_cast<std::uint8_t>(
+                (accumulator >> pending) & 0xFFU));
+            accumulator = pending == 0
+                ? 0U
+                : accumulator & ((1U << pending) - 1U);
+        }
+    }
+    if (pending != 0) {
+        output.push_back(static_cast<std::uint8_t>(
+            (accumulator << (8U - pending)) & 0xFFU));
+    }
+    if (output.size() != packed_bytes) {
+        throw std::runtime_error("Packed GPU gap size mismatch.");
+    }
+    return output;
+}
+
+GPUBFloat16Encoding encode_gpu_bfloat16_layout(
+    const std::uint8_t* raw,
+    std::size_t raw_size,
+    const std::uint8_t* codebook_header,
+    Py_ssize_t codebook_header_size,
+    std::uint32_t bytes_per_thread,
+    std::uint32_t threads_per_block) {
+    if ((raw_size & 1U) != 0) {
+        throw std::runtime_error(
+            "A BF16 byte sequence must have an even length.");
+    }
+    const std::size_t numel = raw_size / 2U;
+    if (numel > kGPUDecoderIndexLimit) {
+        throw std::overflow_error(
+            "BF16 element count exceeds the int32 CUDA decoder ABI limit.");
+    }
+
+    const ExportedCodeTable table = export_code_table_from_header(
+        codebook_header, codebook_header_size, kGPUCodeMaxBits);
+    if (table.max_bits == 0 || table.max_bits > kGPUCodeMaxBits) {
+        throw std::runtime_error("GPU Huffman code length must be in [1, 12].");
+    }
+
+    GPUBFloat16Encoding result;
+    result.max_bits = table.max_bits;
+    result.sign_mantissa.resize(numel);
+
+    for (std::size_t index = 0; index < numel; ++index) {
+        const std::uint8_t low = raw[index * 2U];
+        const std::uint8_t high = raw[index * 2U + 1U];
+        const std::uint8_t exponent = static_cast<std::uint8_t>(
+            ((high & 0x7FU) << 1U) | (low >> 7U));
+        const unsigned length = table.code_lengths[exponent];
+        if (length == 0) {
+            throw std::runtime_error(
+                "Exponent symbol " + std::to_string(exponent)
+                + " at index " + std::to_string(index)
+                + " has no codebook entry.");
+        }
+        if (
+            result.bit_length
+            > std::numeric_limits<std::uint64_t>::max() - length) {
+            throw std::overflow_error("GPU exponent bit length overflowed.");
+        }
+        result.bit_length += length;
+        result.sign_mantissa[index] = static_cast<std::uint8_t>(
+            (high & 0x80U) | (low & 0x7FU));
+    }
+
+    const std::uint64_t encoded_bytes_u64 =
+        result.bit_length / 8U + (result.bit_length % 8U != 0 ? 1U : 0U);
+    if (encoded_bytes_u64 > kGPUDecoderIndexLimit) {
+        throw std::overflow_error(
+            "Encoded exponent stream exceeds the int32 CUDA decoder ABI limit.");
+    }
+    const std::size_t encoded_bytes = static_cast<std::size_t>(
+        encoded_bytes_u64);
+    result.encoded_exponents.resize(encoded_bytes);
+
+    const std::size_t block_bytes = checked_size_product(
+        static_cast<std::size_t>(bytes_per_thread),
+        static_cast<std::size_t>(threads_per_block),
+        "GPU block byte size overflowed.");
+    if (block_bytes > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error(
+            "GPU block byte size exceeds the uint32 layout limit.");
+    }
+    const std::size_t block_count = checked_ceil_div(
+        encoded_bytes, block_bytes);
+    if (block_count > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("GPU block count exceeds uint32.");
+    }
+    const std::size_t gap_count = checked_size_product(
+        block_count,
+        static_cast<std::size_t>(threads_per_block),
+        "GPU gap count overflowed.");
+    const std::size_t populated_segments = checked_ceil_div(
+        encoded_bytes, static_cast<std::size_t>(bytes_per_thread));
+    std::vector<std::uint8_t> gaps(gap_count, 0);
+    result.output_positions.assign(
+        block_count + 1U, static_cast<std::uint32_t>(numel));
+
+    const std::uint64_t segment_bits =
+        static_cast<std::uint64_t>(bytes_per_thread) * 8U;
+    const std::uint64_t block_bits =
+        static_cast<std::uint64_t>(block_bytes) * 8U;
+    std::size_t next_segment = 0;
+    std::size_t next_block = 0;
+    std::size_t encoded_offset = 0;
+    std::uint64_t symbol_start = 0;
+    std::uint32_t accumulator = 0;
+    unsigned pending = 0;
+
+    for (std::size_t index = 0; index < numel; ++index) {
+        while (
+            next_segment < populated_segments
+            && symbol_start
+                >= static_cast<std::uint64_t>(next_segment) * segment_bits) {
+            const std::uint64_t boundary =
+                static_cast<std::uint64_t>(next_segment) * segment_bits;
+            const std::uint64_t gap = symbol_start - boundary;
+            if (gap >= kGPUGapLimit) {
+                throw std::runtime_error(
+                    "A code crosses too much of a CUDA segment to fit in "
+                    "4-bit gaps.");
+            }
+            gaps[next_segment] = static_cast<std::uint8_t>(gap);
+            ++next_segment;
+        }
+        while (
+            next_block < block_count
+            && symbol_start
+                >= static_cast<std::uint64_t>(next_block) * block_bits) {
+            result.output_positions[next_block] =
+                static_cast<std::uint32_t>(index);
+            ++next_block;
+        }
+
+        const std::uint8_t low = raw[index * 2U];
+        const std::uint8_t high = raw[index * 2U + 1U];
+        const std::uint8_t exponent = static_cast<std::uint8_t>(
+            ((high & 0x7FU) << 1U) | (low >> 7U));
+        const unsigned length = table.code_lengths[exponent];
+        accumulator = (accumulator << length) | table.code_values[exponent];
+        pending += length;
+        symbol_start += length;
+
+        while (pending >= 8U) {
+            pending -= 8U;
+            result.encoded_exponents[encoded_offset++] =
+                static_cast<std::uint8_t>((accumulator >> pending) & 0xFFU);
+            accumulator = pending == 0
+                ? 0U
+                : accumulator & ((1U << pending) - 1U);
+        }
+    }
+    if (pending != 0) {
+        result.encoded_exponents[encoded_offset++] =
+            static_cast<std::uint8_t>(
+                (accumulator << (8U - pending)) & 0xFFU);
+    }
+    if (
+        symbol_start != result.bit_length
+        || encoded_offset != result.encoded_exponents.size()) {
+        throw std::runtime_error("GPU exponent stream size mismatch.");
+    }
+
+    while (next_segment < populated_segments) {
+        const std::uint64_t boundary =
+            static_cast<std::uint64_t>(next_segment) * segment_bits;
+        if (
+            result.bit_length < boundary
+            || result.bit_length - boundary >= kGPUGapLimit) {
+            throw std::runtime_error(
+                "A final code crosses too much of a CUDA segment to fit in "
+                "4-bit gaps.");
+        }
+        gaps[next_segment] = static_cast<std::uint8_t>(
+            result.bit_length - boundary);
+        ++next_segment;
+    }
+    while (next_block < block_count) {
+        result.output_positions[next_block] =
+            static_cast<std::uint32_t>(numel);
+        ++next_block;
+    }
+    result.output_positions[block_count] = static_cast<std::uint32_t>(numel);
+    result.packed_gaps = pack_gpu_gaps(gaps);
+    return result;
 }
 
 std::vector<std::uint8_t> encode_with_ctable(
@@ -459,29 +1039,57 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(const std::uint8_t*
     }
 
     auto decodebook = std::make_unique<Huff0Decodebook>();
-    decodebook->dtable.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX - 1));
-    decodebook->dtable[0] = static_cast<HUF_DTable>((HUF_TABLELOG_MAX - 1) * 0x01000001U);
+    decodebook->dtable_x1.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX - 1));
+    decodebook->dtable_x1[0] = static_cast<HUF_DTable>(
+        (HUF_TABLELOG_MAX - 1) * 0x01000001U);
+    decodebook->dtable_x2.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
+    decodebook->dtable_x2[0] = static_cast<HUF_DTable>(
+        HUF_TABLELOG_MAX * 0x01000001U);
     std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
-    size_t read_size = HUF_readDTableX1_wksp(
-        decodebook->dtable.data(),
+    size_t read_size_x1 = HUF_readDTableX1_wksp(
+        decodebook->dtable_x1.data(),
         header,
         static_cast<std::size_t>(header_len),
         workspace.data(),
         workspace.size() * sizeof(unsigned),
         kFlags);
-    check_huf(read_size);
-    if (read_size != static_cast<std::size_t>(header_len)) {
-        throw std::runtime_error("Huff0 did not consume the full codebook header.");
+    check_huf(read_size_x1);
+    if (read_size_x1 != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error("Huff0 X1 did not consume the full codebook header.");
+    }
+    size_t read_size_x2 = HUF_readDTableX2_wksp(
+        decodebook->dtable_x2.data(),
+        header,
+        static_cast<std::size_t>(header_len),
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(read_size_x2);
+    if (read_size_x2 != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error("Huff0 X2 did not consume the full codebook header.");
     }
     return decodebook;
+}
+
+const HUF_DTable* select_decode_dtable(
+    const Huff0Decodebook& decodebook,
+    std::size_t symbol_count,
+    std::size_t payload_len) {
+    if (HUF_selectDecoder(symbol_count, payload_len) != 0) {
+        return decodebook.dtable_x2.data();
+    }
+    return decodebook.dtable_x1.data();
 }
 
 std::vector<std::uint8_t> decode_with_dtable(
     const std::uint8_t* payload,
     Py_ssize_t payload_len,
     Py_ssize_t symbol_count,
-    const HUF_DTable* dtable,
+    const Huff0Decodebook& decodebook,
     bool four_streams = false) {
+    if (payload_len < 0) {
+        throw std::runtime_error("payload_len must be non-negative.");
+    }
     if (symbol_count < 0) {
         throw std::runtime_error("symbol_count must be non-negative.");
     }
@@ -489,6 +1097,10 @@ std::vector<std::uint8_t> decode_with_dtable(
     if (symbol_count == 0) {
         return output;
     }
+    const HUF_DTable* dtable = select_decode_dtable(
+        decodebook,
+        static_cast<std::size_t>(symbol_count),
+        static_cast<std::size_t>(payload_len));
     size_t decoded = four_streams
         ? HUF_decompress4X_usingDTable(
               output.data(),
@@ -509,6 +1121,44 @@ std::vector<std::uint8_t> decode_with_dtable(
         throw std::runtime_error("Huff0 decoded size mismatch.");
     }
     return output;
+}
+
+void decode_with_dtable_into(
+    const std::uint8_t* payload,
+    Py_ssize_t payload_len,
+    std::uint8_t* output,
+    std::size_t symbol_count,
+    const Huff0Decodebook& decodebook,
+    bool four_streams = false) {
+    if (payload_len < 0) {
+        throw std::runtime_error("payload_len must be non-negative.");
+    }
+    if (symbol_count == 0) {
+        return;
+    }
+    const HUF_DTable* dtable = select_decode_dtable(
+        decodebook,
+        symbol_count,
+        static_cast<std::size_t>(payload_len));
+    size_t decoded = four_streams
+        ? HUF_decompress4X_usingDTable(
+              output,
+              symbol_count,
+              payload,
+              static_cast<std::size_t>(payload_len),
+              dtable,
+              kFlags)
+        : HUF_decompress1X_usingDTable(
+              output,
+              symbol_count,
+              payload,
+              static_cast<std::size_t>(payload_len),
+              dtable,
+              kFlags);
+    check_huf(decoded);
+    if (decoded != symbol_count) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
 }
 
 std::vector<std::uint8_t> restore_ngram_tokens(
@@ -895,8 +1545,8 @@ void process_mixed_block(
                 return;
             }
         }
-        apply_mixed_local_or_raw(
-            result, min_saving_bytes, compression_threshold);
+        // A shared post-setup mode must never build a target-local tree.
+        // result already owns the exact raw stream and starts in Raw mode.
         return;
     }
 
@@ -935,8 +1585,8 @@ void process_mixed_block(
         release_vector(result.raw);
         return;
     }
-    apply_mixed_local_or_raw(
-        result, min_saving_bytes, compression_threshold);
+    // A packed post-setup mode must never build a target-local tree.
+    // result already owns the exact raw stream and starts in Raw mode.
 }
 
 void process_mixed_packed_block(
@@ -996,8 +1646,7 @@ void process_mixed_packed_block(
     }
 
     // The successful packed path never owns a contiguous reordered stream.
-    // Materialize it only now, because local Huff0/raw fallback needs those
-    // exact bytes in its payload.
+    // Materialize it only when direct raw fallback needs the exact bytes.
     extract_zipnn_stream_block(
         result.raw,
         raw,
@@ -1006,8 +1655,6 @@ void process_mixed_packed_block(
         stream,
         start,
         length);
-    apply_mixed_local_or_raw(
-        result, min_saving_bytes, compression_threshold);
 }
 
 void process_mixed_zipnn_block(
@@ -1265,6 +1912,114 @@ Huff0Decodebook* decodebook_from_capsule(PyObject* capsule) {
     return static_cast<Huff0Decodebook*>(pointer);
 }
 
+PyObject* codebook_to_python(std::unique_ptr<Huff0Codebook> codebook) {
+    Huff0Codebook* native = codebook.get();
+    PyObject* capsule = PyCapsule_New(
+        native,
+        "neuralzip.Huff0Codebook",
+        destroy_codebook_capsule);
+    if (!capsule) {
+        return nullptr;
+    }
+    codebook.release();
+    PyObject* header = bytes_from_vector(native->serialized);
+    if (!header) {
+        Py_DECREF(capsule);
+        return nullptr;
+    }
+    PyObject* result = PyTuple_Pack(2, capsule, header);
+    Py_DECREF(capsule);
+    Py_DECREF(header);
+    return result;
+}
+
+bool validate_codebook_options(Py_ssize_t prior_count, Py_ssize_t max_bits) {
+    if (prior_count < 0 || prior_count > static_cast<Py_ssize_t>(
+            std::numeric_limits<unsigned>::max())) {
+        PyErr_SetString(PyExc_ValueError, "prior_count must fit in unsigned.");
+        return false;
+    }
+    if (max_bits < 1 || max_bits > HUF_TABLELOG_ABSOLUTEMAX) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
+        return false;
+    }
+    return true;
+}
+
+bool parse_symbol_counts(
+    PyObject* source,
+    unsigned prior_count,
+    std::array<unsigned, 256>& output) {
+    OwnedPyRef sequence(PySequence_Fast(
+        source, "symbol_counts must be a sequence of 256 integers."));
+    if (!sequence.get()) {
+        return false;
+    }
+    if (PySequence_Fast_GET_SIZE(sequence.get()) != 256) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "symbol_counts must contain exactly 256 entries.");
+        return false;
+    }
+
+    std::array<std::uint64_t, 256> counts{};
+    std::uint64_t total = 0;
+    for (Py_ssize_t index = 0; index < 256; ++index) {
+        PyObject* item = PySequence_Fast_GET_ITEM(sequence.get(), index);
+        const unsigned long long count = PyLong_AsUnsignedLongLong(item);
+        if (PyErr_Occurred()) {
+            return false;
+        }
+        if (total > std::numeric_limits<std::uint64_t>::max() - count) {
+            PyErr_SetString(PyExc_OverflowError, "Huff0 symbol count overflow.");
+            return false;
+        }
+        counts[static_cast<std::size_t>(index)] = count;
+        total += count;
+    }
+
+    const std::uint64_t prior_total =
+        static_cast<std::uint64_t>(prior_count) * counts.size();
+    if (prior_total >= kMaxHistogramTotal) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "prior_count is too large for a 256-symbol Huff0 table.");
+        return false;
+    }
+    const std::uint64_t available =
+        kMaxHistogramTotal - prior_total;
+
+    unsigned shift = 0;
+    if (total > available) {
+        for (shift = 1; shift < 64; ++shift) {
+            std::uint64_t scaled_total = 0;
+            for (const std::uint64_t count : counts) {
+                if (count == 0) {
+                    continue;
+                }
+                scaled_total += std::max<std::uint64_t>(1, count >> shift);
+            }
+            if (scaled_total <= available) {
+                break;
+            }
+        }
+        if (shift == 64) {
+            PyErr_SetString(PyExc_OverflowError, "Huff0 symbol count overflow.");
+            return false;
+        }
+    }
+
+    for (std::size_t index = 0; index < counts.size(); ++index) {
+        const std::uint64_t count = counts[index];
+        const std::uint64_t scaled =
+            count == 0 ? 0 : std::max<std::uint64_t>(1, count >> shift);
+        output[index] = static_cast<unsigned>(scaled + prior_count);
+    }
+    return true;
+}
+
 PyObject* py_max_block_size(PyObject*, PyObject*) {
     return PyLong_FromSize_t(kMaxBlockSize);
 }
@@ -1272,50 +2027,99 @@ PyObject* py_max_block_size(PyObject*, PyObject*) {
 PyObject* py_build_codebook(PyObject*, PyObject* args, PyObject* kwargs) {
     Py_buffer data_view;
     Py_ssize_t prior_count = 0;
-    static const char* keyword_names[] = {"data", "prior_count", nullptr};
+    Py_ssize_t max_bits = kTableLog;
+    static const char* keyword_names[] = {
+        "data", "prior_count", "max_bits", nullptr};
 
     if (!PyArg_ParseTupleAndKeywords(
             args,
             kwargs,
-            "y*|n",
+            "y*|nn",
             const_cast<char**>(keyword_names),
             &data_view,
-            &prior_count)) {
+            &prior_count,
+            &max_bits)) {
         return nullptr;
     }
-    if (prior_count < 0 || prior_count > static_cast<Py_ssize_t>(std::numeric_limits<unsigned>::max())) {
+    if (!validate_codebook_options(prior_count, max_bits)) {
         PyBuffer_Release(&data_view);
-        PyErr_SetString(PyExc_ValueError, "prior_count must fit in unsigned.");
         return nullptr;
     }
 
     try {
         const auto* data = static_cast<const std::uint8_t*>(data_view.buf);
-        auto codebook = make_codebook(data, data_view.len, static_cast<unsigned>(prior_count));
-        PyObject* capsule = PyCapsule_New(
-            codebook.get(),
-            "neuralzip.Huff0Codebook",
-            destroy_codebook_capsule);
-        PyObject* header = bytes_from_vector(codebook->serialized);
+        auto codebook = make_codebook(
+            data,
+            data_view.len,
+            static_cast<unsigned>(prior_count),
+            static_cast<unsigned>(max_bits));
         PyBuffer_Release(&data_view);
-
-        if (!capsule || !header) {
-            Py_XDECREF(capsule);
-            Py_XDECREF(header);
-            return nullptr;
-        }
-        codebook.release();
-
-        PyObject* result = PyTuple_Pack(2, capsule, header);
-        Py_DECREF(capsule);
-        Py_DECREF(header);
-        return result;
+        return codebook_to_python(std::move(codebook));
     } catch (const std::bad_alloc&) {
         PyBuffer_Release(&data_view);
         PyErr_NoMemory();
         return nullptr;
     } catch (const std::exception& error) {
         PyBuffer_Release(&data_view);
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_build_codebook_from_counts(
+    PyObject*, PyObject* args, PyObject* kwargs) {
+    PyObject* count_source = nullptr;
+    Py_ssize_t prior_count = 0;
+    Py_ssize_t max_bits = kTableLog;
+    static const char* keyword_names[] = {
+        "symbol_counts", "prior_count", "max_bits", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "O|nn",
+            const_cast<char**>(keyword_names),
+            &count_source,
+            &prior_count,
+            &max_bits)) {
+        return nullptr;
+    }
+    if (!validate_codebook_options(prior_count, max_bits)) {
+        return nullptr;
+    }
+
+    std::array<unsigned, 256> counts{};
+    if (!parse_symbol_counts(
+            count_source, static_cast<unsigned>(prior_count), counts)) {
+        return nullptr;
+    }
+    try {
+        return codebook_to_python(make_codebook_from_counts(
+            counts, static_cast<unsigned>(max_bits)));
+    } catch (const std::bad_alloc&) {
+        PyErr_NoMemory();
+        return nullptr;
+    } catch (const std::exception& error) {
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_build_codebook_from_header(PyObject*, PyObject* args) {
+    Py_buffer header_view;
+    if (!PyArg_ParseTuple(args, "y*", &header_view)) {
+        return nullptr;
+    }
+    try {
+        const auto* header = static_cast<const std::uint8_t*>(header_view.buf);
+        auto codebook = make_codebook_from_header(header, header_view.len);
+        PyBuffer_Release(&header_view);
+        return codebook_to_python(std::move(codebook));
+    } catch (const std::bad_alloc&) {
+        PyBuffer_Release(&header_view);
+        PyErr_NoMemory();
+        return nullptr;
+    } catch (const std::exception& error) {
+        PyBuffer_Release(&header_view);
         PyErr_SetString(PyExc_ValueError, error.what());
         return nullptr;
     }
@@ -1348,6 +2152,253 @@ PyObject* py_build_decodebook(PyObject*, PyObject* args) {
         PyErr_SetString(PyExc_ValueError, error.what());
         return nullptr;
     }
+}
+
+PyObject* py_export_code_table(
+    PyObject*, PyObject* args, PyObject* kwargs) {
+    Py_buffer header_view;
+    Py_ssize_t max_bits = HUF_TABLELOG_ABSOLUTEMAX;
+    static const char* keyword_names[] = {
+        "codebook", "max_bits", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "y*|n",
+            const_cast<char**>(keyword_names),
+            &header_view,
+            &max_bits)) {
+        return nullptr;
+    }
+    if (
+        max_bits <= 0
+        || max_bits > static_cast<Py_ssize_t>(HUF_TABLELOG_ABSOLUTEMAX)) {
+        PyBuffer_Release(&header_view);
+        PyErr_Format(
+            PyExc_ValueError,
+            "max_bits must be in [1, %u].",
+            HUF_TABLELOG_ABSOLUTEMAX);
+        return nullptr;
+    }
+
+    try {
+        const auto* header = static_cast<const std::uint8_t*>(header_view.buf);
+        const ExportedCodeTable table = export_code_table_from_header(
+            header, header_view.len, static_cast<unsigned>(max_bits));
+        PyBuffer_Release(&header_view);
+
+        PyObject* lengths = PyBytes_FromStringAndSize(
+            reinterpret_cast<const char*>(table.code_lengths.data()),
+            static_cast<Py_ssize_t>(table.code_lengths.size()));
+        PyObject* values = PyTuple_New(
+            static_cast<Py_ssize_t>(table.code_values.size()));
+        PyObject* actual_max_bits = PyLong_FromUnsignedLong(table.max_bits);
+        if (!lengths || !values || !actual_max_bits) {
+            Py_XDECREF(lengths);
+            Py_XDECREF(values);
+            Py_XDECREF(actual_max_bits);
+            return nullptr;
+        }
+        for (std::size_t index = 0; index < table.code_values.size(); ++index) {
+            PyObject* value = PyLong_FromUnsignedLong(table.code_values[index]);
+            if (!value) {
+                Py_DECREF(lengths);
+                Py_DECREF(values);
+                Py_DECREF(actual_max_bits);
+                return nullptr;
+            }
+            PyTuple_SET_ITEM(values, static_cast<Py_ssize_t>(index), value);
+        }
+
+        PyObject* result = PyTuple_Pack(
+            3, lengths, values, actual_max_bits);
+        Py_DECREF(lengths);
+        Py_DECREF(values);
+        Py_DECREF(actual_max_bits);
+        return result;
+    } catch (const std::bad_alloc&) {
+        PyBuffer_Release(&header_view);
+        PyErr_NoMemory();
+        return nullptr;
+    } catch (const std::exception& error) {
+        PyBuffer_Release(&header_view);
+        PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
+PyObject* py_encode_gpu_bfloat16(
+    PyObject*, PyObject* args, PyObject* kwargs) {
+    Py_buffer raw_view{};
+    Py_buffer header_view{};
+    Py_ssize_t bytes_per_thread = 8;
+    Py_ssize_t threads_per_block = 512;
+    static const char* keyword_names[] = {
+        "raw_bf16",
+        "codebook",
+        "bytes_per_thread",
+        "threads_per_block",
+        nullptr,
+    };
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "y*y*|nn",
+            const_cast<char**>(keyword_names),
+            &raw_view,
+            &header_view,
+            &bytes_per_thread,
+            &threads_per_block)) {
+        return nullptr;
+    }
+
+    auto release_buffers = [&]() {
+        PyBuffer_Release(&raw_view);
+        PyBuffer_Release(&header_view);
+    };
+    if (bytes_per_thread <= 0 || threads_per_block <= 0) {
+        release_buffers();
+        PyErr_SetString(
+            PyExc_ValueError,
+            "bytes_per_thread and threads_per_block must be positive.");
+        return nullptr;
+    }
+    if (bytes_per_thread != 8) {
+        release_buffers();
+        PyErr_SetString(
+            PyExc_ValueError,
+            "bytes_per_thread must be 8 for this ABI.");
+        return nullptr;
+    }
+    if (threads_per_block != 512) {
+        release_buffers();
+        PyErr_SetString(
+            PyExc_ValueError,
+            "threads_per_block must be 512 for this ABI.");
+        return nullptr;
+    }
+    if (
+        static_cast<std::uint64_t>(bytes_per_thread)
+            > std::numeric_limits<std::uint32_t>::max()
+        || static_cast<std::uint64_t>(threads_per_block)
+            > std::numeric_limits<std::uint32_t>::max()) {
+        release_buffers();
+        PyErr_SetString(
+            PyExc_OverflowError,
+            "GPU layout dimensions must fit in uint32.");
+        return nullptr;
+    }
+    if ((raw_view.len & 1) != 0) {
+        release_buffers();
+        PyErr_SetString(
+            PyExc_ValueError,
+            "A BF16 byte sequence must have an even length.");
+        return nullptr;
+    }
+
+    const std::uint8_t* raw = static_cast<const std::uint8_t*>(raw_view.buf);
+    const std::uint8_t* header =
+        static_cast<const std::uint8_t*>(header_view.buf);
+    std::vector<std::uint8_t> raw_snapshot;
+    std::vector<std::uint8_t> header_snapshot;
+    try {
+        // PyBUF_CONTIG_RO can still expose mutable bytearray/memoryview storage.
+        // Snapshot such inputs before releasing the GIL so another Python thread
+        // cannot mutate bytes while the native encoder is reading them.
+        if (!raw_view.readonly && raw_view.len > 0) {
+            raw_snapshot.assign(raw, raw + raw_view.len);
+            raw = raw_snapshot.data();
+        }
+        if (!header_view.readonly && header_view.len > 0) {
+            header_snapshot.assign(header, header + header_view.len);
+            header = header_snapshot.data();
+        }
+    } catch (const std::bad_alloc&) {
+        release_buffers();
+        PyErr_NoMemory();
+        return nullptr;
+    }
+
+    GPUBFloat16Encoding encoded;
+    std::exception_ptr failure;
+    PyThreadState* saved = PyEval_SaveThread();
+    try {
+        encoded = encode_gpu_bfloat16_layout(
+            raw,
+            static_cast<std::size_t>(raw_view.len),
+            header,
+            header_view.len,
+            static_cast<std::uint32_t>(bytes_per_thread),
+            static_cast<std::uint32_t>(threads_per_block));
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    PyEval_RestoreThread(saved);
+    release_buffers();
+
+    if (failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::bad_alloc&) {
+            PyErr_NoMemory();
+        } catch (const std::overflow_error& error) {
+            PyErr_SetString(PyExc_OverflowError, error.what());
+        } catch (const std::exception& error) {
+            PyErr_SetString(PyExc_ValueError, error.what());
+        } catch (...) {
+            PyErr_SetString(
+                PyExc_RuntimeError, "Unknown GPU-layout encoding failure.");
+        }
+        return nullptr;
+    }
+
+    PyObject* exponent_bytes = bytes_from_vector(encoded.encoded_exponents);
+    PyObject* sign_mantissa = bytes_from_vector(encoded.sign_mantissa);
+    PyObject* packed_gaps = bytes_from_vector(encoded.packed_gaps);
+    PyObject* positions = PyTuple_New(
+        static_cast<Py_ssize_t>(encoded.output_positions.size()));
+    PyObject* bit_length = PyLong_FromUnsignedLongLong(encoded.bit_length);
+    PyObject* max_bits = PyLong_FromUnsignedLong(encoded.max_bits);
+    if (
+        !exponent_bytes || !sign_mantissa || !packed_gaps || !positions
+        || !bit_length || !max_bits) {
+        Py_XDECREF(exponent_bytes);
+        Py_XDECREF(sign_mantissa);
+        Py_XDECREF(packed_gaps);
+        Py_XDECREF(positions);
+        Py_XDECREF(bit_length);
+        Py_XDECREF(max_bits);
+        return nullptr;
+    }
+    for (std::size_t index = 0; index < encoded.output_positions.size(); ++index) {
+        PyObject* position = PyLong_FromUnsignedLong(
+            encoded.output_positions[index]);
+        if (!position) {
+            Py_DECREF(exponent_bytes);
+            Py_DECREF(sign_mantissa);
+            Py_DECREF(packed_gaps);
+            Py_DECREF(positions);
+            Py_DECREF(bit_length);
+            Py_DECREF(max_bits);
+            return nullptr;
+        }
+        PyTuple_SET_ITEM(positions, static_cast<Py_ssize_t>(index), position);
+    }
+
+    PyObject* result = PyTuple_Pack(
+        6,
+        exponent_bytes,
+        sign_mantissa,
+        packed_gaps,
+        positions,
+        bit_length,
+        max_bits);
+    Py_DECREF(exponent_bytes);
+    Py_DECREF(sign_mantissa);
+    Py_DECREF(packed_gaps);
+    Py_DECREF(positions);
+    Py_DECREF(bit_length);
+    Py_DECREF(max_bits);
+    return result;
 }
 
 PyObject* py_encode_with_codebook_impl(
@@ -1923,7 +2974,7 @@ PyObject* py_decompress_with_decodebook_impl(PyObject* args, bool four_streams) 
                 payload,
                 payload_view.len,
                 symbol_count,
-                decodebook->dtable.data(),
+                *decodebook,
                 four_streams);
         PyObject* result = bytes_from_vector(decoded);
         PyBuffer_Release(&payload_view);
@@ -1983,7 +3034,7 @@ PyObject* py_decompress_ngram_with_decodebook_impl(
             payload,
             payload_view.len,
             symbol_count,
-            decodebook->dtable.data(),
+            *decodebook,
             four_streams);
         std::vector<std::uint64_t> vocab = vocab_from_view(
             vocab_view, static_cast<int>(n));
@@ -2521,6 +3572,557 @@ PyObject* py_compress_zipnn_mixed_many(
     return output;
 }
 
+PyObject* py_decompress_zipnn_mixed_many(
+    PyObject*, PyObject* args, PyObject* kwargs) {
+    PyObject* tensor_source = nullptr;
+    int requested_threads = 0;
+    static const char* keyword_names[] = {
+        "tensor_specs", "threads", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "O|i",
+            const_cast<char**>(keyword_names),
+            &tensor_source,
+            &requested_threads)) {
+        return nullptr;
+    }
+    if (requested_threads < 0) {
+        PyErr_SetString(PyExc_ValueError, "threads must be non-negative.");
+        return nullptr;
+    }
+
+    OwnedPyRef tensor_sequence(
+        PySequence_Fast(tensor_source, "tensor_specs must be a sequence"));
+    if (!tensor_sequence.get()) {
+        return nullptr;
+    }
+
+    const Py_ssize_t tensor_count = PySequence_Fast_GET_SIZE(
+        tensor_sequence.get());
+    std::vector<ZipNNDecodeTensor> requests;
+    std::vector<ZipNNDecodeChunk> chunks;
+    std::vector<ZipNNAlignedDecodeJob> aligned_jobs;
+    std::vector<std::size_t> fallback_chunk_jobs;
+    std::vector<ZipNNCombineJob> combine_jobs;
+    try {
+        requests.resize(static_cast<std::size_t>(tensor_count));
+    } catch (const std::bad_alloc&) {
+        PyErr_NoMemory();
+        return nullptr;
+    }
+
+    auto release_inputs = [&]() {
+        for (auto& chunk : chunks) {
+            if (chunk.payload_view.obj != nullptr) {
+                PyBuffer_Release(&chunk.payload_view);
+                chunk.payload_view.obj = nullptr;
+            }
+            Py_XDECREF(chunk.decodebook_capsule);
+            chunk.decodebook_capsule = nullptr;
+            chunk.decodebook = nullptr;
+        }
+    };
+    auto release_outputs = [&]() {
+        for (auto& request : requests) {
+            Py_XDECREF(request.output);
+            request.output = nullptr;
+            request.output_data = nullptr;
+        }
+    };
+    auto fail = [&](const char* message) -> PyObject* {
+        release_inputs();
+        release_outputs();
+        if (message != nullptr && !PyErr_Occurred()) {
+            PyErr_SetString(PyExc_ValueError, message);
+        }
+        return nullptr;
+    };
+
+    std::size_t total_output_bytes = 0;
+    try {
+        for (Py_ssize_t tensor_index = 0;
+             tensor_index < tensor_count;
+             ++tensor_index) {
+            PyObject* item = PySequence_Fast_GET_ITEM(
+                tensor_sequence.get(), tensor_index);
+            int element_size = 0;
+            int bit_reorder = 0;
+            Py_ssize_t requested_numel = 0;
+            PyObject* groups_source = nullptr;
+            if (!PyArg_ParseTuple(
+                    item,
+                    "ipnO",
+                    &element_size,
+                    &bit_reorder,
+                    &requested_numel,
+                    &groups_source)) {
+                return fail(nullptr);
+            }
+            if (element_size != 2 && element_size != 4) {
+                return fail("element_size must be 2 or 4.");
+            }
+            if (requested_numel < 0) {
+                return fail("numel must be non-negative.");
+            }
+
+            const std::size_t numel = static_cast<std::size_t>(
+                requested_numel);
+            const std::size_t width = static_cast<std::size_t>(element_size);
+            if (numel > static_cast<std::size_t>(PY_SSIZE_T_MAX) / width) {
+                PyErr_SetString(
+                    PyExc_OverflowError,
+                    "Decoded tensor byte size exceeds Py_ssize_t.");
+                return fail(nullptr);
+            }
+            const std::size_t raw_bytes = numel * width;
+            if (raw_bytes
+                > std::numeric_limits<std::size_t>::max()
+                    - total_output_bytes) {
+                PyErr_SetString(
+                    PyExc_OverflowError,
+                    "Total decoded tensor size overflowed.");
+                return fail(nullptr);
+            }
+            total_output_bytes += raw_bytes;
+
+            ZipNNDecodeTensor& request = requests[
+                static_cast<std::size_t>(tensor_index)];
+            request.element_size = element_size;
+            request.bit_reorder = bit_reorder != 0;
+            request.numel = numel;
+            request.output = PyByteArray_FromStringAndSize(
+                nullptr, static_cast<Py_ssize_t>(raw_bytes));
+            if (!request.output) {
+                return fail(nullptr);
+            }
+            request.output_data = reinterpret_cast<std::uint8_t*>(
+                PyByteArray_AS_STRING(request.output));
+
+            OwnedPyRef group_sequence(PySequence_Fast(
+                groups_source, "groups must be a sequence"));
+            if (!group_sequence.get()) {
+                return fail(nullptr);
+            }
+            if (PySequence_Fast_GET_SIZE(group_sequence.get()) != element_size) {
+                return fail(
+                    "groups must contain exactly one group per byte stream.");
+            }
+
+            std::array<std::vector<std::size_t>, 4> stream_chunk_indices;
+            for (int stream = 0; stream < element_size; ++stream) {
+                PyObject* group_source = PySequence_Fast_GET_ITEM(
+                    group_sequence.get(), stream);
+                OwnedPyRef chunk_sequence(PySequence_Fast(
+                    group_source, "each group must be a sequence of chunks"));
+                if (!chunk_sequence.get()) {
+                    return fail(nullptr);
+                }
+
+                std::size_t output_offset = 0;
+                const Py_ssize_t chunk_count = PySequence_Fast_GET_SIZE(
+                    chunk_sequence.get());
+                for (Py_ssize_t chunk_index = 0;
+                     chunk_index < chunk_count;
+                     ++chunk_index) {
+                    PyObject* chunk_source = PySequence_Fast_GET_ITEM(
+                        chunk_sequence.get(), chunk_index);
+                    const char* kind = nullptr;
+                    PyObject* payload_source = nullptr;
+                    Py_ssize_t requested_symbols = 0;
+                    PyObject* decodebook_source = nullptr;
+                    int frame_4x = 0;
+                    if (!PyArg_ParseTuple(
+                            chunk_source,
+                            "sOnOp",
+                            &kind,
+                            &payload_source,
+                            &requested_symbols,
+                            &decodebook_source,
+                            &frame_4x)) {
+                        return fail(nullptr);
+                    }
+                    if (requested_symbols < 0) {
+                        return fail("chunk symbol_count must be non-negative.");
+                    }
+                    const std::size_t symbol_count = static_cast<std::size_t>(
+                        requested_symbols);
+                    if (symbol_count > numel - output_offset) {
+                        return fail(
+                            "chunk symbol counts exceed the tensor numel.");
+                    }
+
+                    chunks.emplace_back();
+                    ZipNNDecodeChunk& chunk = chunks.back();
+                    chunk.tensor_index = static_cast<std::size_t>(tensor_index);
+                    chunk.stream = stream;
+                    chunk.output_offset = output_offset;
+                    chunk.symbol_count = symbol_count;
+                    chunk.frame_4x = frame_4x != 0;
+                    if (PyObject_GetBuffer(
+                            payload_source,
+                            &chunk.payload_view,
+                            PyBUF_CONTIG_RO) < 0) {
+                        return fail(nullptr);
+                    }
+
+                    if (std::strcmp(kind, "raw") == 0) {
+                        chunk.mode = ZipNNDecodeMode::Raw;
+                        if (decodebook_source != Py_None) {
+                            return fail("raw chunks cannot reference a decodebook.");
+                        }
+                        if (chunk.payload_view.len != requested_symbols) {
+                            return fail(
+                                "raw chunk payload size must equal symbol_count.");
+                        }
+                    } else if (std::strcmp(kind, "zero") == 0) {
+                        chunk.mode = ZipNNDecodeMode::Zero;
+                        if (decodebook_source != Py_None) {
+                            return fail("zero chunks cannot reference a decodebook.");
+                        }
+                        if (chunk.payload_view.len != 0) {
+                            return fail("zero chunk payload must be empty.");
+                        }
+                    } else if (std::strcmp(kind, "local_huff0") == 0) {
+                        chunk.mode = ZipNNDecodeMode::LocalHuff0;
+                        if (decodebook_source != Py_None) {
+                            return fail(
+                                "local_huff0 chunks cannot reference a decodebook.");
+                        }
+                        if (symbol_count == 0 || chunk.payload_view.len <= 0) {
+                            return fail(
+                                "local_huff0 chunks must contain symbols and payload.");
+                        }
+                        if (symbol_count > kMaxBlockSize) {
+                            return fail(
+                                "local_huff0 chunk exceeds the Huff0 block limit.");
+                        }
+                    } else if (std::strcmp(kind, "shared_huff0") == 0) {
+                        chunk.mode = ZipNNDecodeMode::SharedHuff0;
+                        if (decodebook_source == Py_None) {
+                            return fail(
+                                "shared_huff0 chunks require a decodebook handle.");
+                        }
+                        if (symbol_count == 0 || chunk.payload_view.len <= 0) {
+                            return fail(
+                                "shared_huff0 chunks must contain symbols and payload.");
+                        }
+                        if (symbol_count > kMaxBlockSize) {
+                            return fail(
+                                "shared_huff0 chunk exceeds the Huff0 block limit.");
+                        }
+                        chunk.decodebook = decodebook_from_capsule(
+                            decodebook_source);
+                        Py_INCREF(decodebook_source);
+                        chunk.decodebook_capsule = decodebook_source;
+                    } else if (std::strcmp(kind, "packed_huff0") == 0) {
+                        return fail(
+                            "decompress_zipnn_mixed_many does not support packed_huff0.");
+                    } else {
+                        return fail("Unsupported ZipNN decode chunk mode.");
+                    }
+
+                    stream_chunk_indices[static_cast<std::size_t>(stream)]
+                        .push_back(chunks.size() - 1U);
+                    output_offset += symbol_count;
+                }
+                if (output_offset != numel) {
+                    return fail(
+                        "Each decoded byte stream must contain exactly numel symbols.");
+                }
+            }
+
+            bool chunks_are_aligned = true;
+            const std::size_t aligned_chunk_count =
+                stream_chunk_indices[0].size();
+            for (std::size_t stream = 1; stream < width; ++stream) {
+                if (stream_chunk_indices[stream].size()
+                    != aligned_chunk_count) {
+                    chunks_are_aligned = false;
+                    break;
+                }
+            }
+            if (chunks_are_aligned) {
+                for (std::size_t chunk_index = 0;
+                     chunk_index < aligned_chunk_count;
+                     ++chunk_index) {
+                    const ZipNNDecodeChunk& first = chunks[
+                        stream_chunk_indices[0][chunk_index]];
+                    for (std::size_t stream = 1; stream < width; ++stream) {
+                        const ZipNNDecodeChunk& other = chunks[
+                            stream_chunk_indices[stream][chunk_index]];
+                        if (other.output_offset != first.output_offset
+                            || other.symbol_count != first.symbol_count) {
+                            chunks_are_aligned = false;
+                            break;
+                        }
+                    }
+                    if (!chunks_are_aligned) {
+                        break;
+                    }
+                }
+            }
+
+            if (chunks_are_aligned) {
+                for (std::size_t chunk_index = 0;
+                     chunk_index < aligned_chunk_count;
+                     ++chunk_index) {
+                    ZipNNAlignedDecodeJob job;
+                    const ZipNNDecodeChunk& first = chunks[
+                        stream_chunk_indices[0][chunk_index]];
+                    job.tensor_index = static_cast<std::size_t>(tensor_index);
+                    job.output_offset = first.output_offset;
+                    job.symbol_count = first.symbol_count;
+                    for (std::size_t stream = 0; stream < width; ++stream) {
+                        job.chunk_indices[stream] =
+                            stream_chunk_indices[stream][chunk_index];
+                    }
+                    aligned_jobs.push_back(std::move(job));
+                }
+            } else {
+                request.lanes.resize(width);
+                for (auto& lane : request.lanes) {
+                    lane.resize(numel);
+                }
+                for (std::size_t stream = 0; stream < width; ++stream) {
+                    fallback_chunk_jobs.insert(
+                        fallback_chunk_jobs.end(),
+                        stream_chunk_indices[stream].begin(),
+                        stream_chunk_indices[stream].end());
+                }
+
+                constexpr std::size_t kCombineJobBytes = 256U << 10;
+                const std::size_t combine_step = std::max<std::size_t>(
+                    1U, kCombineJobBytes / width);
+                for (std::size_t start = 0;
+                     start < numel;
+                     start += combine_step) {
+                    combine_jobs.push_back(
+                        {
+                            static_cast<std::size_t>(tensor_index),
+                            start,
+                            std::min(combine_step, numel - start),
+                        });
+                }
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        PyErr_NoMemory();
+        return fail(nullptr);
+    } catch (const std::exception& error) {
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_ValueError, error.what());
+        }
+        return fail(nullptr);
+    }
+
+    std::string thread_error;
+    std::string native_error;
+    const std::string* decode_error = nullptr;
+    PyThreadState* saved = PyEval_SaveThread();
+    try {
+        const std::size_t aligned_job_count = aligned_jobs.size();
+        const std::size_t first_phase_job_count = aligned_job_count
+            + fallback_chunk_jobs.size();
+        thread_error = run_parallel_jobs(
+            first_phase_job_count,
+            total_output_bytes,
+            requested_threads,
+            [&](std::size_t job_index) {
+                if (job_index < aligned_job_count) {
+                    ZipNNAlignedDecodeJob& job = aligned_jobs[job_index];
+                    const ZipNNDecodeTensor& request = requests[
+                        job.tensor_index];
+                    try {
+                        const std::size_t width = static_cast<std::size_t>(
+                            request.element_size);
+                        std::size_t huff_lane_count = 0;
+                        for (std::size_t stream = 0; stream < width; ++stream) {
+                            const ZipNNDecodeMode mode = chunks[
+                                job.chunk_indices[stream]].mode;
+                            if (mode == ZipNNDecodeMode::LocalHuff0
+                                || mode == ZipNNDecodeMode::SharedHuff0) {
+                                ++huff_lane_count;
+                            }
+                        }
+                        if (huff_lane_count > 0
+                            && job.symbol_count
+                                > std::numeric_limits<std::size_t>::max()
+                                    / huff_lane_count) {
+                            throw std::length_error(
+                                "Aligned Huff0 scratch size overflowed.");
+                        }
+
+                        thread_local std::vector<std::uint8_t> scratch;
+                        scratch.resize(huff_lane_count * job.symbol_count);
+                        std::array<const std::uint8_t*, 4> lane_data{};
+                        std::size_t scratch_offset = 0;
+                        for (std::size_t stream = 0; stream < width; ++stream) {
+                            ZipNNDecodeChunk& chunk = chunks[
+                                job.chunk_indices[stream]];
+                            const auto* payload = static_cast<
+                                const std::uint8_t*>(chunk.payload_view.buf);
+                            switch (chunk.mode) {
+                            case ZipNNDecodeMode::Raw:
+                                lane_data[stream] = payload;
+                                break;
+                            case ZipNNDecodeMode::Zero:
+                                lane_data[stream] = nullptr;
+                                break;
+                            case ZipNNDecodeMode::LocalHuff0: {
+                                std::uint8_t* destination = scratch.data()
+                                    + scratch_offset;
+                                decompress_local_block_into(
+                                    payload,
+                                    chunk.payload_view.len,
+                                    destination,
+                                    chunk.symbol_count);
+                                lane_data[stream] = destination;
+                                scratch_offset += chunk.symbol_count;
+                                break;
+                            }
+                            case ZipNNDecodeMode::SharedHuff0: {
+                                std::uint8_t* destination = scratch.data()
+                                    + scratch_offset;
+                                decode_with_dtable_into(
+                                    payload,
+                                    chunk.payload_view.len,
+                                    destination,
+                                    chunk.symbol_count,
+                                    *chunk.decodebook,
+                                    chunk.frame_4x);
+                                lane_data[stream] = destination;
+                                scratch_offset += chunk.symbol_count;
+                                break;
+                            }
+                            }
+                        }
+                        restore_zipnn_aligned_chunk(
+                            request,
+                            lane_data,
+                            job.output_offset,
+                            job.symbol_count);
+                    } catch (const std::exception& error) {
+                        job.error = error.what();
+                    } catch (...) {
+                        job.error = "Unknown aligned ZipNN decode failure.";
+                    }
+                    return;
+                }
+
+                ZipNNDecodeChunk& chunk = chunks[
+                    fallback_chunk_jobs[job_index - aligned_job_count]];
+                ZipNNDecodeTensor& request = requests[chunk.tensor_index];
+                std::uint8_t* destination = nullptr;
+                if (chunk.symbol_count > 0) {
+                    destination = request.lanes[
+                        static_cast<std::size_t>(chunk.stream)].data()
+                        + chunk.output_offset;
+                }
+                try {
+                    const auto* payload = static_cast<const std::uint8_t*>(
+                        chunk.payload_view.buf);
+                    switch (chunk.mode) {
+                    case ZipNNDecodeMode::Raw:
+                        if (chunk.symbol_count > 0) {
+                            std::memcpy(
+                                destination, payload, chunk.symbol_count);
+                        }
+                        break;
+                    case ZipNNDecodeMode::Zero:
+                        if (chunk.symbol_count > 0) {
+                            std::memset(destination, 0, chunk.symbol_count);
+                        }
+                        break;
+                    case ZipNNDecodeMode::LocalHuff0:
+                        decompress_local_block_into(
+                            payload,
+                            chunk.payload_view.len,
+                            destination,
+                            chunk.symbol_count);
+                        break;
+                    case ZipNNDecodeMode::SharedHuff0:
+                        decode_with_dtable_into(
+                            payload,
+                            chunk.payload_view.len,
+                            destination,
+                            chunk.symbol_count,
+                            *chunk.decodebook,
+                            chunk.frame_4x);
+                        break;
+                    }
+                } catch (const std::exception& error) {
+                    chunk.error = error.what();
+                } catch (...) {
+                    chunk.error = "Unknown ZipNN decode failure.";
+                }
+            });
+
+        if (thread_error.empty()) {
+            for (const auto& job : aligned_jobs) {
+                if (!job.error.empty()) {
+                    decode_error = &job.error;
+                    break;
+                }
+            }
+        }
+        if (thread_error.empty() && decode_error == nullptr) {
+            for (const auto& chunk : chunks) {
+                if (!chunk.error.empty()) {
+                    decode_error = &chunk.error;
+                    break;
+                }
+            }
+        }
+        if (thread_error.empty() && decode_error == nullptr) {
+            thread_error = run_parallel_jobs(
+                combine_jobs.size(),
+                total_output_bytes,
+                requested_threads,
+                [&](std::size_t job_index) {
+                    const ZipNNCombineJob& job = combine_jobs[job_index];
+                    restore_zipnn_tensor_range(
+                        requests[job.tensor_index], job.start, job.length);
+                });
+        }
+    } catch (const std::exception& error) {
+        native_error = error.what();
+    } catch (...) {
+        native_error = "Unknown model-wide ZipNN decode failure.";
+    }
+    PyEval_RestoreThread(saved);
+
+    if (!native_error.empty()) {
+        PyErr_SetString(PyExc_RuntimeError, native_error.c_str());
+        return fail(nullptr);
+    }
+    if (!thread_error.empty()) {
+        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
+        return fail(nullptr);
+    }
+    if (decode_error != nullptr) {
+        PyErr_SetString(PyExc_ValueError, decode_error->c_str());
+        return fail(nullptr);
+    }
+
+    release_inputs();
+    PyObject* output = PyList_New(tensor_count);
+    if (!output) {
+        release_outputs();
+        return nullptr;
+    }
+    for (Py_ssize_t tensor_index = 0;
+         tensor_index < tensor_count;
+         ++tensor_index) {
+        ZipNNDecodeTensor& request = requests[
+            static_cast<std::size_t>(tensor_index)];
+        PyList_SET_ITEM(output, tensor_index, request.output);
+        request.output = nullptr;
+        request.output_data = nullptr;
+    }
+    return output;
+}
+
 PyObject* py_decompress_block(PyObject*, PyObject* args) {
     Py_buffer payload_view{};
     Py_ssize_t symbol_count = 0;
@@ -2547,10 +4149,33 @@ PyObject* py_decompress_block(PyObject*, PyObject* args) {
     }
 }
 
+PyObject* py_backend_info(PyObject*, PyObject*) {
+    return Py_BuildValue(
+        "{s:O,s:O,s:O,s:O}",
+        "dynamic_bmi2_compiled",
+        kDynamicBmi2Compiled ? Py_True : Py_False,
+        "runtime_cpu_bmi2",
+        kRuntimeBmi2 ? Py_True : Py_False,
+        "active_bmi2",
+        (kFlags & HUF_flags_bmi2) != 0 ? Py_True : Py_False,
+        "asm_disabled",
+#ifdef ZSTD_DISABLE_ASM
+        Py_True
+#else
+        Py_False
+#endif
+    );
+}
+
 static PyMethodDef methods[] = {
+    {"backend_info", py_backend_info, METH_NOARGS, "Report native Huff0 CPU dispatch information."},
     {"max_block_size", py_max_block_size, METH_NOARGS, "Return Huff0 maximum block size."},
     {"build_codebook", reinterpret_cast<PyCFunction>(py_build_codebook), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook."},
+    {"build_codebook_from_counts", reinterpret_cast<PyCFunction>(py_build_codebook_from_counts), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook from a complete 256-bin histogram."},
+    {"build_codebook_from_header", py_build_codebook_from_header, METH_VARARGS, "Rebuild a Huff0 encoder table from its serialized header."},
     {"build_decodebook", py_build_decodebook, METH_VARARGS, "Build a Huff0 decode table from a serialized codebook."},
+    {"export_code_table", reinterpret_cast<PyCFunction>(py_export_code_table), METH_VARARGS | METH_KEYWORDS, "Export exact Huff0 symbol lengths and canonical code values."},
+    {"encode_gpu_bfloat16", reinterpret_cast<PyCFunction>(py_encode_gpu_bfloat16), METH_VARARGS | METH_KEYWORDS, "Encode little-endian BF16 bytes into the NeuralZip GPU layout."},
     {"encode_with_codebook", reinterpret_cast<PyCFunction>(py_encode_with_codebook), METH_VARARGS | METH_KEYWORDS, "Encode using a Huff0 codebook."},
     {"encode_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Encode four Huff0 streams using a precomputed codebook."},
     {"encode_many_with_codebook", reinterpret_cast<PyCFunction>(py_encode_many_with_codebook), METH_VARARGS | METH_KEYWORDS, "Encode independent blocks with one Huff0 codebook in parallel."},
@@ -2566,6 +4191,7 @@ static PyMethodDef methods[] = {
     {"compress_many", reinterpret_cast<PyCFunction>(py_compress_many), METH_VARARGS | METH_KEYWORDS, "Compress independent blocks with Huff0 in parallel."},
     {"compress_zipnn", reinterpret_cast<PyCFunction>(py_compress_zipnn), METH_VARARGS | METH_KEYWORDS, "Reorder, split, and compress a floating-point tensor with Huff0."},
     {"compress_zipnn_mixed_many", reinterpret_cast<PyCFunction>(py_compress_zipnn_mixed_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed ZipNN/Huff0 native job queue."},
+    {"decompress_zipnn_mixed_many", reinterpret_cast<PyCFunction>(py_decompress_zipnn_mixed_many), METH_VARARGS | METH_KEYWORDS, "Decode many sharing-only ZipNN tensors with one native job queue."},
     {"decompress_block", py_decompress_block, METH_VARARGS, "Decompress one self-contained Huff0 block."},
     {nullptr, nullptr, 0, nullptr},
 };

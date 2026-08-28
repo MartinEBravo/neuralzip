@@ -4,7 +4,7 @@ import unittest
 from collections import Counter
 from dataclasses import asdict
 
-from examples import model_catalog
+from examples.experiments import model_catalog
 
 EXPECTED_MODEL_KEYS = (
     "gpt2",

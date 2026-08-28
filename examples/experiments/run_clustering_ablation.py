@@ -1,3 +1,5 @@
+"""Inspect layer groups recovered by the Jensen-Shannon clustering ablation."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,7 +18,7 @@ from neuralzip.neuralzip_codec import NeuralZipCodec
 
 try:
     from .run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
-except ImportError:  # Direct execution from the examples directory.
+except ImportError:  # Direct execution from the experiments directory.
     from run_thesis_model_suite import MODEL_SPECS, SPECS_BY_SLUG, load_model
 
 

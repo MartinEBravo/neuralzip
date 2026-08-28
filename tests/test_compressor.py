@@ -109,41 +109,112 @@ class CompressorInputContractTests(unittest.TestCase):
                 )
             )
 
+    def test_hugging_face_model_is_accepted_directly(self):
+        from transformers import BertConfig, BertModel
 
-class ZipNNSourceCompressorContractTests(unittest.TestCase):
+        model = BertModel(
+            BertConfig(
+                vocab_size=32,
+                hidden_size=16,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                intermediate_size=32,
+            )
+        )
+        result = Compressor("zipnn-local", verify=True).compress(model)
+
+        self.assertEqual(result["num_tensors"], len(list(model.named_parameters())))
+        self.assertTrue(result["roundtrip_ok"])
+
+
+class ZipNNCompressorContractTests(unittest.TestCase):
     @mock.patch("neuralzip.compressor.ZipNNSourceCodec")
     def test_source_frontend_uses_the_official_adapter(self, adapter_class):
-        for alias in ("zipnn-src", "zipnn_src", "zipnn src"):
-            with self.subTest(alias=alias):
-                adapter_class.reset_mock()
-                compressor = Compressor(
-                    alias,
-                    threads=3,
-                    chunk_size=4096,
-                    compression_threshold=0.8,
-                    zipnn_method="huffman",
-                )
+        compressor = Compressor(
+            "zipnn",
+            threads=3,
+            chunk_size=4096,
+            compression_threshold=0.8,
+            zipnn_method="huffman",
+        )
 
-                self.assertIs(compressor.codec, adapter_class.return_value)
-                adapter_class.assert_called_once_with(
-                    method="HUFFMAN",
-                    threads=3,
-                    compression_threshold=0.8,
-                    chunk_size=4096,
-                )
+        self.assertIs(compressor.codec, adapter_class.return_value)
+        adapter_class.assert_called_once_with(
+            method="HUFFMAN",
+            threads=3,
+            compression_threshold=0.8,
+            chunk_size=4096,
+        )
+
+    def test_legacy_source_names_are_not_public_methods(self):
+        for method in ("zipnn-src", "zipnn_src", "zipnn src"):
+            with (
+                self.subTest(method=method),
+                self.assertRaisesRegex(ValueError, "Unsupported compression method"),
+            ):
+                Compressor(method)
+
+    @mock.patch("neuralzip.compressor.ZipNNSourceCodec")
+    def test_source_decode_is_model_wide_after_all_encodes(self, adapter_class):
+        codec = adapter_class.return_value
+        tensors = {
+            "first": torch.arange(8, dtype=torch.bfloat16),
+            "second": torch.arange(12, dtype=torch.bfloat16),
+        }
+        payloads = {"first": b"first", "second": b"second"}
+        restored = {payloads[name]: tensor.clone() for name, tensor in tensors.items()}
+        events = []
+        encoded_names = iter(tensors)
+
+        def encode_tensor(tensor, *, verify):
+            del tensor
+            name = next(encoded_names)
+            events.append(("encode", name, verify))
+            return SimpleNamespace(
+                payload=payloads[name],
+                input_copy_seconds=0.1,
+                codec_encode_seconds=0.2,
+                encode_seconds=0.3,
+            )
+
+        def decode(payload):
+            events.append(("decode", payload.decode()))
+            return restored[payload]
+
+        codec.encode_tensor.side_effect = encode_tensor
+        codec.decode.side_effect = decode
+        model = SimpleNamespace(model=tensors)
+
+        result = Compressor("zipnn", verify=True).compress(model)
+
+        self.assertEqual(
+            events,
+            [
+                ("encode", "first", False),
+                ("encode", "second", False),
+                ("decode", "first"),
+                ("decode", "second"),
+            ],
+        )
+        self.assertTrue(result["roundtrip_ok"])
+        self.assertGreaterEqual(result["decode_seconds"], 0.0)
 
     @mock.patch("neuralzip.compressor.ZipNNSourceCodec")
     def test_source_model_io_is_rejected_before_payload_or_file_access(
         self, adapter_class
     ):
         del adapter_class
-        compressor = Compressor("zipnn-src")
-        results = (
-            {"method": "zipnn_src", "tensor_results": []},
+        compressor = Compressor("zipnn")
+        results = tuple(
             {
-                "method": "zipnn src",
-                "tensor_results": [{"name": "weight", "payload": b"ZNframe"}],
-            },
+                "method": method,
+                "tensor_results": (
+                    [] if index == 0 else [{"name": "weight", "payload": b"ZNframe"}]
+                ),
+            }
+            for index, method in enumerate(
+                ("zipnn", "zipnn-src", "zipnn_src", "zipnn src")
+            )
         )
         for result in results:
             with (

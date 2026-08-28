@@ -10,10 +10,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import examples.run_setup_transfer_suite as family_suite
-from examples.model_catalog import MODEL_SPECS, QUANTIZED_MODEL_SPECS
-from examples.model_loading import MappingModel
-from examples.run_quantized_nibble_compression import (
+import examples.experiments.run_setup_transfer_suite as family_suite
+from examples.experiments.model_catalog import MODEL_SPECS, QUANTIZED_MODEL_SPECS
+from examples.experiments.model_loading import MappingModel
+from examples.experiments.run_quantized_nibble_compression import (
     _bytes_from_nibbles,
     _encode_local,
     _encode_shared,
@@ -22,7 +22,7 @@ from examples.run_quantized_nibble_compression import (
     _prepare_shared_plan,
     _verify_archive,
 )
-from examples.run_setup_transfer_suite import (
+from examples.experiments.run_setup_transfer_suite import (
     FAMILY_SPECS,
     FamilySpec,
     canonical_tensor_name,

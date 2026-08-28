@@ -35,7 +35,10 @@ def _tensor_raw_bytes(tensor):
 
 
 def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
-    raw = torch.frombuffer(bytearray(raw_bytes), dtype=torch.uint8)
+    # Native decoders return an owning bytearray that PyTorch can wrap
+    # directly.  Preserve the defensive copy for immutable/archive inputs.
+    owner = raw_bytes if isinstance(raw_bytes, bytearray) else bytearray(raw_bytes)
+    raw = torch.frombuffer(owner, dtype=torch.uint8)
     return raw.view(dtype).reshape(shape)
 
 

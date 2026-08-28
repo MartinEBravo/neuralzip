@@ -102,14 +102,14 @@ class ZipNNSourceCodec:
 
     def encode_tensor(self, tensor, *, verify=False):
         if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-            raise TypeError("ZipNN source only compresses floating tensors.")
+            raise TypeError("ZipNN only compresses floating tensors.")
 
         original = tensor.detach().cpu().contiguous()
         copy_started = time.perf_counter()
         compressor_input = original.clone()
         copy_seconds = time.perf_counter() - copy_started
         if original.numel() and compressor_input.data_ptr() == original.data_ptr():
-            raise AssertionError("ZipNN source input clone aliases the source tensor.")
+            raise AssertionError("ZipNN input clone aliases the source tensor.")
 
         codec_started = time.perf_counter()
         payload = self._encoder.compress(compressor_input)

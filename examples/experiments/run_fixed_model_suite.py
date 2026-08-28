@@ -40,7 +40,7 @@ try:
     from .direct_compression import (
         encode_neuralzip,
         prepare_neuralzip,
-        zipnn_src_pass,
+        zipnn_pass,
     )
     from .model_catalog import SPECS_BY_KEY
     from .model_loading import (
@@ -50,11 +50,11 @@ try:
         host_provenance,
         load_model,
     )
-except ImportError:  # Direct execution from the examples directory.
+except ImportError:  # Direct execution from the experiments directory.
     from direct_compression import (
         encode_neuralzip,
         prepare_neuralzip,
-        zipnn_src_pass,
+        zipnn_pass,
     )
     from model_catalog import SPECS_BY_KEY
     from model_loading import (
@@ -192,7 +192,7 @@ def hf_cache_root(
 
 def median_summary(samples: list[dict[str, object]]) -> dict[str, object]:
     methods = {}
-    for variant in ("zipnn-src", "neuralzip"):
+    for variant in ("zipnn", "neuralzip"):
         group = [row for row in samples if row["variant"] == variant]
         times = [float(row["encode_seconds"]) for row in group]
         ratios = [float(row["exponent_ratio_pct"]) for row in group]
@@ -221,14 +221,14 @@ def median_summary(samples: list[dict[str, object]]) -> dict[str, object]:
             "exponent_compressed_bytes": compressed[0],
             "exponent_raw_bytes": raw[0],
         }
-        if variant == "zipnn-src":
+        if variant == "zipnn":
             codec_times = [float(row["codec_encode_seconds"]) for row in group]
             copy_times = [float(row["input_copy_seconds"]) for row in group]
             methods[variant]["codec_median_seconds"] = statistics.median(codec_times)
             methods[variant]["input_copy_median_seconds"] = statistics.median(
                 copy_times
             )
-    zipnn = methods["zipnn-src"]
+    zipnn = methods["zipnn"]
     neuralzip = methods["neuralzip"]
     if zipnn["exponent_raw_bytes"] != neuralzip["exponent_raw_bytes"]:
         raise RuntimeError("ZipNN and NeuralZip exponent scopes differ")
@@ -366,8 +366,8 @@ def worker(args: argparse.Namespace) -> int:
         state["small_timing_regime"] = is_small
         atomic_json(output, state)
 
-        print(f"warmup={spec.key}:zipnn-src", flush=True)
-        zipnn_warmup = zipnn_src_pass(model, threads=args.threads, verify=True)
+        print(f"warmup={spec.key}:zipnn", flush=True)
+        zipnn_warmup = zipnn_pass(model, threads=args.threads, verify=True)
         if zipnn_warmup.get("roundtrip_ok") is not True:
             raise RuntimeError("ZipNN verified warm-up failed")
         state["zipnn_warmup"] = zipnn_warmup
@@ -377,8 +377,8 @@ def worker(args: argparse.Namespace) -> int:
         # unlike the repeated encode workload.  Discard one immediate encode
         # before collecting the steady ZipNN samples.
         state["zipnn_steady_warmups"] = warm_until_stable(
-            f"{spec.key}:zipnn-src",
-            lambda: zipnn_src_pass(
+            f"{spec.key}:zipnn",
+            lambda: zipnn_pass(
                 model,
                 threads=args.threads,
                 verify=False,
@@ -392,17 +392,17 @@ def worker(args: argparse.Namespace) -> int:
 
         for repetition in range(1, repetitions + 1):
             print(
-                f"measure={spec.key}:zipnn-src:repeat-{repetition}",
+                f"measure={spec.key}:zipnn:repeat-{repetition}",
                 flush=True,
             )
-            metrics = zipnn_src_pass(
+            metrics = zipnn_pass(
                 model,
                 threads=args.threads,
                 verify=False,
             )
             state["samples"].append(
                 {
-                    "variant": "zipnn-src",
+                    "variant": "zipnn",
                     "repetition": repetition,
                     "measured_at": utc_now(),
                     **metrics,
@@ -543,7 +543,7 @@ def write_suite_summary(
                     "model_key": entry["model_key"],
                     "model": entry["model"],
                     "family": entry["family"],
-                    "compressor": "ZipNN" if variant == "zipnn-src" else "NeuralZip",
+                    "compressor": "ZipNN" if variant == "zipnn" else "NeuralZip",
                     "repetitions": method["repetitions"],
                     "encode_median_seconds": method["encode_median_seconds"],
                     "encode_min_seconds": method["encode_min_seconds"],
@@ -557,7 +557,7 @@ def write_suite_summary(
                     "ratio_delta_vs_zipnn_pp": summary["ratio_delta_vs_zipnn_pp"],
                     "setup_seconds": (
                         0.0
-                        if variant == "zipnn-src"
+                        if variant == "zipnn"
                         else result["neuralzip_setup"]["setup_seconds"]
                     ),
                     "high_time_variation": summary["high_time_variation"],
@@ -686,7 +686,7 @@ def parent(args: argparse.Namespace) -> int:
             with log_path.open("w") as log:
                 result = subprocess.run(
                     command,
-                    cwd=Path(__file__).resolve().parents[1],
+                    cwd=Path(__file__).resolve().parents[2],
                     env=environment,
                     stdout=log,
                     stderr=subprocess.STDOUT,

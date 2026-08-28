@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from examples.run_fixed_model_suite import DEFAULT_MANIFEST, load_manifest
+from examples.experiments.run_fixed_model_suite import DEFAULT_MANIFEST, load_manifest
 
 
 def test_bundled_manifest_pins_every_fixed_model():

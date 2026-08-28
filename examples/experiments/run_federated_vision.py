@@ -3,7 +3,7 @@
 The experiment trains CIFAR ResNet models with FedAvg and evaluates two
 lossless FP32 communication codecs on exactly the same messages:
 
-* the official ZipNN source package (``zipnn.ZipNN``), and
+* the official ZipNN package (``zipnn.ZipNN``), and
 * NeuralZip with one initial clustering/codebook setup reused by every client
   and every communication round.
 
@@ -16,7 +16,7 @@ not have an exponent field and are carried unchanged.
 The default is the 10-client, 200-round ResNet-18/34 suite. Override the
 CLI arguments for smoke tests; for example::
 
-    python examples/run_federated_vision.py \
+    python -m examples.experiments.run_federated_vision \
         --architectures resnet18 --rounds 1 --clients 2 \
         --train-subset 20 --batch-size 2 --threads 2 \
         --device cpu --output-dir /tmp/neuralzip-federated-smoke
@@ -39,9 +39,9 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, models, transforms
 
 try:
-    from examples.federated_common import (
+    from examples.experiments.federated_common import (
         COMPRESSOR_NEURALZIP,
-        COMPRESSOR_SRC,
+        COMPRESSOR_ZIPNN,
         DTYPE_NAME,
         FederatedCodecProtocol,
         _write_csv_atomic,
@@ -50,10 +50,10 @@ try:
         build_summary_rows,
         new_cumulative_metrics,
     )
-except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
+except ModuleNotFoundError:  # Direct execution from the experiments directory.
     from federated_common import (  # type: ignore
         COMPRESSOR_NEURALZIP,
-        COMPRESSOR_SRC,
+        COMPRESSOR_ZIPNN,
         DTYPE_NAME,
         FederatedCodecProtocol,
         _write_csv_atomic,
@@ -64,7 +64,7 @@ except ModuleNotFoundError:  # Direct ``python examples/<script>.py`` execution.
     )
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATASET_NAME = "CIFAR-10"
 
 
@@ -370,11 +370,11 @@ def _run_architecture(
         "threads": int(args.threads),
         "chunk_size": int(args.chunk_size),
         "compression_threshold": float(args.compression_threshold),
-        "compressors": [COMPRESSOR_SRC, COMPRESSOR_NEURALZIP],
+        "compressors": [COMPRESSOR_ZIPNN, COMPRESSOR_NEURALZIP],
         "warmup_runs": 1,
         "trajectory": (
             "NeuralZip-decoded FP32 states after bitwise equality with "
-            "ZipNN-src decoded states"
+            "ZipNN decoded states"
         ),
         "time_metric": (
             "one server-side downlink encode per round; client encoding, decode, "

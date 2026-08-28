@@ -31,18 +31,6 @@ class Huff0CodeTable:
 
 
 @dataclass(frozen=True)
-class GPUEncodedBFloat16:
-    """Native CPU export of BF16 weights for the CUDA decoder."""
-
-    encoded_exponents: bytes
-    sign_mantissa: bytes
-    packed_gaps: bytes
-    output_positions: tuple[int, ...]
-    bit_length: int
-    max_bits: int
-
-
-@dataclass(frozen=True)
 class Huff0NGramPayload:
     payload: bytes
     symbol_count: int
@@ -131,28 +119,7 @@ def compress_many(chunks, *, min_saving_bytes=0, threads=0):
     )
 
 
-def compress_zipnn(
-    data,
-    *,
-    element_size,
-    bit_reorder,
-    chunk_size,
-    min_saving_bytes=0,
-    threads=0,
-    compression_threshold=0.95,
-):
-    return _huff0_cpp.compress_zipnn(
-        data,
-        int(element_size),
-        int(bit_reorder),
-        int(chunk_size),
-        min_saving_bytes=int(min_saving_bytes),
-        threads=int(threads),
-        compression_threshold=float(compression_threshold),
-    )
-
-
-def _normalize_zipnn_mixed_modes(element_size, stream_modes):
+def _normalize_mixed_stream_modes(element_size, stream_modes):
     element_size = int(element_size)
     modes = tuple(stream_modes)
     if len(modes) != element_size:
@@ -196,40 +163,7 @@ def _normalize_zipnn_mixed_modes(element_size, stream_modes):
     return tuple(native_modes)
 
 
-def compress_zipnn_mixed(
-    data,
-    *,
-    element_size,
-    bit_reorder,
-    chunk_size,
-    stream_modes,
-    min_saving_bytes=0,
-    threads=0,
-    compression_threshold=0.95,
-):
-    """Encode heterogeneous ZipNN byte streams in one native pipeline.
-
-    ``stream_modes`` contains one mapping per reordered byte stream. Supported
-    kinds are ``raw``, ``local_huff0``, ``shared_huff0``, and
-    ``packed_huff0``. Shared and packed modes carry a :class:`Huff0Codebook`;
-    packed modes additionally carry ``vocab`` and ``ngram_n``. The native
-    result contains one list per stream. Each chunk is returned as
-    ``(mode, payload, symbol_count, token_count, escapes, tail, n, hits,
-    misses)`` after applying direct raw fallback to rejected shared or packed
-    chunks. Explicit ``local_huff0`` modes still use their own local/raw path.
-
-    This primitive implements the original ZipNN stream layout used by every
-    production NeuralZip encoding entrypoint.
-    """
-    return compress_zipnn_mixed_many(
-        ((data, element_size, bit_reorder, chunk_size, stream_modes),),
-        min_saving_bytes=int(min_saving_bytes),
-        threads=int(threads),
-        compression_threshold=float(compression_threshold),
-    )[0]
-
-
-def compress_zipnn_mixed_many(
+def compress_mixed_streams_many(
     tensor_specs,
     *,
     min_saving_bytes=0,
@@ -239,10 +173,9 @@ def compress_zipnn_mixed_many(
     """Encode a model's tensors through one native mixed-stream job queue.
 
     Each input is ``(data, element_size, bit_reorder, chunk_size,
-    stream_modes)`` and the output adds one outer tensor dimension to
-    :func:`compress_zipnn_mixed`. Input buffers and the native job queue live
-    only for this call; no reordered or tokenized target representation is
-    retained afterwards.
+    stream_modes)`` and produces one list per reordered byte stream. Input
+    buffers and the native job queue live only for this call; no reordered or
+    tokenized target representation is retained afterwards.
     """
     native_specs = []
     for spec in tensor_specs:
@@ -259,11 +192,11 @@ def compress_zipnn_mixed_many(
                 element_size,
                 int(bit_reorder),
                 int(chunk_size),
-                _normalize_zipnn_mixed_modes(element_size, stream_modes),
+                _normalize_mixed_stream_modes(element_size, stream_modes),
             )
         )
 
-    return _huff0_cpp.compress_zipnn_mixed_many(
+    return _huff0_cpp.compress_mixed_streams_many(
         tuple(native_specs),
         min_saving_bytes=int(min_saving_bytes),
         threads=int(threads),
@@ -271,8 +204,8 @@ def compress_zipnn_mixed_many(
     )
 
 
-def decompress_zipnn_mixed_many(tensor_specs, *, threads=0):
-    """Decode sharing-only ZipNN tensors through one native job queue.
+def decompress_mixed_streams_many(tensor_specs, *, threads=0):
+    """Decode sharing-only tensors through one native job queue.
 
     Each tensor spec is ``(element_size, bit_reorder, numel, groups)``.
     ``groups`` contains one chunk sequence per byte stream, and every chunk is
@@ -313,10 +246,10 @@ def decompress_zipnn_mixed_many(tensor_specs, *, threads=0):
                 mode = str(mode)
                 if mode == "packed_huff0":
                     raise ValueError(
-                        "decompress_zipnn_mixed_many does not support packed_huff0."
+                        "decompress_mixed_streams_many does not support packed_huff0."
                     )
                 if mode not in supported:
-                    raise ValueError(f"Unsupported ZipNN decode chunk mode: {mode!r}.")
+                    raise ValueError(f"Unsupported decode chunk mode: {mode!r}.")
                 if isinstance(decodebook, Huff0Decodebook):
                     decodebook = decodebook.handle
                 native_chunks.append(
@@ -338,7 +271,7 @@ def decompress_zipnn_mixed_many(tensor_specs, *, threads=0):
             )
         )
 
-    return _huff0_cpp.decompress_zipnn_mixed_many(
+    return _huff0_cpp.decompress_mixed_streams_many(
         tuple(native_specs), threads=int(threads)
     )
 
@@ -402,48 +335,6 @@ def export_code_table(codebook, *, max_bits=12):
         code_lengths=tuple(lengths),
         code_values=tuple(values),
         max_bits=int(actual_max_bits),
-    )
-
-
-def encode_gpu_bfloat16(
-    raw_bf16,
-    codebook_or_header,
-    bytes_per_thread=8,
-    threads_per_block=512,
-):
-    """Encode little-endian BF16 bytes into the CUDA inference layout.
-
-    The exponent lane is emitted as one continuous MSB-first canonical Huffman
-    stream. The sign/mantissa lane remains verbatim, while ``packed_gaps`` and
-    ``output_positions`` let independent CUDA threads and blocks restart inside
-    that stream without scanning from its beginning.
-    """
-
-    if isinstance(codebook_or_header, Huff0Codebook):
-        codebook_header = codebook_or_header.codebook
-    else:
-        codebook_header = codebook_or_header
-    result = _huff0_cpp.encode_gpu_bfloat16(
-        _immutable_bytes(raw_bf16),
-        _immutable_bytes(codebook_header),
-        bytes_per_thread=int(bytes_per_thread),
-        threads_per_block=int(threads_per_block),
-    )
-    (
-        encoded_exponents,
-        sign_mantissa,
-        packed_gaps,
-        output_positions,
-        bit_length,
-        max_bits,
-    ) = result
-    return GPUEncodedBFloat16(
-        encoded_exponents=encoded_exponents,
-        sign_mantissa=sign_mantissa,
-        packed_gaps=packed_gaps,
-        output_positions=tuple(output_positions),
-        bit_length=int(bit_length),
-        max_bits=int(max_bits),
     )
 
 

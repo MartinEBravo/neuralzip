@@ -52,6 +52,24 @@ class EncodedTensorBatch:
 
 
 @dataclass(frozen=True)
+class DecodeStats:
+    decode_seconds: float
+
+
+@dataclass(frozen=True)
+class EncodeStats:
+    """Stable size and timing summary returned by ``Compressor.encode``."""
+
+    raw_bytes: int
+    compressed_bytes: int
+    compression_ratio: float
+    setup_seconds: float
+    mapping_seconds: float
+    encode_seconds: float
+    total_seconds: float
+
+
+@dataclass(frozen=True)
 class ExponentSizeReport:
     """Exact serialized accounting for the exponent stream of a payload set."""
 

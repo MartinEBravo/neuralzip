@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .gpu_export import GAP_BITS, MAX_CODE_BITS
+from .export import GAP_BITS, MAX_CODE_BITS
 
 _BYTES_PER_THREAD = 8
 _DEFAULT_THREADS_PER_BLOCK = 512

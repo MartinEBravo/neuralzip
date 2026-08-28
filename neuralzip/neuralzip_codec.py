@@ -27,21 +27,28 @@ from .serialization import (
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
 )
-from .zipnn_codec import (
+from .byte_group_codec import (
     DTYPE_BY_NAME,
-    ZipNNCodec,
+    ByteGroupCodec,
     _tensor_from_raw_bytes,
-    _zipnn_dtype_config,
-    _zipnn_reordered_bytes,
-    _zipnn_restored_bytes,
+    _byte_group_dtype_config,
+    _byte_group_reordered_bytes,
+    _byte_group_restored_bytes,
 )
+
+_TRANSFER_NAME_FALLBACKS = {
+    # Tied-output models such as Qwen store this tensor only under the input
+    # embedding name. Untied targets may expose the equivalent output head as
+    # a second tensor, whose streams can safely reuse the embedding modes.
+    "lm_head.weight": ("model.embed_tokens.weight",),
+}
 
 
 def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
 
 
-class NeuralZipCodec(ZipNNCodec):
+class NeuralZipCodec(ByteGroupCodec):
     """JS-clustered Huffman with deterministic packed-exponent selection."""
 
     def __init__(
@@ -397,7 +404,7 @@ class NeuralZipCodec(ZipNNCodec):
 
         def encode_once():
             started = time.perf_counter()
-            huff0.compress_zipnn_mixed_many(
+            huff0.compress_mixed_streams_many(
                 tuple(tensor_specs),
                 min_saving_bytes=self.min_saving_bytes,
                 threads=self.threads,
@@ -407,7 +414,7 @@ class NeuralZipCodec(ZipNNCodec):
 
         # Warm code/data caches once, then use the best of three complete
         # measurements. The minimum estimates algorithmic work without letting
-        # scheduler jitter change the frozen family plan.
+        # scheduler jitter change the frozen family setup.
         encode_once()
         return min(encode_once() for _ in range(3))
 
@@ -481,9 +488,9 @@ class NeuralZipCodec(ZipNNCodec):
             "ngram_n": int(ngram_n),
             "vocab": vocab,
             "codebook": codebook,
-            # New codebooks use the same four-stream Huff0 payload shape as
-            # ZipNN local blocks.  The archive mode records this explicitly so
-            # legacy one-stream archives remain decodable.
+            # New codebooks use a four-stream Huff0 payload shape. The archive
+            # mode records this explicitly so legacy one-stream archives remain
+            # decodable.
             "frame_4x": True,
         }
 
@@ -621,8 +628,8 @@ class NeuralZipCodec(ZipNNCodec):
                 )
 
         # A frozen NeuralZip setup may only select modes whose target encode
-        # uses precomputed state, or raw storage.  Local Huff0 remains available
-        # to the ZipNN baseline but is never a post-setup NeuralZip mode.
+        # uses precomputed state, or raw storage. Local Huff0 is used only while
+        # estimating candidates and is never a post-setup mode.
         base_candidates = [raw_mode]
         if shared is not None:
             base_candidates.append(shared)
@@ -756,12 +763,12 @@ class NeuralZipCodec(ZipNNCodec):
                 continue
 
             original = tensor.detach().cpu().contiguous()
-            config = _zipnn_dtype_config(original.dtype)
+            config = _byte_group_dtype_config(original.dtype)
             for stream_id in range(int(config["num_buffers"])):
                 key = self._codebook_key(name, original, stream_id)
                 # The source cluster decision already compared compressed size
                 # and direct-encoding time under the configured tolerance.
-                # Re-probing every tensor with a ratio-only local baseline here
+                # Re-probing every tensor with a ratio-only local fallback here
                 # would undo that decision and prune all shared codebooks.
                 selected = self._mode_by_key[key]
 
@@ -797,14 +804,16 @@ class NeuralZipCodec(ZipNNCodec):
             self._record_selected_mode(mode)
 
     def prepare_direct_transfer_target(self, named_tensors):
-        """Map a family target to a reusable source setup by exact tensor name.
+        """Map a family target to a reusable source setup.
 
         This path reads only target metadata (name, dtype, size, and number of
         byte streams). It does not inspect tensor values, compute exponent
         histograms or Jensen--Shannon distances, or evaluate alternative modes.
         The target can encode immediately from its own tensor buffers while
         retaining the source model's modes, vocabularies, and codebooks. No
-        target data are copied or retained by this mapping step.
+        target data are copied or retained by this mapping step. Exact tensor
+        names are preferred; explicit structural aliases cover equivalent
+        tensors represented differently by related architectures.
         """
         if not self._clusters_prepared:
             raise RuntimeError("Source clusters must be prepared before transfer.")
@@ -819,8 +828,13 @@ class NeuralZipCodec(ZipNNCodec):
         missing = []
         target_tensors = 0
         matched_tensors = 0
+        exact_tensors = 0
+        fallback_tensors = 0
         target_symbols = 0
         matched_symbols = 0
+        exact_symbols = 0
+        fallback_symbols = 0
+        fallback_assignments = {}
 
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if (
@@ -830,29 +844,61 @@ class NeuralZipCodec(ZipNNCodec):
             ):
                 continue
 
-            config = _zipnn_dtype_config(tensor.dtype)
+            config = _byte_group_dtype_config(tensor.dtype)
+            stream_ids = tuple(range(int(config["num_buffers"])))
+            source_name = str(name)
+            exact_keys = tuple(
+                self._transfer_plan_key(name, tensor, stream_id)
+                for stream_id in stream_ids
+            )
+            tensor_exact = all(key in self._mode_by_tensor_stream for key in exact_keys)
+            if not tensor_exact:
+                for candidate in _TRANSFER_NAME_FALLBACKS.get(str(name), ()):
+                    candidate_keys = tuple(
+                        (candidate, dtype_name(tensor.dtype), stream_id)
+                        for stream_id in stream_ids
+                    )
+                    if all(
+                        key in self._mode_by_tensor_stream for key in candidate_keys
+                    ):
+                        source_name = candidate
+                        break
+
             plan = []
-            for stream_id in range(int(config["num_buffers"])):
+            for stream_id in stream_ids:
                 plan_key = self._transfer_plan_key(name, tensor, stream_id)
-                source_mode = self._mode_by_tensor_stream.get(plan_key)
+                source_key = (source_name, plan_key[1], plan_key[2])
+                source_mode = self._mode_by_tensor_stream.get(source_key)
                 if source_mode is None:
                     missing.append(plan_key)
                     source_mode = {"kind": "raw", "fixed_cost": 0}
+                elif source_name != str(name):
+                    fallback_assignments[f"{name}:{plan_key[1]}:stream{stream_id}"] = (
+                        f"{source_name}:{plan_key[1]}:stream{stream_id}"
+                    )
                 plan.append((plan_key, source_mode))
 
-            tensor_matched = all(
-                plan_key in self._mode_by_tensor_stream for plan_key, _ in plan
-            )
+            tensor_matched = all(plan_key not in missing for plan_key, _ in plan)
+            tensor_exact = tensor_matched and source_name == str(name)
             symbols = int(tensor.numel())
             target_tensors += 1
             target_symbols += symbols
             if tensor_matched:
                 matched_tensors += 1
                 matched_symbols += symbols
+                if tensor_exact:
+                    exact_tensors += 1
+                    exact_symbols += symbols
+                else:
+                    fallback_tensors += 1
+                    fallback_symbols += symbols
 
-            source_cluster = self.cluster_map.get(str(name))
+            cluster_name = str(name)
+            if tensor_matched and not tensor_exact:
+                cluster_name = source_name
+            source_cluster = self.cluster_map.get(cluster_name)
             if source_cluster is None:
-                source_cluster = self._computed_cluster_map.get(str(name))
+                source_cluster = self._computed_cluster_map.get(cluster_name)
             transfer_clusters[str(name)] = (
                 str(source_cluster)
                 if tensor_matched and source_cluster is not None
@@ -869,19 +915,29 @@ class NeuralZipCodec(ZipNNCodec):
             )
             suffix = "" if len(missing) <= 8 else f" (+{len(missing) - 8} more)"
             raise ValueError(
-                "Direct transfer requires an exact source mode for every target "
+                "Direct transfer requires a compatible source mode for every target "
                 f"stream; missing {preview}{suffix}."
             )
 
         self._transfer_mode_by_tensor_stream = transfer_modes
         self._transfer_cluster_by_name = transfer_clusters
         stats = {
-            "mapping": "exact source tensor name, dtype, and stream",
+            "mapping": (
+                "exact source tensor name, dtype, and stream"
+                if not fallback_assignments
+                else "exact name or explicit structural alias, dtype, and stream"
+            ),
             "target_tensors": target_tensors,
             "matched_tensors": matched_tensors,
+            "exact_tensors": exact_tensors,
+            "fallback_tensors": fallback_tensors,
             "target_exponents": target_symbols,
             "matched_exponents": matched_symbols,
+            "exact_exponents": exact_symbols,
+            "fallback_exponents": fallback_symbols,
             "missing_streams": len(missing),
+            "fallback_streams": len(fallback_assignments),
+            "fallback_assignments": dict(sorted(fallback_assignments.items())),
             "target_histograms_computed": False,
             "target_js_matching": False,
             "target_mode_probing": False,
@@ -908,8 +964,8 @@ class NeuralZipCodec(ZipNNCodec):
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 continue
             original = tensor.detach().cpu().contiguous()
-            config = _zipnn_dtype_config(original.dtype)
-            reordered = _zipnn_reordered_bytes(original, config)
+            config = _byte_group_dtype_config(original.dtype)
+            reordered = _byte_group_reordered_bytes(original, config)
             element_size = int(config["element_size"])
             for stream_id in range(int(config["num_buffers"])):
                 is_exponent = self._is_exponent_stream(config, stream_id)
@@ -1060,7 +1116,7 @@ class NeuralZipCodec(ZipNNCodec):
         """Encode one input-size-windowed tensor batch through one job queue."""
         native_specs = [
             (
-                tensor.view(torch.uint8).reshape(-1).numpy(),
+                tensor.reshape(-1).view(torch.uint8).numpy(),
                 int(config["element_size"]),
                 int(config["bit_reorder"]),
                 self._stream_chunk_size(int(config["element_size"])),
@@ -1068,14 +1124,14 @@ class NeuralZipCodec(ZipNNCodec):
             )
             for _, tensor, config, tensor_modes in tensor_specs
         ]
-        native_batch = huff0.compress_zipnn_mixed_many(
+        native_batch = huff0.compress_mixed_streams_many(
             native_specs,
             min_saving_bytes=self.min_saving_bytes,
             threads=self.threads,
             compression_threshold=self.compression_threshold,
         )
         if len(native_batch) != len(tensor_specs):
-            raise RuntimeError("Mixed ZipNN returned an invalid tensor count.")
+            raise RuntimeError("Mixed-stream encoder returned an invalid tensor count.")
         return [
             self._tensor_payload_from_native_mixed(
                 name,
@@ -1104,7 +1160,7 @@ class NeuralZipCodec(ZipNNCodec):
         for name, tensor in named_tensors:
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 raise TypeError("NeuralZipCodec only compresses floating tensors.")
-            config = _zipnn_dtype_config(tensor.dtype)
+            config = _byte_group_dtype_config(tensor.dtype)
             raw_bytes = int(tensor.numel()) * int(config["element_size"])
             if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
                 outputs.extend(self._compress_direct_native_batch(batch))
@@ -1142,9 +1198,9 @@ class NeuralZipCodec(ZipNNCodec):
         element_size = int(config["element_size"])
         stream_count = int(config["num_buffers"])
         if len(native_groups) != stream_count:
-            raise RuntimeError("Mixed ZipNN returned an invalid stream count.")
+            raise RuntimeError("Mixed-stream encoder returned an invalid stream count.")
 
-        baseline_format = all(
+        local_format = all(
             mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes
         )
         allowed_finals = {
@@ -1178,7 +1234,7 @@ class NeuralZipCodec(ZipNNCodec):
                 symbol_count = int(symbol_count)
                 if final_kind not in allowed_finals[planned_kind]:
                     raise RuntimeError(
-                        f"Mixed ZipNN changed {planned_kind!r} into the invalid "
+                        f"Mixed-stream encoder changed {planned_kind!r} into the invalid "
                         f"mode {final_kind!r}."
                     )
                 symbols += symbol_count
@@ -1216,12 +1272,12 @@ class NeuralZipCodec(ZipNNCodec):
                     )
             if symbols != int(tensor.numel()):
                 raise RuntimeError(
-                    "Mixed ZipNN stream symbol count does not match the tensor."
+                    "Mixed-stream symbol count does not match the tensor."
                 )
             is_exponent = self._is_exponent_stream(config, stream_id)
             stream_kind = (
                 "byte_group"
-                if baseline_format
+                if local_format
                 else ("exponent" if is_exponent else "byte_group")
             )
             groups.append(
@@ -1349,7 +1405,7 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
 
         dtype = DTYPE_BY_NAME[compressed.dtype]
-        config = _zipnn_dtype_config(dtype)
+        config = _byte_group_dtype_config(dtype)
         if compressed.element_size != int(config["element_size"]):
             raise ValueError("Payload element size does not match its dtype.")
         if len(compressed.groups) != int(config["num_buffers"]):
@@ -1411,12 +1467,12 @@ class NeuralZipCodec(ZipNNCodec):
             (compressed, *self._native_decode_spec(compressed))
             for compressed in payloads
         ]
-        raw_buffers = huff0.decompress_zipnn_mixed_many(
+        raw_buffers = huff0.decompress_mixed_streams_many(
             tuple(spec for _, spec, _ in prepared),
             threads=self.threads,
         )
         if len(raw_buffers) != len(prepared):
-            raise RuntimeError("Mixed ZipNN decoder returned an invalid tensor count.")
+            raise RuntimeError("Mixed-stream decoder returned an invalid tensor count.")
         outputs = []
         for (compressed, _, dtype), raw in zip(
             prepared,
@@ -1473,7 +1529,7 @@ class NeuralZipCodec(ZipNNCodec):
         if compressed.dtype not in DTYPE_BY_NAME:
             raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
         if compressed.strategy != "neuralzip":
-            return super().decompress_tensor(compressed)
+            raise ValueError(f"Unsupported payload strategy: {compressed.strategy!r}")
 
         dtype, config = self._validate_decompression_payload(compressed)
 
@@ -1493,5 +1549,5 @@ class NeuralZipCodec(ZipNNCodec):
                 )
             raw[stream_id :: compressed.element_size] = stream
 
-        restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
+        restored = _byte_group_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

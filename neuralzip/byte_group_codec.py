@@ -1,13 +1,15 @@
+import math
+
 import numpy as np
 import torch
 
 from . import huff0
-from .dtypes import FLOAT_DTYPES_BY_NAME, dtype_name
-from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
+from .dtypes import FLOAT_DTYPES_BY_NAME
+from .payloads import ByteGroupPayload, StreamChunk
 
 DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
 
-ZIPNN_DTYPE_CONFIG = {
+BYTE_GROUP_DTYPE_CONFIG = {
     torch.float32: {
         "element_size": 4,
         "num_buffers": 4,
@@ -31,22 +33,30 @@ ZIPNN_DTYPE_CONFIG = {
 
 def _tensor_raw_bytes(tensor):
     tensor = tensor.detach().cpu().contiguous()
-    return tensor.view(torch.uint8).reshape(-1).numpy().tobytes()
+    return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
 def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
     # Native decoders return an owning bytearray that PyTorch can wrap
     # directly.  Preserve the defensive copy for immutable/archive inputs.
     owner = raw_bytes if isinstance(raw_bytes, bytearray) else bytearray(raw_bytes)
+    shape = tuple(int(dimension) for dimension in shape)
+    expected_bytes = math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+    if len(owner) != expected_bytes:
+        raise ValueError(
+            f"Decoded tensor byte length mismatch: {len(owner)} != {expected_bytes}."
+        )
+    if not owner:
+        return torch.empty(shape, dtype=dtype)
     raw = torch.frombuffer(owner, dtype=torch.uint8)
     return raw.view(dtype).reshape(shape)
 
 
-def _zipnn_dtype_config(dtype):
-    config = ZIPNN_DTYPE_CONFIG.get(dtype)
+def _byte_group_dtype_config(dtype):
+    config = BYTE_GROUP_DTYPE_CONFIG.get(dtype)
     if config is None:
         raise TypeError(
-            "ZipNN supports torch.float32, torch.bfloat16, and torch.float16 "
+            "NeuralZip supports torch.float32, torch.bfloat16, and torch.float16 "
             f"tensors; got {dtype}."
         )
     return config
@@ -84,7 +94,7 @@ def _restore_bfloat16(raw_bytes):
     return (sign | exponent | mantissa).astype(np.dtype("<u2"), copy=False).tobytes()
 
 
-def _zipnn_reordered_bytes(tensor, config):
+def _byte_group_reordered_bytes(tensor, config):
     raw_bytes = _tensor_raw_bytes(tensor)
     if not config["bit_reorder"]:
         return raw_bytes
@@ -95,7 +105,7 @@ def _zipnn_reordered_bytes(tensor, config):
     return raw_bytes
 
 
-def _zipnn_restored_bytes(raw_bytes, dtype, config):
+def _byte_group_restored_bytes(raw_bytes, dtype, config):
     if not config["bit_reorder"]:
         return raw_bytes
     if dtype == torch.float32:
@@ -105,8 +115,8 @@ def _zipnn_restored_bytes(raw_bytes, dtype, config):
     return raw_bytes
 
 
-class ZipNNCodec:
-    """ZipNN-style dtype-aware byte grouping with Huffman and raw fallback."""
+class ByteGroupCodec:
+    """Internal dtype-aware byte grouping with Huffman and raw fallback."""
 
     def __init__(
         self,
@@ -128,25 +138,6 @@ class ZipNNCodec:
             raise ValueError("compression_threshold must be in (0, 1].")
         if self.threads < 0:
             raise ValueError("threads must be non-negative.")
-
-    def compress_tensor(self, name, tensor):
-        if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-            raise TypeError("ZipNNCodec only compresses floating tensors.")
-
-        # The local native backend is read-only. Avoid charging ZipNN for a
-        # private tensor clone when the direct NeuralZip backend consumes the
-        # same immutable contiguous input buffer.
-        original = tensor.detach().cpu().contiguous()
-        config = _zipnn_dtype_config(original.dtype)
-        return self._compress_zipnn(name, original, config)
-
-    def decompress_tensor(self, compressed):
-        if compressed.dtype not in DTYPE_BY_NAME:
-            raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
-
-        if compressed.strategy in {"zipnn", "byte_groups"}:
-            return self._decompress_zipnn(compressed)
-        raise ValueError(f"Unsupported ZipNN strategy: {compressed.strategy!r}")
 
     def _stream_chunk_size(self, element_size):
         return max(1, self.chunk_size // int(element_size))
@@ -219,91 +210,3 @@ class ZipNNCodec:
                 )
             )
         return tuple(groups)
-
-    def _decompress_stream(self, group):
-        output = bytearray()
-        for chunk in group.chunks:
-            if chunk.mode == "zero":
-                output.extend(b"\x00" * chunk.symbol_count)
-            elif chunk.mode == "raw":
-                output.extend(chunk.payload)
-            elif chunk.mode == "local_huff0":
-                output.extend(huff0.decompress_block(chunk.payload, chunk.symbol_count))
-            else:
-                raise ValueError(f"Unsupported stream chunk mode: {chunk.mode!r}")
-
-        if len(output) != group.symbol_count:
-            raise ValueError(
-                f"Stream decoded to {len(output)} symbols; "
-                f"expected {group.symbol_count}."
-            )
-        return bytes(output)
-
-    def _compress_zipnn(self, name, tensor, config):
-        element_size = int(config["element_size"])
-        raw = tensor.view(torch.uint8).reshape(-1).numpy()
-        native_groups = huff0.compress_zipnn(
-            raw,
-            element_size=element_size,
-            bit_reorder=int(config["bit_reorder"]),
-            chunk_size=self._stream_chunk_size(element_size),
-            min_saving_bytes=self.min_saving_bytes,
-            threads=self.threads,
-            compression_threshold=self.compression_threshold,
-        )
-        groups = tuple(
-            ByteGroupPayload(
-                stream_kind="byte_group",
-                symbol_count=int(tensor.numel()),
-                chunks=tuple(
-                    StreamChunk(
-                        mode="local_huff0" if compressed else "raw",
-                        symbol_count=symbol_count,
-                        payload=payload,
-                    )
-                    for compressed, payload, symbol_count in native_chunks
-                ),
-            )
-            for native_chunks in native_groups
-        )
-
-        return TensorPayload(
-            name=name,
-            shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=dtype_name(tensor.dtype),
-            element_size=element_size,
-            numel=int(tensor.numel()),
-            strategy="zipnn",
-            groups=groups,
-            byte_reorder=int(config["byte_reorder"]),
-            bit_reorder=int(config["bit_reorder"]),
-            num_buffers=int(config["num_buffers"]),
-        )
-
-    def _decompress_zipnn(self, compressed):
-        dtype = DTYPE_BY_NAME[compressed.dtype]
-        config = _zipnn_dtype_config(dtype)
-        if compressed.element_size != int(config["element_size"]):
-            raise ValueError(
-                f"Payload element size {compressed.element_size} does not match "
-                f"dtype {compressed.dtype}."
-            )
-        if len(compressed.groups) != int(config["num_buffers"]):
-            raise ValueError(
-                f"Payload has {len(compressed.groups)} byte groups; "
-                f"expected {config['num_buffers']}."
-            )
-
-        raw = bytearray(compressed.raw_bytes)
-        for byte_offset, group in enumerate(compressed.groups):
-            stream = self._decompress_stream(group)
-            expected_symbols = len(raw[byte_offset :: compressed.element_size])
-            if len(stream) != expected_symbols:
-                raise ValueError(
-                    f"Byte group {byte_offset} has {len(stream)} symbols; "
-                    f"expected {expected_symbols}."
-                )
-            raw[byte_offset :: compressed.element_size] = stream
-
-        restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
-        return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

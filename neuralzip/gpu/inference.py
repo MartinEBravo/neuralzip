@@ -21,18 +21,20 @@ from functools import partial
 import torch
 from torch import nn
 
-from . import gpu_decoder, huff0
-from .compressor import Compressor
-from .gpu_adapters import AutoModuleListAdapter, GPUModelAdapter, GPUWeightKind
-from .gpu_export import (
+from .. import huff0
+from ..compressor import Compressor
+from ..neuralzip_codec import NeuralZipCodec
+from . import decoder as gpu_decoder
+from .adapters import AutoModuleListAdapter, GPUModelAdapter, GPUWeightKind
+from .export import (
     DEFAULT_BYTES_PER_THREAD,
     DEFAULT_THREADS_PER_BLOCK,
     GPUCodebook,
     GPUEncodedBF16,
     GPUEncodedExponents,
     encode_bfloat16,
+    encode_bfloat16_native,
 )
-from .neuralzip_codec import NeuralZipCodec
 
 _RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
@@ -367,32 +369,19 @@ def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
 
 
 def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF16:
-    native_encoder = getattr(huff0, "encode_gpu_bfloat16", None)
-    if native_encoder is None:
-        table = huff0.export_code_table(codebook_header)
-        return encode_bfloat16(
-            raw_bf16,
-            GPUCodebook.from_codes(table.code_lengths, table.code_values),
-        )
-
-    native = native_encoder(
+    native = encode_bfloat16_native(
         raw_bf16,
         codebook_header,
         bytes_per_thread=DEFAULT_BYTES_PER_THREAD,
         threads_per_block=DEFAULT_THREADS_PER_BLOCK,
     )
-    return GPUEncodedBF16(
-        sign_mantissa=native.sign_mantissa,
-        exponents=GPUEncodedExponents(
-            bitstream=native.encoded_exponents,
-            bit_length=int(native.bit_length),
-            symbol_count=len(native.sign_mantissa),
-            packed_gaps=native.packed_gaps,
-            output_positions=tuple(native.output_positions),
-            bytes_per_thread=DEFAULT_BYTES_PER_THREAD,
-            threads_per_block=DEFAULT_THREADS_PER_BLOCK,
-        ),
-    )
+    if native is None:
+        table = huff0.export_code_table(codebook_header)
+        return encode_bfloat16(
+            raw_bf16,
+            GPUCodebook.from_codes(table.code_lengths, table.code_values),
+        )
+    return native
 
 
 def _parameter_occurrences(model: nn.Module) -> dict[int, int]:
@@ -651,8 +640,8 @@ def export_encoded_model_for_gpu(
 ) -> NeuralZipModelExport:
     """Convert a NeuralZip storage result into the CUDA inference layout."""
 
-    from .encoded_model import EncodedModel
-    from .payloads import TensorPayload
+    from ..encoded_model import EncodedModel
+    from ..payloads import TensorPayload
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
@@ -1621,7 +1610,7 @@ class NeuralZipModel:
     ):
         """Save a complete GPU-ready checkpoint without materializing weights."""
 
-        from .gpu_pretrained import save_gpu_pretrained
+        from .pretrained import save_gpu_pretrained
 
         return save_gpu_pretrained(model, compressor_or_export, directory, **kwargs)
 
@@ -1629,7 +1618,7 @@ class NeuralZipModel:
     def from_pretrained(cls, directory, **kwargs) -> nn.Module:
         """Load a complete checkpoint and attach its compressed runtime."""
 
-        from .gpu_pretrained import load_gpu_pretrained
+        from .pretrained import load_gpu_pretrained
 
         return load_gpu_pretrained(directory, **kwargs)
 

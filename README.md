@@ -20,7 +20,6 @@ keeping clustering and codebook construction outside the hot encoding path.
 - Persistent, directly loadable BF16 inference checkpoints for NVIDIA GPUs,
   with generation, CPU offload, and automatic multi-GPU placement.
 - Exact byte accounting and separate setup, encoding, and decoding timings.
-- Included local and official ZipNN baselines for comparison.
 
 ## Installation
 
@@ -36,7 +35,7 @@ Python 3.10 or newer and a native C/C++ compiler are required. Installation
 builds the bundled Huff0 extension; its required Zstd sources are included in
 the repository.
 
-To reproduce the experiments or use the official ZipNN baseline:
+To install the dependencies used by the example notebook and experiments:
 
 ```bash
 python -m pip install -e ".[experiments]"
@@ -82,14 +81,6 @@ model or any source tensor objects.
 Its byte ratio covers encoded tensor streams and verbatim auxiliary tensor data;
 it is not a serialized full-model file size. Use the `.nzip` archive or GPU
 checkpoint APIs below when exact on-disk accounting is required.
-
-Official ZipNN uses the same model-level interface, without a setup:
-
-```python
-zipnn = Compressor("zipnn")
-encoded_zipnn = zipnn.encode(model)
-restored_zipnn = zipnn.decode(encoded_zipnn)
-```
 
 ## Inputs and reconstruction
 
@@ -330,6 +321,10 @@ discovery is not automatic. A trusted `model=` instance or `model_factory=` can
 reconstruct custom classes without embedding executable objects in the
 checkpoint.
 
+```python
+from neuralzip.gpu.adapters import RegexGPUAdapter
+```
+
 ### In-memory attachment
 
 Compression and execution preparation are separate operations. `fit()` learns
@@ -406,17 +401,10 @@ sharing-only exponent modes. Packed exponents, training, concurrent forwards,
 and `torch.compile` are not supported. The decoder reconstructs each active
 block into a temporary workspace; it is not a fused compressed matmul kernel.
 
-## Compression methods
+## Compression method
 
-| Method | Purpose | `.nzip` save and restore |
-| --- | --- | --- |
-| `neuralzip` | Main codec with reusable clustering, shared codebooks, and packed exponents | Yes |
-| `zipnn-local` | Included ZipNN-compatible local baseline | Yes |
-| `zipnn` | Adapter to the official `zipnn` package for benchmarking | No |
-
-`zipnn` is installed by the `experiments` extra. Its retained payloads are
-official per-tensor ZipNN frames and are intentionally outside NeuralZip's
-model-level archive API.
+NeuralZip combines reusable clustering, shared Huffman codebooks, and optional
+packed exponents. Encoded models support `.nzip` save and restore.
 
 ## Result fields
 
@@ -434,10 +422,9 @@ model-level archive API.
 | `decode_seconds` | Verification decode time when `verify=True` |
 | `roundtrip_ok` | Whether verification was bitwise exact |
 
-For `neuralzip` and `zipnn-local`, `compressed_bytes` is the exact `.nzip` size
-for the selected tensors. For `zipnn`, it is the size of the official
-per-tensor frames. Verification time is reported separately and is not included
-in `total_seconds`.
+`compressed_bytes` is the exact `.nzip` size for the selected tensors.
+Verification time is reported separately and is not included in
+`total_seconds`.
 
 ## Common options
 

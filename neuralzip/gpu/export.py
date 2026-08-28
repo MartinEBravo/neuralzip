@@ -20,6 +20,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 
+from .. import _huff0_cpp
+
 BF16_ALPHABET_SIZE = 256
 DEFAULT_BYTES_PER_THREAD = 8
 DEFAULT_THREADS_PER_BLOCK = 512
@@ -74,7 +76,8 @@ def split_bfloat16_lanes(raw_bfloat16: bytes | bytearray | memoryview) -> BF16La
     """Split little-endian BF16 words into exponent and sign/mantissa lanes.
 
     The returned ``sign_mantissa`` byte has the sign in bit 7 and the seven
-    mantissa bits in bits 6..0.  This is the same bit reorder used by ZipNN.
+    mantissa bits in bits 6..0. This keeps the exponent and sign together in
+    the high byte before byte-stream grouping.
     """
 
     raw = _as_bytes(raw_bfloat16, name="raw_bfloat16")
@@ -492,6 +495,45 @@ def encode_bfloat16(
     )
 
 
+def encode_bfloat16_native(
+    raw_bfloat16: bytes | bytearray | memoryview,
+    codebook_header: bytes | bytearray | memoryview,
+    *,
+    bytes_per_thread: int = DEFAULT_BYTES_PER_THREAD,
+    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
+) -> GPUEncodedBF16 | None:
+    """Use the native Huff0 backend to emit the CUDA inference layout."""
+
+    native_encoder = getattr(_huff0_cpp, "encode_gpu_bfloat16", None)
+    if native_encoder is None:
+        return None
+    (
+        encoded_exponents,
+        sign_mantissa,
+        packed_gaps,
+        output_positions,
+        bit_length,
+        _max_bits,
+    ) = native_encoder(
+        _as_bytes(raw_bfloat16, name="raw_bfloat16"),
+        _as_bytes(codebook_header, name="codebook_header"),
+        bytes_per_thread=bytes_per_thread,
+        threads_per_block=threads_per_block,
+    )
+    return GPUEncodedBF16(
+        sign_mantissa=sign_mantissa,
+        exponents=GPUEncodedExponents(
+            bitstream=encoded_exponents,
+            bit_length=int(bit_length),
+            symbol_count=len(sign_mantissa),
+            packed_gaps=packed_gaps,
+            output_positions=tuple(output_positions),
+            bytes_per_thread=bytes_per_thread,
+            threads_per_block=threads_per_block,
+        ),
+    )
+
+
 def _decode_with_starts(
     encoded: GPUEncodedExponents,
     codebook: GPUCodebook,
@@ -580,6 +622,7 @@ __all__ = [
     "decode_bfloat16_reference",
     "decode_exponents_reference",
     "encode_bfloat16",
+    "encode_bfloat16_native",
     "encode_exponents",
     "pack_restart_gaps",
     "split_bfloat16_lanes",

@@ -2,7 +2,7 @@
 
 The format deliberately separates ordinary model state from NeuralZip's GPU
 representation.  Resident parameters and buffers live in Safetensors, while
-compressed BF16 weights live in :mod:`neuralzip.gpu_checkpoint`.  A strict
+compressed BF16 weights live in :mod:`neuralzip.gpu.checkpoint`.  A strict
 JSON manifest binds the two files to the model configuration without ever
 deserializing executable Python objects.
 """
@@ -22,20 +22,20 @@ from typing import Any
 import torch
 from torch import nn
 
-from .compressor import Compressor
-from .gpu_adapters import GPUModelAdapter
-from .gpu_checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
-from .gpu_checkpoint import load_gpu_export, save_gpu_export
-from .gpu_inference import (
+from ..compressor import Compressor
+from .adapters import GPUModelAdapter
+from .checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
+from .checkpoint import load_gpu_export, save_gpu_export
+from .inference import (
     NeuralZipModelExport,
     NeuralZipRuntime,
     _offloaded_blocks,
     export_model_for_gpu,
 )
-from .gpu_resident import (
+from .resident import (
     INDEX_FILENAME as RESIDENT_INDEX_FILENAME,
 )
-from .gpu_resident import (
+from .resident import (
     ResidentStateManifest,
     iter_resident_shards,
     load_resident_state,

@@ -82,10 +82,8 @@ class EncodedModel:
 
     def __post_init__(self):
         method = str(self.method).strip().lower().replace("-", "_")
-        if method == "zipnn_src":
-            method = "zipnn"
-        if method not in {"neuralzip", "zipnn", "zipnn_local"}:
-            raise ValueError("method must be 'neuralzip', 'zipnn', or 'zipnn-local'.")
+        if method != "neuralzip":
+            raise ValueError("method must be 'neuralzip'.")
         names = tuple(str(name) for name in self.names)
         payloads = tuple(self.payloads)
         codebooks = tuple(self.codebooks)
@@ -133,18 +131,11 @@ class EncodedModel:
         )
         if len({name for name, _ in module_training}) != len(module_training):
             raise ValueError("Module training-state names must be unique.")
-        if method == "zipnn" and not all(
-            isinstance(payload, bytes) for payload in payloads
-        ):
-            raise TypeError("Official ZipNN payloads must be bytes.")
-        if method != "neuralzip" and codebooks:
-            raise ValueError("Only NeuralZip payloads may carry shared codebooks.")
-        if method != "zipnn":
-            for name, payload in zip(names, payloads, strict=True):
-                if torch.is_tensor(payload) or isinstance(payload, torch.nn.Module):
-                    raise TypeError("Encoded payloads cannot retain source weights.")
-                if str(getattr(payload, "name", name)) != name:
-                    raise ValueError(f"Payload name does not match {name!r}.")
+        for name, payload in zip(names, payloads, strict=True):
+            if torch.is_tensor(payload) or isinstance(payload, torch.nn.Module):
+                raise TypeError("Encoded payloads cannot retain source weights.")
+            if str(getattr(payload, "name", name)) != name:
+                raise ValueError(f"Payload name does not match {name!r}.")
         if self.source_kind not in {"mapping", "huggingface", "module"}:
             raise ValueError(f"Unsupported source kind {self.source_kind!r}.")
         if self.source_kind == "huggingface" and (
@@ -221,7 +212,7 @@ class EncodedModel:
             )
         if self.source_kind == "mapping":
             raise ValueError("prepare_inference() requires an encoded torch.nn.Module.")
-        from .gpu_inference import NeuralZipModel
+        from .gpu.inference import NeuralZipModel
 
         return NeuralZipModel.from_encoded(
             model,
@@ -369,25 +360,19 @@ def make_encoded_model(
 
 
 def _decode_payloads(encoded, decoder):
-    if encoded.method != "zipnn":
-        reset = getattr(decoder, "reset_decompression", None)
-        if callable(reset):
-            reset()
-        load_codebooks = getattr(decoder, "load_codebooks", None)
-        if encoded.codebooks and callable(load_codebooks):
-            load_codebooks(encoded.codebooks)
-        decode_many = getattr(decoder, "decompress_tensors", None)
-        if callable(decode_many):
-            decoded = tuple(decode_many(encoded.payloads))
-        else:
-            decode_one = getattr(decoder, "decompress_tensor", None)
-            if not callable(decode_one):
-                raise TypeError("Decoder must implement decompress_tensor(s).")
-            decoded = tuple(decode_one(payload) for payload in encoded.payloads)
+    reset = getattr(decoder, "reset_decompression", None)
+    if callable(reset):
+        reset()
+    load_codebooks = getattr(decoder, "load_codebooks", None)
+    if encoded.codebooks and callable(load_codebooks):
+        load_codebooks(encoded.codebooks)
+    decode_many = getattr(decoder, "decompress_tensors", None)
+    if callable(decode_many):
+        decoded = tuple(decode_many(encoded.payloads))
     else:
-        decode_one = getattr(decoder, "decode", None)
+        decode_one = getattr(decoder, "decompress_tensor", None)
         if not callable(decode_one):
-            raise TypeError("Official ZipNN decoder must implement decode().")
+            raise TypeError("Decoder must implement decompress_tensor(s).")
         decoded = tuple(decode_one(payload) for payload in encoded.payloads)
 
     if len(decoded) != len(encoded.names):

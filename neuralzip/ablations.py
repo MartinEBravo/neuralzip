@@ -9,7 +9,7 @@ from . import turborc
 from .neuralzip_codec import NeuralZipCodec
 from .packed_exponents import transpose_2d_stream
 from .serialization import RAW_CHUNK_METADATA_BYTES
-from .zipnn_codec import ZipNNCodec, _zipnn_dtype_config, _zipnn_reordered_bytes
+from .byte_group_codec import ByteGroupCodec, _byte_group_dtype_config, _byte_group_reordered_bytes
 
 
 def named_floating_tensors(model):
@@ -25,10 +25,10 @@ def named_floating_tensors(model):
             yield name, tensor
 
 
-def zipnn_exponent_stream(tensor, *, layout="original"):
+def exponent_stream(tensor, *, layout="original"):
     tensor = tensor.detach().cpu().contiguous()
-    config = _zipnn_dtype_config(tensor.dtype)
-    reordered = _zipnn_reordered_bytes(tensor, config)
+    config = _byte_group_dtype_config(tensor.dtype)
+    reordered = _byte_group_reordered_bytes(tensor, config)
     element_size = int(config["element_size"])
     stream = reordered[element_size - 1 :: element_size]
     if layout == "transpose2d":
@@ -104,14 +104,14 @@ def delta_exponent_huffman_cost(
 ):
     raw_bytes = 0
     compressed_bytes = 0
-    codec = ZipNNCodec(
+    codec = ByteGroupCodec(
         chunk_size=chunk_size,
         compression_threshold=1.0,
     )
 
     stream_specs = []
     for _, tensor in named_floating_tensors(model):
-        stream = zipnn_exponent_stream(tensor, layout=layout)
+        stream = exponent_stream(tensor, layout=layout)
         raw_bytes += len(stream)
         stream_specs.append((_delta_stream(stream), "delta", chunk_size))
 
@@ -127,7 +127,7 @@ def delta_exponent_huffman_cost(
     }
 
 
-def _clustered_zipnn_exponent_streams(model, *, cluster_js_threshold, layout):
+def _clustered_exponent_streams(model, *, cluster_js_threshold, layout):
     tensors = list(named_floating_tensors(model))
     codec = NeuralZipCodec(
         cluster_js_threshold=float(cluster_js_threshold),
@@ -136,7 +136,7 @@ def _clustered_zipnn_exponent_streams(model, *, cluster_js_threshold, layout):
     streams_by_cluster = {}
     raw_bytes = 0
     for name, tensor in tensors:
-        stream = zipnn_exponent_stream(tensor, layout=layout)
+        stream = exponent_stream(tensor, layout=layout)
         streams_by_cluster.setdefault(codec.cluster_id(name), []).append(stream)
         raw_bytes += len(stream)
     return streams_by_cluster, raw_bytes
@@ -148,7 +148,7 @@ def order1_huffman_cluster_cost(
     cluster_js_threshold=0.05,
     layout="original",
 ):
-    streams_by_cluster, raw_bytes = _clustered_zipnn_exponent_streams(
+    streams_by_cluster, raw_bytes = _clustered_exponent_streams(
         model,
         cluster_js_threshold=cluster_js_threshold,
         layout=layout,
@@ -205,7 +205,7 @@ def selected_turborc_range_cost(
     chunk_header_bytes = RAW_CHUNK_METADATA_BYTES
     codec_header_bytes = 8 + len(method_label.encode("utf-8")) + 8 + len(layout)
 
-    streams_by_cluster, raw_bytes = _clustered_zipnn_exponent_streams(
+    streams_by_cluster, raw_bytes = _clustered_exponent_streams(
         model,
         cluster_js_threshold=cluster_js_threshold,
         layout=layout,

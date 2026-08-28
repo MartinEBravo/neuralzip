@@ -30,27 +30,13 @@ from .serialization import (
     serialized_size,
 )
 from .tensors import bitwise_equal
-from .zipnn_codec import ZipNNCodec
-from .zipnn_source import ZipNNSourceCodec
-
-_ZIPNN_MODEL_IO_ERROR = (
-    "zipnn produces opaque per-tensor benchmark frames; model "
-    "save/load/decompress is supported only for NeuralZip and zipnn-local archives."
-)
-_ZIPNN_RESULT_METHOD_KEYS = {"zipnn", "zipnn_src"}
-
-
-def _method_key(method):
-    return str(method).strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _normalize_method(method):
-    method_key = _method_key(method)
-    methods = {"neuralzip", "zipnn", "zipnn_local"}
-    if method_key not in methods:
+    method_key = str(method).strip().lower().replace("-", "_").replace(" ", "_")
+    if method_key != "neuralzip":
         raise ValueError(
-            f"Unsupported compression method {method!r}. Expected one of: "
-            "neuralzip, zipnn, zipnn-local."
+            f"Unsupported compression method {method!r}. Expected 'neuralzip'."
         )
     return method_key
 
@@ -116,7 +102,6 @@ class Compressor:
         chunk_size=None,
         compression_threshold=None,
         threads=0,
-        zipnn_method="HUFFMAN",
         cluster_map=None,
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
@@ -135,7 +120,6 @@ class Compressor:
         self.method = _normalize_method(method)
         self.verify = bool(verify)
         self.keep_payloads = bool(keep_payloads)
-        self.zipnn_method = str(zipnn_method).upper()
         self.threads = int(threads)
         self._state_lock = RLock()
         self._setup_path = None
@@ -145,8 +129,6 @@ class Compressor:
         self._active_setup = None
         self._last_mapping = None
         self._last_mapping_signature = None
-        if setup is not None and self.method != "neuralzip":
-            raise ValueError("setup is supported only for method='neuralzip'.")
         explicit_runtime_options = {
             name
             for name, value in (
@@ -171,45 +153,35 @@ class Compressor:
             "compression_threshold": compression_threshold,
             "threads": threads,
         }
-        if self.method == "neuralzip":
-            codec_kwargs["prior_count"] = prior_count
-            codec_kwargs["exponent_prior_count"] = exponent_prior_count
-            codec_kwargs["cluster_js_threshold"] = cluster_js_threshold
-            codec_kwargs["max_codebook_sample_bytes"] = max_codebook_sample_bytes
-            codec_kwargs["top_k"] = top_k
-            codec_kwargs["exponent_layout"] = exponent_layout
-            codec_kwargs["packed_source_budget_ratio"] = packed_source_budget_ratio
-            codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
-            codec_kwargs["speed_ratio_tolerance"] = speed_ratio_tolerance
-            codec_kwargs["enable_shared_codebooks"] = enable_shared_codebooks
-            codec_kwargs["direct_batch_bytes"] = direct_batch_bytes
-            codec_kwargs["cluster_map"] = dict(cluster_map or {})
-            codec_kwargs["ngram_values"] = tuple(ngram_values)
-            self._neuralzip_codec_options = dict(codec_kwargs)
-            self._explicit_runtime_options = explicit_runtime_options
+        codec_kwargs["prior_count"] = prior_count
+        codec_kwargs["exponent_prior_count"] = exponent_prior_count
+        codec_kwargs["cluster_js_threshold"] = cluster_js_threshold
+        codec_kwargs["max_codebook_sample_bytes"] = max_codebook_sample_bytes
+        codec_kwargs["top_k"] = top_k
+        codec_kwargs["exponent_layout"] = exponent_layout
+        codec_kwargs["packed_source_budget_ratio"] = packed_source_budget_ratio
+        codec_kwargs["packed_time_budget_ratio"] = packed_time_budget_ratio
+        codec_kwargs["speed_ratio_tolerance"] = speed_ratio_tolerance
+        codec_kwargs["enable_shared_codebooks"] = enable_shared_codebooks
+        codec_kwargs["direct_batch_bytes"] = direct_batch_bytes
+        codec_kwargs["cluster_map"] = dict(cluster_map or {})
+        codec_kwargs["ngram_values"] = tuple(ngram_values)
+        self._neuralzip_codec_options = dict(codec_kwargs)
+        self._explicit_runtime_options = explicit_runtime_options
 
-            # Constructing the template validates every option even when a
-            # persisted setup supplies the statistical state.
-            self.codec = NeuralZipCodec(**self._neuralzip_codec_options)
-            if setup is not None:
-                self._active_setup = load_setup(setup)
-                self.codec = materialize_setup(self._active_setup)
-                self._apply_runtime_options(self.codec)
-                self._setup_path = (
-                    Path(setup) if isinstance(setup, (str, PathLike)) else None
-                )
-                self._setup_report = self._active_setup.setup_report
-                self._setup_ready = True
-                self._reuse_setup = True
-        elif self.method == "zipnn_local":
-            self.codec = ZipNNCodec(**codec_kwargs)
-        else:
-            self.codec = ZipNNSourceCodec(
-                method=self.zipnn_method,
-                threads=self.threads,
-                compression_threshold=compression_threshold,
-                chunk_size=chunk_size,
+        # Constructing the template validates every option even when a
+        # persisted setup supplies the statistical state.
+        self.codec = NeuralZipCodec(**self._neuralzip_codec_options)
+        if setup is not None:
+            self._active_setup = load_setup(setup)
+            self.codec = materialize_setup(self._active_setup)
+            self._apply_runtime_options(self.codec)
+            self._setup_path = (
+                Path(setup) if isinstance(setup, (str, PathLike)) else None
             )
+            self._setup_report = self._active_setup.setup_report
+            self._setup_ready = True
+            self._reuse_setup = True
 
     @staticmethod
     def _floating_tensors(model):
@@ -263,10 +235,6 @@ class Compressor:
             raise ValueError("No floating tensors were found.")
         return tensors
 
-    def _require_neuralzip(self, operation):
-        if self.method != "neuralzip":
-            raise ValueError(f"{operation} is supported only for method='neuralzip'.")
-
     @property
     def has_setup(self):
         # The state flags retain compatibility with manually constructed
@@ -291,7 +259,6 @@ class Compressor:
 
     @property
     def codebooks(self):
-        self._require_neuralzip("codebooks")
         return self.codec.export_codebooks() if self._setup_ready else ()
 
     @property
@@ -304,12 +271,10 @@ class Compressor:
 
     @property
     def selected_modes(self):
-        self._require_neuralzip("selected_modes")
         return self.codec.selected_modes if self._setup_ready else {}
 
     @property
     def cluster_count(self):
-        self._require_neuralzip("cluster_count")
         return int(self.codec.cluster_count) if self._setup_ready else 0
 
     @property
@@ -374,7 +339,6 @@ class Compressor:
     def _target_mapping_transaction(self, model, *, include_buffers=True):
         """Map one target and roll back the compressor if its consumer fails."""
 
-        self._require_neuralzip("target mapping")
         state = self._setup_state()
         try:
             tensor_source = (
@@ -390,7 +354,6 @@ class Compressor:
             raise
 
     def _activate_setup(self, setup=None):
-        self._require_neuralzip("setup")
         selected = self._active_setup if setup is None else load_setup(setup)
         if selected is None:
             raise RuntimeError("Call fit() or provide setup= before encoding.")
@@ -418,7 +381,6 @@ class Compressor:
         setup untouched.
         """
 
-        self._require_neuralzip("fit")
         named_tensors = self._model_tensors(model)
         candidate = NeuralZipCodec(**self._neuralzip_codec_options)
         report = prepare_neuralzip_codec(candidate, named_tensors)
@@ -439,7 +401,6 @@ class Compressor:
     def save_setup(self, path, *, setup=None):
         """Persist an explicit setup or the one most recently fitted/loaded."""
 
-        self._require_neuralzip("save_setup")
         selected = self._active_setup if setup is None else load_setup(setup)
         if selected is None:
             raise RuntimeError("Call fit() before save_setup().")
@@ -452,7 +413,6 @@ class Compressor:
     def map_target(self, model, *, setup=None):
         """Validate and map a target to the fitted or loaded setup."""
 
-        self._require_neuralzip("map_target")
         named_tensors = self._model_tensors(model)
         with self._setup_transaction(setup):
             mapping = self.codec.prepare_direct_transfer_target(named_tensors)
@@ -510,10 +470,9 @@ class Compressor:
     def encode(self, model, *, setup=None, return_stats=False):
         """Encode a model or tensor mapping through one common public API.
 
-        NeuralZip accepts the data-only value returned by :meth:`fit` (or a
-        trusted setup path). Official ZipNN is one-shot and does not accept a
-        setup. Set ``return_stats=True`` to also receive a stable timing and
-        size summary.
+        The compressor accepts the data-only value returned by :meth:`fit` (or
+        a trusted setup path). Set ``return_stats=True`` to also receive a
+        stable timing and size summary.
         """
 
         if not isinstance(return_stats, bool):
@@ -521,51 +480,8 @@ class Compressor:
         named_tensors = self._model_tensors(model)
         source = self._encoded_source(model, named_tensors)
         names = tuple(name for name, _ in named_tensors)
-        if self.method == "neuralzip":
-            with self._setup_transaction(setup):
-                encoded = self._encode_neuralzip_model(
-                    source, names, named_tensors
-                )
-
-        elif setup is not None:
-            raise ValueError("setup is supported only for method='neuralzip'.")
-
-        elif self.method == "zipnn_local":
-            batch = encode_tensor_batch(self.codec, named_tensors)
-            encoded = make_encoded_model(
-                source,
-                method="zipnn-local",
-                names=names,
-                payloads=batch.payloads,
-                raw_bytes=batch.raw_bytes,
-                compressed_bytes=serialized_size("zipnn-local", (), batch.payloads),
-                encode_seconds=batch.encode_seconds,
-                used_batch=batch.used_batch,
-                requires_grad=tuple(
-                    tensor.requires_grad for _, tensor in named_tensors
-                ),
-            )
-        elif self.method == "zipnn":
-            encode_started = time.perf_counter()
-            encoded_tensors = tuple(
-                self.codec.encode_tensor(tensor, verify=False)
-                for _, tensor in named_tensors
-            )
-            encode_seconds = time.perf_counter() - encode_started
-            encoded = make_encoded_model(
-                source,
-                method="zipnn",
-                names=names,
-                payloads=tuple(value.payload for value in encoded_tensors),
-                raw_bytes=sum(value.raw_bytes for value in encoded_tensors),
-                compressed_bytes=sum(len(value.payload) for value in encoded_tensors),
-                encode_seconds=encode_seconds,
-                requires_grad=tuple(
-                    tensor.requires_grad for _, tensor in named_tensors
-                ),
-            )
-        else:
-            raise AssertionError(f"Unhandled compression method {self.method!r}.")
+        with self._setup_transaction(setup):
+            encoded = self._encode_neuralzip_model(source, names, named_tensors)
 
         if not return_stats:
             return encoded
@@ -596,21 +512,7 @@ class Compressor:
         decode_started = time.perf_counter()
 
         if isinstance(encoded, EncodedModel):
-            if encoded.method == "neuralzip":
-                decoder = NeuralZipCodec(threads=self.threads)
-            elif encoded.method == "zipnn_local":
-                decoder = ZipNNCodec(threads=self.threads)
-            else:
-                decoder = (
-                    self.codec
-                    if self.method == "zipnn"
-                    else ZipNNSourceCodec(
-                        method=self.zipnn_method,
-                        threads=self.threads,
-                        compression_threshold=0.95,
-                        chunk_size=256 << 10,
-                    )
-                )
+            decoder = NeuralZipCodec(threads=self.threads)
             decoded = decode_model(
                 encoded,
                 decoder,
@@ -620,7 +522,6 @@ class Compressor:
             stats = DecodeStats(time.perf_counter() - decode_started)
             return (decoded, stats) if return_stats else decoded
 
-        self._require_neuralzip("decode")
         if not self.has_setup:
             raise RuntimeError("Call fit() or provide setup= before decode().")
         payloads = getattr(encoded, "payloads", encoded)
@@ -632,57 +533,25 @@ class Compressor:
 
     @_synchronized
     def compress(self, model):
-        if self.method == "zipnn_local":
-            return self._codec_compression(
-                model,
-                method_name="zipnn-local",
-                method_detail="dtype-byte-reorder-huffman",
-            )
-        if self.method == "neuralzip":
-            try:
-                if self._reuse_setup:
-                    with self._setup_transaction():
-                        return self._codec_compression(
-                            model,
-                            method_name="neuralzip",
-                            method_detail=(
-                                "js-clustered-shared-huffman-packed-exponents"
-                            ),
-                        )
-                return self._codec_compression(
-                    model,
-                    method_name="neuralzip",
-                    method_detail=("js-clustered-shared-huffman-packed-exponents"),
-                )
-            except BaseException:
-                if not self._reuse_setup:
-                    self.codec = NeuralZipCodec(**self._neuralzip_codec_options)
-                    self._setup_ready = False
-                    self._setup_report = None
-                    self._last_mapping = None
-                    self._last_mapping_signature = None
-                raise
-        if self.method == "zipnn":
-            return self._zipnn(model)
-        raise AssertionError(f"Unhandled compression method {self.method!r}.")
+        try:
+            if self._reuse_setup:
+                with self._setup_transaction():
+                    return self._codec_compression(model)
+            return self._codec_compression(model)
+        except BaseException:
+            if not self._reuse_setup:
+                self.codec = NeuralZipCodec(**self._neuralzip_codec_options)
+                self._setup_ready = False
+                self._setup_report = None
+                self._last_mapping = None
+                self._last_mapping_signature = None
+            raise
 
     def decompress(self, compressed_model):
-        result_is_zipnn = (
-            _method_key(compressed_model.get("method")) in _ZIPNN_RESULT_METHOD_KEYS
-        )
-        if self.method == "zipnn" or result_is_zipnn:
-            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
-
-        method_key = _method_key(compressed_model.get("method"))
-        decoder = (
-            ZipNNCodec(threads=self.threads)
-            if method_key == "zipnn_local"
-            else NeuralZipCodec(threads=self.threads)
-        )
-        if hasattr(decoder, "load_codebooks"):
-            header = compressed_model.get("header") or {}
-            codebooks = compressed_model.get("codebooks") or header.get("codebooks")
-            decoder.load_codebooks(codebooks)
+        decoder = NeuralZipCodec(threads=self.threads)
+        header = compressed_model.get("header") or {}
+        codebooks = compressed_model.get("codebooks") or header.get("codebooks")
+        decoder.load_codebooks(codebooks)
 
         payloads = []
         for tensor_result in compressed_model.get("tensor_results", []):
@@ -698,8 +567,6 @@ class Compressor:
 
     @staticmethod
     def save(compressed_model, path):
-        if _method_key(compressed_model.get("method")) in _ZIPNN_RESULT_METHOD_KEYS:
-            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
         from .archive import dump
 
         dump(compressed_model, path)
@@ -711,11 +578,9 @@ class Compressor:
         return load(path)
 
     def decompress_file(self, path):
-        if self.method == "zipnn":
-            raise NotImplementedError(_ZIPNN_MODEL_IO_ERROR)
         return self.decompress(self.load(path))
 
-    def _codec_compression(self, model, *, method_name, method_detail):
+    def _codec_compression(self, model):
         tensor_results = []
         total_raw_bytes = 0
         total_payload_bytes = 0
@@ -738,36 +603,30 @@ class Compressor:
         mapped_tensors = None
         setup_reused = False
 
-        if self.method == "neuralzip":
-            if self._reuse_setup:
-                setup_reused = True
-                mapping_started = time.perf_counter()
-                self._last_mapping = dict(
-                    self.codec.prepare_direct_transfer_target(named_tensors)
-                )
-                self._last_mapping_signature = self._target_signature(named_tensors)
-                mapping_seconds = time.perf_counter() - mapping_started
-                mapped_tensors = int(self._last_mapping["matched_tensors"])
-            else:
-                # Preserve Compressor's one-shot behavior: unless fit() or
-                # setup= made reuse explicit, every call learns its own setup.
-                self.codec.reset_compression()
-                self.codec.reset_decompression()
-                setup_report = prepare_neuralzip_codec(self.codec, named_tensors)
-                validate_setup(self.codec)
-                self._setup_report = setup_report
-                self._setup_ready = True
-                clustering_seconds = setup_report.clustering_seconds
-                codebook_setup_seconds = setup_report.codebook_setup_seconds
-                self._last_mapping = None
-                self._last_mapping_signature = None
-            codebooks = self.codec.export_codebooks()
-            codebook_metadata_bytes = serialized_codebooks_size(codebooks)
+        if self._reuse_setup:
+            setup_reused = True
+            mapping_started = time.perf_counter()
+            self._last_mapping = dict(
+                self.codec.prepare_direct_transfer_target(named_tensors)
+            )
+            self._last_mapping_signature = self._target_signature(named_tensors)
+            mapping_seconds = time.perf_counter() - mapping_started
+            mapped_tensors = int(self._last_mapping["matched_tensors"])
         else:
-            if hasattr(self.codec, "reset_compression"):
-                self.codec.reset_compression()
-            if hasattr(self.codec, "reset_decompression"):
-                self.codec.reset_decompression()
+            # Preserve Compressor's one-shot behavior: unless fit() or setup=
+            # made reuse explicit, every call learns its own setup.
+            self.codec.reset_compression()
+            self.codec.reset_decompression()
+            setup_report = prepare_neuralzip_codec(self.codec, named_tensors)
+            validate_setup(self.codec)
+            self._setup_report = setup_report
+            self._setup_ready = True
+            clustering_seconds = setup_report.clustering_seconds
+            codebook_setup_seconds = setup_report.codebook_setup_seconds
+            self._last_mapping = None
+            self._last_mapping_signature = None
+        codebooks = self.codec.export_codebooks()
+        codebook_metadata_bytes = serialized_codebooks_size(codebooks)
         setup_seconds = clustering_seconds + codebook_setup_seconds
 
         encoded_batch = encode_tensor_batch(self.codec, named_tensors)
@@ -806,7 +665,7 @@ class Compressor:
             tensor_results.append(result)
 
         total_compressed_bytes = serialized_size(
-            method_name,
+            "neuralzip",
             codebooks,
             compressed_payloads,
         )
@@ -815,8 +674,8 @@ class Compressor:
             total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
         )
         return {
-            "method": method_name,
-            "zipnn_method": method_detail,
+            "method": "neuralzip",
+            "method_detail": "js-clustered-shared-huffman-packed-exponents",
             "num_tensors": len(tensor_results),
             "raw_bytes": total_raw_bytes,
             "payload_bytes": total_payload_bytes,
@@ -853,80 +712,5 @@ class Compressor:
             "decode_seconds": total_decode_seconds if self.verify else None,
             "roundtrip_ok": roundtrip_ok,
             "codebooks": codebooks,
-            "tensor_results": tensor_results,
-        }
-
-    def _zipnn(self, model):
-        tensor_results = []
-        total_raw_bytes = 0
-        total_compressed_bytes = 0
-        total_encode_seconds = 0.0
-        total_codec_encode_seconds = 0.0
-        total_input_copy_seconds = 0.0
-        total_decode_seconds = 0.0
-        roundtrip_ok = True if self.verify else None
-        codec = self.codec
-        encoded_rows = []
-
-        for name, tensor in _named_input_tensors(model):
-            if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-                continue
-
-            original = tensor.detach().cpu().contiguous()
-            raw_bytes = _raw_tensor_bytes(original)
-            total_raw_bytes += raw_bytes
-
-            encoded = codec.encode_tensor(original, verify=False)
-            payload = encoded.payload
-            input_copy_seconds = encoded.input_copy_seconds
-            codec_encode_seconds = encoded.codec_encode_seconds
-            encode_seconds = encoded.encode_seconds
-
-            compressed_bytes = len(payload)
-            total_compressed_bytes += compressed_bytes
-            total_encode_seconds += encode_seconds
-            total_codec_encode_seconds += codec_encode_seconds
-            total_input_copy_seconds += input_copy_seconds
-
-            encoded_rows.append((name, original, encoded))
-
-            result = {"name": name, "raw_bytes": raw_bytes}
-            if self.keep_payloads:
-                result["payload"] = payload
-            tensor_results.append(result)
-
-        if self.verify:
-            decode_started = time.perf_counter()
-            decoded_tensors = {
-                name: codec.decode(encoded.payload) for name, _, encoded in encoded_rows
-            }
-            total_decode_seconds = time.perf_counter() - decode_started
-            for name, original, _ in encoded_rows:
-                roundtrip_ok = bool(
-                    roundtrip_ok and bitwise_equal(original, decoded_tensors[name])
-                )
-
-        model_compression_ratio = (
-            total_compressed_bytes / total_raw_bytes if total_raw_bytes else 0.0
-        )
-        return {
-            "method": "zipnn",
-            "zipnn_method": self.zipnn_method,
-            "num_tensors": len(tensor_results),
-            "raw_bytes": total_raw_bytes,
-            "payload_bytes": total_compressed_bytes,
-            "metadata_bytes": 0,
-            "compressed_bytes": total_compressed_bytes,
-            "compression_ratio": model_compression_ratio,
-            "huffman_chunks": None,
-            "raw_chunks": None,
-            "zero_chunks": None,
-            "setup_seconds": 0.0,
-            "encode_seconds": total_encode_seconds,
-            "total_seconds": total_encode_seconds,
-            "codec_encode_seconds": total_codec_encode_seconds,
-            "input_copy_seconds": total_input_copy_seconds,
-            "decode_seconds": total_decode_seconds if self.verify else None,
-            "roundtrip_ok": roundtrip_ok,
             "tensor_results": tensor_results,
         }

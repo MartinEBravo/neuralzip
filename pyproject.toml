@@ -32,7 +32,6 @@ experiments = [
     "pyarrow",
     "safetensors",
     "torchvision",
-    "zipnn==0.5.4",
 ]
 test = [
     "huggingface-hub",
@@ -41,7 +40,6 @@ test = [
     "pillow",
     "pytest",
     "torchvision",
-    "zipnn==0.5.4",
 ]
 
 [tool.setuptools.packages.find]
@@ -49,7 +47,7 @@ where = ["."]
 include = ["neuralzip*"]
 
 [tool.setuptools.package-data]
-neuralzip = ["cuda/*.cu"]
+"neuralzip.gpu" = ["cuda/*.cu"]
 
 [tool.setuptools.data-files]
 "share/neuralzip/licenses/dfloat11" = ["third_party/dfloat11/LICENSE"]

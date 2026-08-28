@@ -19,8 +19,8 @@ from pathlib import Path
 
 import torch
 
-from .gpu_export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
-from .gpu_inference import BF16WeightGroup, LinearWeightBinding, NeuralZipModelExport
+from .export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
+from .inference import BF16WeightGroup, LinearWeightBinding, NeuralZipModelExport
 
 FORMAT_NAME = "neuralzip-gpu-export"
 FORMAT_VERSION = 1

@@ -27,13 +27,13 @@ from .serialization import (
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
 )
-from .zipnn_codec import (
+from .byte_group_codec import (
     DTYPE_BY_NAME,
-    ZipNNCodec,
+    ByteGroupCodec,
     _tensor_from_raw_bytes,
-    _zipnn_dtype_config,
-    _zipnn_reordered_bytes,
-    _zipnn_restored_bytes,
+    _byte_group_dtype_config,
+    _byte_group_reordered_bytes,
+    _byte_group_restored_bytes,
 )
 
 _TRANSFER_NAME_FALLBACKS = {
@@ -48,7 +48,7 @@ def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
 
 
-class NeuralZipCodec(ZipNNCodec):
+class NeuralZipCodec(ByteGroupCodec):
     """JS-clustered Huffman with deterministic packed-exponent selection."""
 
     def __init__(
@@ -404,7 +404,7 @@ class NeuralZipCodec(ZipNNCodec):
 
         def encode_once():
             started = time.perf_counter()
-            huff0.compress_zipnn_mixed_many(
+            huff0.compress_mixed_streams_many(
                 tuple(tensor_specs),
                 min_saving_bytes=self.min_saving_bytes,
                 threads=self.threads,
@@ -488,9 +488,9 @@ class NeuralZipCodec(ZipNNCodec):
             "ngram_n": int(ngram_n),
             "vocab": vocab,
             "codebook": codebook,
-            # New codebooks use the same four-stream Huff0 payload shape as
-            # ZipNN local blocks.  The archive mode records this explicitly so
-            # legacy one-stream archives remain decodable.
+            # New codebooks use a four-stream Huff0 payload shape. The archive
+            # mode records this explicitly so legacy one-stream archives remain
+            # decodable.
             "frame_4x": True,
         }
 
@@ -628,8 +628,8 @@ class NeuralZipCodec(ZipNNCodec):
                 )
 
         # A frozen NeuralZip setup may only select modes whose target encode
-        # uses precomputed state, or raw storage.  Local Huff0 remains available
-        # to the ZipNN baseline but is never a post-setup NeuralZip mode.
+        # uses precomputed state, or raw storage. Local Huff0 is used only while
+        # estimating candidates and is never a post-setup mode.
         base_candidates = [raw_mode]
         if shared is not None:
             base_candidates.append(shared)
@@ -763,12 +763,12 @@ class NeuralZipCodec(ZipNNCodec):
                 continue
 
             original = tensor.detach().cpu().contiguous()
-            config = _zipnn_dtype_config(original.dtype)
+            config = _byte_group_dtype_config(original.dtype)
             for stream_id in range(int(config["num_buffers"])):
                 key = self._codebook_key(name, original, stream_id)
                 # The source cluster decision already compared compressed size
                 # and direct-encoding time under the configured tolerance.
-                # Re-probing every tensor with a ratio-only local baseline here
+                # Re-probing every tensor with a ratio-only local fallback here
                 # would undo that decision and prune all shared codebooks.
                 selected = self._mode_by_key[key]
 
@@ -844,7 +844,7 @@ class NeuralZipCodec(ZipNNCodec):
             ):
                 continue
 
-            config = _zipnn_dtype_config(tensor.dtype)
+            config = _byte_group_dtype_config(tensor.dtype)
             stream_ids = tuple(range(int(config["num_buffers"])))
             source_name = str(name)
             exact_keys = tuple(
@@ -964,8 +964,8 @@ class NeuralZipCodec(ZipNNCodec):
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 continue
             original = tensor.detach().cpu().contiguous()
-            config = _zipnn_dtype_config(original.dtype)
-            reordered = _zipnn_reordered_bytes(original, config)
+            config = _byte_group_dtype_config(original.dtype)
+            reordered = _byte_group_reordered_bytes(original, config)
             element_size = int(config["element_size"])
             for stream_id in range(int(config["num_buffers"])):
                 is_exponent = self._is_exponent_stream(config, stream_id)
@@ -1124,14 +1124,14 @@ class NeuralZipCodec(ZipNNCodec):
             )
             for _, tensor, config, tensor_modes in tensor_specs
         ]
-        native_batch = huff0.compress_zipnn_mixed_many(
+        native_batch = huff0.compress_mixed_streams_many(
             native_specs,
             min_saving_bytes=self.min_saving_bytes,
             threads=self.threads,
             compression_threshold=self.compression_threshold,
         )
         if len(native_batch) != len(tensor_specs):
-            raise RuntimeError("Mixed ZipNN returned an invalid tensor count.")
+            raise RuntimeError("Mixed-stream encoder returned an invalid tensor count.")
         return [
             self._tensor_payload_from_native_mixed(
                 name,
@@ -1160,7 +1160,7 @@ class NeuralZipCodec(ZipNNCodec):
         for name, tensor in named_tensors:
             if not torch.is_tensor(tensor) or not tensor.is_floating_point():
                 raise TypeError("NeuralZipCodec only compresses floating tensors.")
-            config = _zipnn_dtype_config(tensor.dtype)
+            config = _byte_group_dtype_config(tensor.dtype)
             raw_bytes = int(tensor.numel()) * int(config["element_size"])
             if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
                 outputs.extend(self._compress_direct_native_batch(batch))
@@ -1198,9 +1198,9 @@ class NeuralZipCodec(ZipNNCodec):
         element_size = int(config["element_size"])
         stream_count = int(config["num_buffers"])
         if len(native_groups) != stream_count:
-            raise RuntimeError("Mixed ZipNN returned an invalid stream count.")
+            raise RuntimeError("Mixed-stream encoder returned an invalid stream count.")
 
-        baseline_format = all(
+        local_format = all(
             mode.get("kind") in {"local_huff0", "raw"} for mode in tensor_modes
         )
         allowed_finals = {
@@ -1234,7 +1234,7 @@ class NeuralZipCodec(ZipNNCodec):
                 symbol_count = int(symbol_count)
                 if final_kind not in allowed_finals[planned_kind]:
                     raise RuntimeError(
-                        f"Mixed ZipNN changed {planned_kind!r} into the invalid "
+                        f"Mixed-stream encoder changed {planned_kind!r} into the invalid "
                         f"mode {final_kind!r}."
                     )
                 symbols += symbol_count
@@ -1272,12 +1272,12 @@ class NeuralZipCodec(ZipNNCodec):
                     )
             if symbols != int(tensor.numel()):
                 raise RuntimeError(
-                    "Mixed ZipNN stream symbol count does not match the tensor."
+                    "Mixed-stream symbol count does not match the tensor."
                 )
             is_exponent = self._is_exponent_stream(config, stream_id)
             stream_kind = (
                 "byte_group"
-                if baseline_format
+                if local_format
                 else ("exponent" if is_exponent else "byte_group")
             )
             groups.append(
@@ -1405,7 +1405,7 @@ class NeuralZipCodec(ZipNNCodec):
             raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
 
         dtype = DTYPE_BY_NAME[compressed.dtype]
-        config = _zipnn_dtype_config(dtype)
+        config = _byte_group_dtype_config(dtype)
         if compressed.element_size != int(config["element_size"]):
             raise ValueError("Payload element size does not match its dtype.")
         if len(compressed.groups) != int(config["num_buffers"]):
@@ -1467,12 +1467,12 @@ class NeuralZipCodec(ZipNNCodec):
             (compressed, *self._native_decode_spec(compressed))
             for compressed in payloads
         ]
-        raw_buffers = huff0.decompress_zipnn_mixed_many(
+        raw_buffers = huff0.decompress_mixed_streams_many(
             tuple(spec for _, spec, _ in prepared),
             threads=self.threads,
         )
         if len(raw_buffers) != len(prepared):
-            raise RuntimeError("Mixed ZipNN decoder returned an invalid tensor count.")
+            raise RuntimeError("Mixed-stream decoder returned an invalid tensor count.")
         outputs = []
         for (compressed, _, dtype), raw in zip(
             prepared,
@@ -1529,7 +1529,7 @@ class NeuralZipCodec(ZipNNCodec):
         if compressed.dtype not in DTYPE_BY_NAME:
             raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
         if compressed.strategy != "neuralzip":
-            return super().decompress_tensor(compressed)
+            raise ValueError(f"Unsupported payload strategy: {compressed.strategy!r}")
 
         dtype, config = self._validate_decompression_payload(compressed)
 
@@ -1549,5 +1549,5 @@ class NeuralZipCodec(ZipNNCodec):
                 )
             raw[stream_id :: compressed.element_size] = stream
 
-        restored = _zipnn_restored_bytes(bytes(raw), dtype, config)
+        restored = _byte_group_restored_bytes(bytes(raw), dtype, config)
         return _tensor_from_raw_bytes(restored, dtype, compressed.shape)

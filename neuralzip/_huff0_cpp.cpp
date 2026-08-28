@@ -77,12 +77,6 @@ struct LocalBlockResult {
     std::string error;
 };
 
-struct ZipNNBlockResult {
-    std::vector<std::uint8_t> raw;
-    std::vector<std::uint8_t> payload;
-    std::string error;
-};
-
 struct NGramBlockResult {
     std::vector<std::uint8_t> payload;
     std::vector<std::uint8_t> escapes;
@@ -133,15 +127,15 @@ struct MixedBlockResult {
     std::string error;
 };
 
-enum class ZipNNDecodeMode {
+enum class MixedStreamDecodeMode {
     Raw,
     Zero,
     LocalHuff0,
     SharedHuff0,
 };
 
-struct ZipNNDecodeChunk {
-    ZipNNDecodeMode mode = ZipNNDecodeMode::Raw;
+struct MixedStreamDecodeChunk {
+    MixedStreamDecodeMode mode = MixedStreamDecodeMode::Raw;
     Py_buffer payload_view{};
     PyObject* decodebook_capsule = nullptr;
     Huff0Decodebook* decodebook = nullptr;
@@ -153,7 +147,7 @@ struct ZipNNDecodeChunk {
     std::string error;
 };
 
-struct ZipNNDecodeTensor {
+struct MixedStreamDecodeTensor {
     int element_size = 0;
     bool bit_reorder = false;
     std::size_t numel = 0;
@@ -162,7 +156,7 @@ struct ZipNNDecodeTensor {
     std::uint8_t* output_data = nullptr;
 };
 
-struct ZipNNAlignedDecodeJob {
+struct MixedStreamAlignedDecodeJob {
     std::size_t tensor_index = 0;
     std::size_t output_offset = 0;
     std::size_t symbol_count = 0;
@@ -170,7 +164,7 @@ struct ZipNNAlignedDecodeJob {
     std::string error;
 };
 
-struct ZipNNCombineJob {
+struct MixedStreamCombineJob {
     std::size_t tensor_index = 0;
     std::size_t start = 0;
     std::size_t length = 0;
@@ -307,7 +301,7 @@ LocalBlockResult compress_local_block(
     return result;
 }
 
-inline std::uint8_t zipnn_stream_byte(
+inline std::uint8_t byte_group_stream_byte(
     const std::uint8_t* raw,
     int element_size,
     bool bit_reorder,
@@ -327,7 +321,7 @@ inline std::uint8_t zipnn_stream_byte(
         | (raw[source + static_cast<std::size_t>(element_size - 2)] >> 7U));
 }
 
-void extract_zipnn_stream_block(
+void extract_byte_group_stream_block(
     std::vector<std::uint8_t>& output,
     const std::uint8_t* raw,
     int element_size,
@@ -337,13 +331,13 @@ void extract_zipnn_stream_block(
     std::size_t length) {
     output.resize(length);
     for (std::size_t offset = 0; offset < length; ++offset) {
-        output[offset] = zipnn_stream_byte(
+        output[offset] = byte_group_stream_byte(
             raw, element_size, bit_reorder, stream, start + offset);
     }
 }
 
-void restore_zipnn_tensor_range(
-    const ZipNNDecodeTensor& request,
+void restore_mixed_stream_tensor_range(
+    const MixedStreamDecodeTensor& request,
     std::size_t start,
     std::size_t length) {
     const int element_size = request.element_size;
@@ -399,14 +393,14 @@ void restore_zipnn_tensor_range(
     }
 }
 
-inline std::uint8_t zipnn_decoded_lane_byte(
+inline std::uint8_t mixed_stream_decoded_lane_byte(
     const std::uint8_t* lane,
     std::size_t index) {
     return lane == nullptr ? 0U : lane[index];
 }
 
-void restore_zipnn_aligned_chunk(
-    const ZipNNDecodeTensor& request,
+void restore_mixed_stream_aligned_chunk(
+    const MixedStreamDecodeTensor& request,
     const std::array<const std::uint8_t*, 4>& lanes,
     std::size_t output_offset,
     std::size_t length) {
@@ -422,15 +416,15 @@ void restore_zipnn_aligned_chunk(
         if (!request.bit_reorder) {
             for (std::size_t index = 0; index < length; ++index) {
                 const std::size_t target = index * 2U;
-                output[target] = zipnn_decoded_lane_byte(first, index);
-                output[target + 1U] = zipnn_decoded_lane_byte(second, index);
+                output[target] = mixed_stream_decoded_lane_byte(first, index);
+                output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
             }
             return;
         }
         for (std::size_t index = 0; index < length; ++index) {
-            const std::uint8_t penultimate = zipnn_decoded_lane_byte(
+            const std::uint8_t penultimate = mixed_stream_decoded_lane_byte(
                 first, index);
-            const std::uint8_t last = zipnn_decoded_lane_byte(second, index);
+            const std::uint8_t last = mixed_stream_decoded_lane_byte(second, index);
             const std::size_t target = index * 2U;
             output[target] = static_cast<std::uint8_t>(
                 (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
@@ -447,21 +441,21 @@ void restore_zipnn_aligned_chunk(
     if (!request.bit_reorder) {
         for (std::size_t index = 0; index < length; ++index) {
             const std::size_t target = index * 4U;
-            output[target] = zipnn_decoded_lane_byte(first, index);
-            output[target + 1U] = zipnn_decoded_lane_byte(second, index);
-            output[target + 2U] = zipnn_decoded_lane_byte(
+            output[target] = mixed_stream_decoded_lane_byte(first, index);
+            output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
+            output[target + 2U] = mixed_stream_decoded_lane_byte(
                 penultimate_lane, index);
-            output[target + 3U] = zipnn_decoded_lane_byte(last_lane, index);
+            output[target + 3U] = mixed_stream_decoded_lane_byte(last_lane, index);
         }
         return;
     }
     for (std::size_t index = 0; index < length; ++index) {
-        const std::uint8_t penultimate = zipnn_decoded_lane_byte(
+        const std::uint8_t penultimate = mixed_stream_decoded_lane_byte(
             penultimate_lane, index);
-        const std::uint8_t last = zipnn_decoded_lane_byte(last_lane, index);
+        const std::uint8_t last = mixed_stream_decoded_lane_byte(last_lane, index);
         const std::size_t target = index * 4U;
-        output[target] = zipnn_decoded_lane_byte(first, index);
-        output[target + 1U] = zipnn_decoded_lane_byte(second, index);
+        output[target] = mixed_stream_decoded_lane_byte(first, index);
+        output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
         output[target + 2U] = static_cast<std::uint8_t>(
             (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
         output[target + 3U] = static_cast<std::uint8_t>(
@@ -1370,7 +1364,7 @@ NGramTokenization tokenize_ngrams(
     return result;
 }
 
-NGramTokenization tokenize_zipnn_stream_ngrams(
+NGramTokenization tokenize_byte_group_stream_ngrams(
     const std::uint8_t* raw,
     int element_size,
     bool bit_reorder,
@@ -1401,7 +1395,7 @@ NGramTokenization tokenize_zipnn_stream_ngrams(
         std::size_t position = start
             + static_cast<std::size_t>(token_index * n);
         for (int offset = 0; offset < n; ++offset) {
-            std::uint8_t value = zipnn_stream_byte(
+            std::uint8_t value = byte_group_stream_byte(
                 raw,
                 element_size,
                 bit_reorder,
@@ -1425,7 +1419,7 @@ NGramTokenization tokenize_zipnn_stream_ngrams(
     }
 
     for (Py_ssize_t offset = complete_len; offset < data_len; ++offset) {
-        result.tail.push_back(zipnn_stream_byte(
+        result.tail.push_back(byte_group_stream_byte(
             raw,
             element_size,
             bit_reorder,
@@ -1613,7 +1607,7 @@ void process_mixed_packed_block(
             static_cast<double>(length) * compression_threshold)
             - kPackedMetadataBytes);
     NGramBlockResult packed = encode_tokenized_ngram_block(
-        tokenize_zipnn_stream_ngrams(
+        tokenize_byte_group_stream_ngrams(
             raw,
             element_size,
             bit_reorder,
@@ -1647,7 +1641,7 @@ void process_mixed_packed_block(
 
     // The successful packed path never owns a contiguous reordered stream.
     // Materialize it only when direct raw fallback needs the exact bytes.
-    extract_zipnn_stream_block(
+    extract_byte_group_stream_block(
         result.raw,
         raw,
         element_size,
@@ -1657,7 +1651,7 @@ void process_mixed_packed_block(
         length);
 }
 
-void process_mixed_zipnn_block(
+void process_mixed_stream_block(
     MixedBlockResult& result,
     const MixedStreamSpec& spec,
     const std::uint8_t* raw,
@@ -1684,7 +1678,7 @@ void process_mixed_zipnn_block(
         return;
     }
 
-    extract_zipnn_stream_block(
+    extract_byte_group_stream_block(
         result.raw,
         raw,
         element_size,
@@ -1843,7 +1837,7 @@ PyObject* mixed_groups_to_python(
                 Py_DECREF(groups);
                 PyErr_SetString(
                     PyExc_RuntimeError,
-                    "Mixed ZipNN result index exceeds the native result set.");
+                    "Mixed-stream result index exceeds the native result set.");
                 return nullptr;
             }
             const MixedBlockResult& result = results[result_index];
@@ -3180,166 +3174,7 @@ PyObject* py_compress_many(PyObject*, PyObject* args, PyObject* kwargs) {
     return output;
 }
 
-PyObject* py_compress_zipnn(PyObject*, PyObject* args, PyObject* kwargs) {
-    Py_buffer raw_view{};
-    int element_size = 0;
-    int bit_reorder = 0;
-    Py_ssize_t requested_chunk_size = 0;
-    Py_ssize_t min_saving_bytes = 0;
-    int requested_threads = 0;
-    double compression_threshold = 0.95;
-    static const char* keyword_names[] = {
-        "data",
-        "element_size",
-        "bit_reorder",
-        "chunk_size",
-        "min_saving_bytes",
-        "threads",
-        "compression_threshold",
-        nullptr,
-    };
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "y*iin|nid",
-            const_cast<char**>(keyword_names),
-            &raw_view,
-            &element_size,
-            &bit_reorder,
-            &requested_chunk_size,
-            &min_saving_bytes,
-            &requested_threads,
-            &compression_threshold)) {
-        return nullptr;
-    }
-    auto release_and_error = [&](const char* message) -> PyObject* {
-        PyBuffer_Release(&raw_view);
-        PyErr_SetString(PyExc_ValueError, message);
-        return nullptr;
-    };
-    if (element_size != 2 && element_size != 4) {
-        return release_and_error("element_size must be 2 or 4.");
-    }
-    if (raw_view.len % element_size != 0) {
-        return release_and_error("data length must be divisible by element_size.");
-    }
-    if (requested_chunk_size <= 0 || min_saving_bytes < 0 || requested_threads < 0) {
-        return release_and_error(
-            "chunk_size must be positive; min_saving_bytes and threads must be non-negative.");
-    }
-    if (!(compression_threshold > 0.0 && compression_threshold <= 1.0)) {
-        return release_and_error("compression_threshold must be in (0, 1].");
-    }
-
-    const auto* raw = static_cast<const std::uint8_t*>(raw_view.buf);
-    std::size_t symbol_count = static_cast<std::size_t>(raw_view.len / element_size);
-    std::size_t chunk_size = std::min(
-        static_cast<std::size_t>(requested_chunk_size),
-        kMaxBlockSize);
-    struct Job {
-        int stream;
-        std::size_t start;
-        std::size_t length;
-    };
-    std::vector<Job> jobs;
-    for (int stream = 0; stream < element_size; ++stream) {
-        for (std::size_t start = 0; start < symbol_count; start += chunk_size) {
-            jobs.push_back({stream, start, std::min(chunk_size, symbol_count - start)});
-        }
-    }
-    std::vector<ZipNNBlockResult> results(jobs.size());
-
-    PyThreadState* saved = PyEval_SaveThread();
-    std::string thread_error = run_parallel_jobs(
-        jobs.size(),
-        static_cast<std::size_t>(raw_view.len),
-        requested_threads,
-        [&](std::size_t job_index) {
-            const Job& job = jobs[job_index];
-            ZipNNBlockResult& result = results[job_index];
-            try {
-                extract_zipnn_stream_block(
-                    result.raw,
-                    raw,
-                    element_size,
-                    bit_reorder != 0,
-                    job.stream,
-                    job.start,
-                    job.length);
-                LocalBlockResult compressed = compress_local_block(
-                    result.raw.data(),
-                    static_cast<Py_ssize_t>(result.raw.size()),
-                    min_saving_bytes);
-                if (!compressed.error.empty()) {
-                    result.error = compressed.error;
-                } else if (
-                    !compressed.payload.empty()
-                    && static_cast<double>(compressed.payload.size())
-                        < static_cast<double>(result.raw.size()) * compression_threshold) {
-                    result.payload = std::move(compressed.payload);
-                }
-            } catch (const std::exception& error) {
-                result.error = error.what();
-            } catch (...) {
-                result.error = "Unknown ZipNN block-compression failure.";
-            }
-        });
-    PyEval_RestoreThread(saved);
-    PyBuffer_Release(&raw_view);
-
-    if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return nullptr;
-    }
-    for (const auto& result : results) {
-        if (!result.error.empty()) {
-            PyErr_SetString(PyExc_ValueError, result.error.c_str());
-            return nullptr;
-        }
-    }
-
-    PyObject* groups = PyList_New(element_size);
-    if (!groups) {
-        return nullptr;
-    }
-    std::size_t job_index = 0;
-    for (int stream = 0; stream < element_size; ++stream) {
-        Py_ssize_t group_size = symbol_count == 0
-            ? 0
-            : static_cast<Py_ssize_t>((symbol_count + chunk_size - 1) / chunk_size);
-        PyObject* chunks = PyList_New(group_size);
-        if (!chunks) {
-            Py_DECREF(groups);
-            return nullptr;
-        }
-        for (Py_ssize_t index = 0; index < group_size; ++index, ++job_index) {
-            const ZipNNBlockResult& result = results[job_index];
-            bool compressed = !result.payload.empty();
-            const auto& bytes = compressed ? result.payload : result.raw;
-            PyObject* tuple = PyTuple_New(3);
-            PyObject* mode = PyBool_FromLong(compressed ? 1 : 0);
-            PyObject* payload = bytes_from_vector(bytes);
-            PyObject* count = PyLong_FromSize_t(result.raw.size());
-            if (!tuple || !mode || !payload || !count) {
-                Py_XDECREF(tuple);
-                Py_XDECREF(mode);
-                Py_XDECREF(payload);
-                Py_XDECREF(count);
-                Py_DECREF(chunks);
-                Py_DECREF(groups);
-                return nullptr;
-            }
-            PyTuple_SET_ITEM(tuple, 0, mode);
-            PyTuple_SET_ITEM(tuple, 1, payload);
-            PyTuple_SET_ITEM(tuple, 2, count);
-            PyList_SET_ITEM(chunks, index, tuple);
-        }
-        PyList_SET_ITEM(groups, stream, chunks);
-    }
-    return groups;
-}
-
-PyObject* py_compress_zipnn_mixed_many(
+PyObject* py_compress_mixed_streams_many(
     PyObject*, PyObject* args, PyObject* kwargs) {
     PyObject* tensor_source = nullptr;
     Py_ssize_t min_saving_bytes = 0;
@@ -3519,7 +3354,7 @@ PyObject* py_compress_zipnn_mixed_many(
                 static_cast<std::size_t>(job.stream)];
             MixedBlockResult& result = results[job_index];
             try {
-                process_mixed_zipnn_block(
+                process_mixed_stream_block(
                     result,
                     spec,
                     static_cast<const std::uint8_t*>(request.raw_view.buf),
@@ -3572,7 +3407,7 @@ PyObject* py_compress_zipnn_mixed_many(
     return output;
 }
 
-PyObject* py_decompress_zipnn_mixed_many(
+PyObject* py_decompress_mixed_streams_many(
     PyObject*, PyObject* args, PyObject* kwargs) {
     PyObject* tensor_source = nullptr;
     int requested_threads = 0;
@@ -3600,11 +3435,11 @@ PyObject* py_decompress_zipnn_mixed_many(
 
     const Py_ssize_t tensor_count = PySequence_Fast_GET_SIZE(
         tensor_sequence.get());
-    std::vector<ZipNNDecodeTensor> requests;
-    std::vector<ZipNNDecodeChunk> chunks;
-    std::vector<ZipNNAlignedDecodeJob> aligned_jobs;
+    std::vector<MixedStreamDecodeTensor> requests;
+    std::vector<MixedStreamDecodeChunk> chunks;
+    std::vector<MixedStreamAlignedDecodeJob> aligned_jobs;
     std::vector<std::size_t> fallback_chunk_jobs;
-    std::vector<ZipNNCombineJob> combine_jobs;
+    std::vector<MixedStreamCombineJob> combine_jobs;
     try {
         requests.resize(static_cast<std::size_t>(tensor_count));
     } catch (const std::bad_alloc&) {
@@ -3686,7 +3521,7 @@ PyObject* py_decompress_zipnn_mixed_many(
             }
             total_output_bytes += raw_bytes;
 
-            ZipNNDecodeTensor& request = requests[
+            MixedStreamDecodeTensor& request = requests[
                 static_cast<std::size_t>(tensor_index)];
             request.element_size = element_size;
             request.bit_reorder = bit_reorder != 0;
@@ -3753,7 +3588,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                     }
 
                     chunks.emplace_back();
-                    ZipNNDecodeChunk& chunk = chunks.back();
+                    MixedStreamDecodeChunk& chunk = chunks.back();
                     chunk.tensor_index = static_cast<std::size_t>(tensor_index);
                     chunk.stream = stream;
                     chunk.output_offset = output_offset;
@@ -3767,7 +3602,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                     }
 
                     if (std::strcmp(kind, "raw") == 0) {
-                        chunk.mode = ZipNNDecodeMode::Raw;
+                        chunk.mode = MixedStreamDecodeMode::Raw;
                         if (decodebook_source != Py_None) {
                             return fail("raw chunks cannot reference a decodebook.");
                         }
@@ -3776,7 +3611,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                                 "raw chunk payload size must equal symbol_count.");
                         }
                     } else if (std::strcmp(kind, "zero") == 0) {
-                        chunk.mode = ZipNNDecodeMode::Zero;
+                        chunk.mode = MixedStreamDecodeMode::Zero;
                         if (decodebook_source != Py_None) {
                             return fail("zero chunks cannot reference a decodebook.");
                         }
@@ -3784,7 +3619,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                             return fail("zero chunk payload must be empty.");
                         }
                     } else if (std::strcmp(kind, "local_huff0") == 0) {
-                        chunk.mode = ZipNNDecodeMode::LocalHuff0;
+                        chunk.mode = MixedStreamDecodeMode::LocalHuff0;
                         if (decodebook_source != Py_None) {
                             return fail(
                                 "local_huff0 chunks cannot reference a decodebook.");
@@ -3798,7 +3633,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                                 "local_huff0 chunk exceeds the Huff0 block limit.");
                         }
                     } else if (std::strcmp(kind, "shared_huff0") == 0) {
-                        chunk.mode = ZipNNDecodeMode::SharedHuff0;
+                        chunk.mode = MixedStreamDecodeMode::SharedHuff0;
                         if (decodebook_source == Py_None) {
                             return fail(
                                 "shared_huff0 chunks require a decodebook handle.");
@@ -3817,9 +3652,9 @@ PyObject* py_decompress_zipnn_mixed_many(
                         chunk.decodebook_capsule = decodebook_source;
                     } else if (std::strcmp(kind, "packed_huff0") == 0) {
                         return fail(
-                            "decompress_zipnn_mixed_many does not support packed_huff0.");
+                            "decompress_mixed_streams_many does not support packed_huff0.");
                     } else {
-                        return fail("Unsupported ZipNN decode chunk mode.");
+                        return fail("Unsupported mixed-stream decode chunk mode.");
                     }
 
                     stream_chunk_indices[static_cast<std::size_t>(stream)]
@@ -3846,10 +3681,10 @@ PyObject* py_decompress_zipnn_mixed_many(
                 for (std::size_t chunk_index = 0;
                      chunk_index < aligned_chunk_count;
                      ++chunk_index) {
-                    const ZipNNDecodeChunk& first = chunks[
+                    const MixedStreamDecodeChunk& first = chunks[
                         stream_chunk_indices[0][chunk_index]];
                     for (std::size_t stream = 1; stream < width; ++stream) {
-                        const ZipNNDecodeChunk& other = chunks[
+                        const MixedStreamDecodeChunk& other = chunks[
                             stream_chunk_indices[stream][chunk_index]];
                         if (other.output_offset != first.output_offset
                             || other.symbol_count != first.symbol_count) {
@@ -3867,8 +3702,8 @@ PyObject* py_decompress_zipnn_mixed_many(
                 for (std::size_t chunk_index = 0;
                      chunk_index < aligned_chunk_count;
                      ++chunk_index) {
-                    ZipNNAlignedDecodeJob job;
-                    const ZipNNDecodeChunk& first = chunks[
+                    MixedStreamAlignedDecodeJob job;
+                    const MixedStreamDecodeChunk& first = chunks[
                         stream_chunk_indices[0][chunk_index]];
                     job.tensor_index = static_cast<std::size_t>(tensor_index);
                     job.output_offset = first.output_offset;
@@ -3930,18 +3765,18 @@ PyObject* py_decompress_zipnn_mixed_many(
             requested_threads,
             [&](std::size_t job_index) {
                 if (job_index < aligned_job_count) {
-                    ZipNNAlignedDecodeJob& job = aligned_jobs[job_index];
-                    const ZipNNDecodeTensor& request = requests[
+                    MixedStreamAlignedDecodeJob& job = aligned_jobs[job_index];
+                    const MixedStreamDecodeTensor& request = requests[
                         job.tensor_index];
                     try {
                         const std::size_t width = static_cast<std::size_t>(
                             request.element_size);
                         std::size_t huff_lane_count = 0;
                         for (std::size_t stream = 0; stream < width; ++stream) {
-                            const ZipNNDecodeMode mode = chunks[
+                            const MixedStreamDecodeMode mode = chunks[
                                 job.chunk_indices[stream]].mode;
-                            if (mode == ZipNNDecodeMode::LocalHuff0
-                                || mode == ZipNNDecodeMode::SharedHuff0) {
+                            if (mode == MixedStreamDecodeMode::LocalHuff0
+                                || mode == MixedStreamDecodeMode::SharedHuff0) {
                                 ++huff_lane_count;
                             }
                         }
@@ -3958,18 +3793,18 @@ PyObject* py_decompress_zipnn_mixed_many(
                         std::array<const std::uint8_t*, 4> lane_data{};
                         std::size_t scratch_offset = 0;
                         for (std::size_t stream = 0; stream < width; ++stream) {
-                            ZipNNDecodeChunk& chunk = chunks[
+                            MixedStreamDecodeChunk& chunk = chunks[
                                 job.chunk_indices[stream]];
                             const auto* payload = static_cast<
                                 const std::uint8_t*>(chunk.payload_view.buf);
                             switch (chunk.mode) {
-                            case ZipNNDecodeMode::Raw:
+                            case MixedStreamDecodeMode::Raw:
                                 lane_data[stream] = payload;
                                 break;
-                            case ZipNNDecodeMode::Zero:
+                            case MixedStreamDecodeMode::Zero:
                                 lane_data[stream] = nullptr;
                                 break;
-                            case ZipNNDecodeMode::LocalHuff0: {
+                            case MixedStreamDecodeMode::LocalHuff0: {
                                 std::uint8_t* destination = scratch.data()
                                     + scratch_offset;
                                 decompress_local_block_into(
@@ -3981,7 +3816,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                                 scratch_offset += chunk.symbol_count;
                                 break;
                             }
-                            case ZipNNDecodeMode::SharedHuff0: {
+                            case MixedStreamDecodeMode::SharedHuff0: {
                                 std::uint8_t* destination = scratch.data()
                                     + scratch_offset;
                                 decode_with_dtable_into(
@@ -3997,7 +3832,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                             }
                             }
                         }
-                        restore_zipnn_aligned_chunk(
+                        restore_mixed_stream_aligned_chunk(
                             request,
                             lane_data,
                             job.output_offset,
@@ -4005,14 +3840,14 @@ PyObject* py_decompress_zipnn_mixed_many(
                     } catch (const std::exception& error) {
                         job.error = error.what();
                     } catch (...) {
-                        job.error = "Unknown aligned ZipNN decode failure.";
+                        job.error = "Unknown aligned mixed-stream decode failure.";
                     }
                     return;
                 }
 
-                ZipNNDecodeChunk& chunk = chunks[
+                MixedStreamDecodeChunk& chunk = chunks[
                     fallback_chunk_jobs[job_index - aligned_job_count]];
-                ZipNNDecodeTensor& request = requests[chunk.tensor_index];
+                MixedStreamDecodeTensor& request = requests[chunk.tensor_index];
                 std::uint8_t* destination = nullptr;
                 if (chunk.symbol_count > 0) {
                     destination = request.lanes[
@@ -4023,25 +3858,25 @@ PyObject* py_decompress_zipnn_mixed_many(
                     const auto* payload = static_cast<const std::uint8_t*>(
                         chunk.payload_view.buf);
                     switch (chunk.mode) {
-                    case ZipNNDecodeMode::Raw:
+                    case MixedStreamDecodeMode::Raw:
                         if (chunk.symbol_count > 0) {
                             std::memcpy(
                                 destination, payload, chunk.symbol_count);
                         }
                         break;
-                    case ZipNNDecodeMode::Zero:
+                    case MixedStreamDecodeMode::Zero:
                         if (chunk.symbol_count > 0) {
                             std::memset(destination, 0, chunk.symbol_count);
                         }
                         break;
-                    case ZipNNDecodeMode::LocalHuff0:
+                    case MixedStreamDecodeMode::LocalHuff0:
                         decompress_local_block_into(
                             payload,
                             chunk.payload_view.len,
                             destination,
                             chunk.symbol_count);
                         break;
-                    case ZipNNDecodeMode::SharedHuff0:
+                    case MixedStreamDecodeMode::SharedHuff0:
                         decode_with_dtable_into(
                             payload,
                             chunk.payload_view.len,
@@ -4054,7 +3889,7 @@ PyObject* py_decompress_zipnn_mixed_many(
                 } catch (const std::exception& error) {
                     chunk.error = error.what();
                 } catch (...) {
-                    chunk.error = "Unknown ZipNN decode failure.";
+                    chunk.error = "Unknown mixed-stream decode failure.";
                 }
             });
 
@@ -4080,15 +3915,15 @@ PyObject* py_decompress_zipnn_mixed_many(
                 total_output_bytes,
                 requested_threads,
                 [&](std::size_t job_index) {
-                    const ZipNNCombineJob& job = combine_jobs[job_index];
-                    restore_zipnn_tensor_range(
+                    const MixedStreamCombineJob& job = combine_jobs[job_index];
+                    restore_mixed_stream_tensor_range(
                         requests[job.tensor_index], job.start, job.length);
                 });
         }
     } catch (const std::exception& error) {
         native_error = error.what();
     } catch (...) {
-        native_error = "Unknown model-wide ZipNN decode failure.";
+        native_error = "Unknown model-wide mixed-stream decode failure.";
     }
     PyEval_RestoreThread(saved);
 
@@ -4114,7 +3949,7 @@ PyObject* py_decompress_zipnn_mixed_many(
     for (Py_ssize_t tensor_index = 0;
          tensor_index < tensor_count;
          ++tensor_index) {
-        ZipNNDecodeTensor& request = requests[
+        MixedStreamDecodeTensor& request = requests[
             static_cast<std::size_t>(tensor_index)];
         PyList_SET_ITEM(output, tensor_index, request.output);
         request.output = nullptr;
@@ -4189,9 +4024,8 @@ static PyMethodDef methods[] = {
     {"decompress_ngram_with_decodebook", py_decompress_ngram_with_decodebook, METH_VARARGS, "Decode Huff0 token ids and restore packed n-grams."},
     {"decompress_ngram_with_decodebook_4x", py_decompress_ngram_with_decodebook_4x, METH_VARARGS, "Decode four Huff0 token streams and restore packed n-grams."},
     {"compress_many", reinterpret_cast<PyCFunction>(py_compress_many), METH_VARARGS | METH_KEYWORDS, "Compress independent blocks with Huff0 in parallel."},
-    {"compress_zipnn", reinterpret_cast<PyCFunction>(py_compress_zipnn), METH_VARARGS | METH_KEYWORDS, "Reorder, split, and compress a floating-point tensor with Huff0."},
-    {"compress_zipnn_mixed_many", reinterpret_cast<PyCFunction>(py_compress_zipnn_mixed_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed ZipNN/Huff0 native job queue."},
-    {"decompress_zipnn_mixed_many", reinterpret_cast<PyCFunction>(py_decompress_zipnn_mixed_many), METH_VARARGS | METH_KEYWORDS, "Decode many sharing-only ZipNN tensors with one native job queue."},
+    {"compress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_compress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed-stream Huff0 native job queue."},
+    {"decompress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_decompress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Decode many mixed-stream tensors with one native job queue."},
     {"decompress_block", py_decompress_block, METH_VARARGS, "Decompress one self-contained Huff0 block."},
     {nullptr, nullptr, 0, nullptr},
 };

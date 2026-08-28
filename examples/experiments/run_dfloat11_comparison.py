@@ -679,7 +679,7 @@ def _neuralzip_exponent_metrics(exported, target: TargetScope) -> dict[str, obje
 
 
 def _run_neuralzip(args, device) -> None:
-    from neuralzip import NeuralZipPlan
+    from neuralzip import Compressor
     from neuralzip.gpu_inference import NeuralZipRuntime, export_model_for_gpu
 
     resolved = _resolved_from_args(args)
@@ -689,8 +689,8 @@ def _run_neuralzip(args, device) -> None:
         name: model.get_parameter(name) for name in target.weight_names
     }
     setup_started = time.perf_counter()
-    plan = NeuralZipPlan.fit(
-        target_parameters,
+    compressor = Compressor(
+        "neuralzip",
         threads=args.threads,
         exponent_prior_count=args.exponent_prior_count,
         max_codebook_sample_bytes=args.max_codebook_sample_bytes,
@@ -698,10 +698,11 @@ def _run_neuralzip(args, device) -> None:
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
     )
+    compressor.fit(target_parameters)
     setup_seconds = time.perf_counter() - setup_started
 
     encode_started = time.perf_counter()
-    exported = export_model_for_gpu(model, plan)
+    exported = export_model_for_gpu(model, compressor)
     post_setup_encode_seconds = time.perf_counter() - encode_started
     covered_names = (
         tuple(binding.tensor_name for binding in exported.bindings)

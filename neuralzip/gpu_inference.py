@@ -22,6 +22,7 @@ import torch
 from torch import nn
 
 from . import gpu_decoder, huff0
+from .compressor import Compressor
 from .gpu_adapters import AutoModuleListAdapter, GPUModelAdapter, GPUWeightKind
 from .gpu_export import (
     DEFAULT_BYTES_PER_THREAD,
@@ -31,7 +32,6 @@ from .gpu_export import (
     GPUEncodedExponents,
     encode_bfloat16,
 )
-from .plan import NeuralZipPlan
 
 _RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
@@ -362,7 +362,7 @@ def _gpu_candidates(
 
 def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
     cpu = tensor.detach().to(device="cpu").contiguous()
-    return cpu.view(torch.uint8).reshape(-1).numpy().tobytes()
+    return cpu.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
 def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF16:
@@ -396,7 +396,7 @@ def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF
 
 def export_model_for_gpu(
     model: nn.Module,
-    plan: NeuralZipPlan,
+    compressor: Compressor,
     *,
     adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
@@ -405,8 +405,35 @@ def export_model_for_gpu(
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
-    if not isinstance(plan, NeuralZipPlan):
-        raise TypeError("plan must be a NeuralZipPlan.")
+    if not isinstance(compressor, Compressor):
+        raise TypeError("compressor must be a Compressor.")
+    if compressor.method != "neuralzip" or not compressor.has_setup:
+        raise ValueError(
+            "compressor must use method='neuralzip' and have a fitted or loaded setup."
+        )
+    with (
+        compressor._state_lock,
+        compressor._target_mapping_transaction(
+            model,
+            include_buffers=False,
+        ),
+    ):
+        return _export_model_for_gpu_current_setup(
+            model,
+            compressor,
+            adapter=adapter,
+            include_embeddings=include_embeddings,
+        )
+
+
+def _export_model_for_gpu_current_setup(
+    model: nn.Module,
+    compressor: Compressor,
+    *,
+    adapter: GPUModelAdapter | None,
+    include_embeddings: bool,
+) -> NeuralZipModelExport:
+    """Export while the compressor lock and complete target mapping are active."""
 
     block_order, candidates = _gpu_candidates(
         model,
@@ -427,7 +454,9 @@ def export_model_for_gpu(
     for _name, parameter in named_parameters:
         occurrences[id(parameter)] += 1
 
-    payload_by_id = {int(payload.codebook_id): payload for payload in plan.codebooks}
+    payload_by_id = {
+        int(payload.codebook_id): payload for payload in compressor.codebooks
+    }
     codebooks = {}
     grouped_candidates = defaultdict(list)
     resident_names = []
@@ -452,7 +481,7 @@ def export_model_for_gpu(
             continue
 
         cpu = parameter.detach().to(device="cpu").contiguous()
-        mode = plan.codec._mode_for_tensor_stream(
+        mode = compressor.codec._mode_for_tensor_stream(
             candidate.tensor_name,
             cpu,
             1,
@@ -1365,7 +1394,7 @@ class NeuralZipModel:
     def from_model(
         cls,
         model: nn.Module,
-        plan: NeuralZipPlan,
+        compressor: Compressor,
         *,
         adapter: GPUModelAdapter | None = None,
         include_embeddings: bool = False,
@@ -1380,7 +1409,7 @@ class NeuralZipModel:
 
         exported = export_model_for_gpu(
             model,
-            plan,
+            compressor,
             adapter=adapter,
             include_embeddings=include_embeddings,
         )
@@ -1400,7 +1429,7 @@ class NeuralZipModel:
     def save_pretrained(
         cls,
         model: nn.Module,
-        plan_or_export=None,
+        compressor_or_export=None,
         directory=None,
         **kwargs,
     ):
@@ -1408,7 +1437,7 @@ class NeuralZipModel:
 
         from .gpu_pretrained import save_gpu_pretrained
 
-        return save_gpu_pretrained(model, plan_or_export, directory, **kwargs)
+        return save_gpu_pretrained(model, compressor_or_export, directory, **kwargs)
 
     @classmethod
     def from_pretrained(cls, directory, **kwargs) -> nn.Module:

@@ -1060,7 +1060,7 @@ def benchmark_checkpoint(
     epoch: int,
     path: Path,
     checkpoint_source: str,
-    plan,
+    compressor,
     setup: Mapping,
     args: argparse.Namespace,
     result_path: Path,
@@ -1123,7 +1123,7 @@ def benchmark_checkpoint(
     benchmark_checkpoint_codecs(
         slug=spec.slug,
         epoch=epoch,
-        plan=plan,
+        compressor=compressor,
         setup=setup,
         tensors=floating,
         common_row=common,

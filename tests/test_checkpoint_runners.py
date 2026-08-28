@@ -19,6 +19,7 @@ from examples.experiments.run_checkpoint_language import (
     smoke_token_blocks,
     unique_cpu_model_state,
 )
+from neuralzip import Compressor
 
 
 class _TiedToyModel(torch.nn.Module):
@@ -28,6 +29,58 @@ class _TiedToyModel(torch.nn.Module):
         self.output = torch.nn.Linear(8, 16, bias=False)
         self.output.weight = self.embedding.weight
         self.register_buffer("counter", torch.tensor(0, dtype=torch.int64))
+
+
+def test_checkpoint_setup_fits_saves_and_loads_through_compressor(tmp_path):
+    pattern = torch.tensor([1.0, 2.0, 1.0, 2.0], dtype=torch.float32).repeat(8192)
+    state = {
+        "layers.0.weight": pattern,
+        "layers.1.weight": pattern.clone(),
+    }
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_path = checkpoint_dir / "model_epoch_000.pt"
+    checkpoint_common.atomic_torch_save(
+        checkpoint_path,
+        {"epoch": 0, "model_state": state},
+    )
+
+    def prepare_epoch_zero(checkpoint):
+        named_tensors = list(checkpoint["model_state"].items())
+        return (
+            named_tensors,
+            {
+                "epoch0_tensor_digest": checkpoint_compression.tensor_digest(
+                    named_tensors
+                )
+            },
+            {},
+        )
+
+    model_dir = tmp_path / "model"
+    fitted, setup, files = checkpoint_common.load_or_fit_frozen_codec(
+        slug="model",
+        checkpoint_dir=checkpoint_dir,
+        model_dir=model_dir,
+        epochs=0,
+        threads=1,
+        prepare_epoch_zero=prepare_epoch_zero,
+    )
+    loaded, resumed_setup, resumed_files = checkpoint_common.load_or_fit_frozen_codec(
+        slug="model",
+        checkpoint_dir=checkpoint_dir,
+        model_dir=model_dir,
+        epochs=0,
+        threads=1,
+        prepare_epoch_zero=prepare_epoch_zero,
+    )
+
+    assert isinstance(fitted, Compressor)
+    assert isinstance(loaded, Compressor)
+    assert fitted.has_setup and loaded.has_setup
+    assert fitted.setup_digest == loaded.setup_digest == setup["codebook_digest"]
+    assert resumed_setup == setup
+    assert resumed_files == files == {0: checkpoint_path}
+    assert fitted.encode(state).payloads == loaded.encode(state).payloads
 
 
 def test_checkpoint_runner_upserts_preserve_schemas_keys_and_csv_dialects(tmp_path):

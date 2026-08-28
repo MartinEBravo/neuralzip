@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 
-from neuralzip import Compressor, NeuralZipPlan
+from neuralzip import Compressor
 from neuralzip.codec_protocol import (
     CODEC_PROTOCOL_VERSION,
     encode_tensor_batch,
@@ -168,48 +168,43 @@ def zipnn_exponent_size(
     return int(exponent.raw_bytes), int(exponent.compressed_bytes)
 
 
-def _as_plan(value) -> NeuralZipPlan:
-    return value if isinstance(value, NeuralZipPlan) else NeuralZipPlan(codec=value)
-
-
 def setup_neuralzip(
     named_tensors: list[tuple[str, torch.Tensor]],
     *,
     threads: int,
-) -> tuple[NeuralZipPlan, dict]:
-    plan = NeuralZipPlan.fit(
-        named_tensors,
+) -> tuple[Compressor, dict]:
+    compressor = Compressor(
+        "neuralzip",
         threads=threads,
         compression_threshold=0.95,
     )
-    report = plan.setup_report
+    compressor.fit(named_tensors)
+    report = compressor.setup_report
     if report is None:
         raise RuntimeError("Fitted NeuralZip setup did not report setup timing.")
-    codebooks = plan.codebooks
-    return plan, {
+    codebooks = compressor.codebooks
+    return compressor, {
         "clustering_seconds": report.clustering_seconds,
         "codebook_setup_seconds": report.codebook_setup_seconds,
         "setup_seconds": report.setup_seconds,
-        "clusters": int(plan.codec.cluster_count),
+        "clusters": compressor.cluster_count,
         "codebooks": len(codebooks),
-        "codebook_digest": plan.digest,
-        "selected_modes": plan.codec.selected_modes,
+        "codebook_digest": compressor.setup_digest,
+        "selected_modes": compressor.selected_modes,
         "epoch": 0,
         "scope": "one reusable setup per training trajectory",
     }
 
 
-def _encode_batch(plan, named_tensors):
-    plan = _as_plan(plan)
-    return encode_tensor_batch(plan.codec, tuple(named_tensors))
+def _encode_batch(compressor: Compressor, named_tensors):
+    return encode_tensor_batch(compressor.codec, tuple(named_tensors))
 
 
-def verify_neuralzip(plan, named_tensors, payloads) -> bool:
-    plan = _as_plan(plan)
+def verify_neuralzip(compressor: Compressor, named_tensors, payloads) -> bool:
     expected = dict(named_tensors)
     if len(payloads) != len(expected):
         return False
-    restored = plan.decode(payloads)
+    restored = compressor.decode(payloads)
     return all(
         name in restored and bitwise_equal(tensor, restored[name])
         for name, tensor in expected.items()
@@ -217,32 +212,31 @@ def verify_neuralzip(plan, named_tensors, payloads) -> bool:
 
 
 def benchmark_neuralzip(
-    plan,
+    compressor: Compressor,
     named_tensors: list[tuple[str, torch.Tensor]],
     *,
     epoch: int,
     setup: Mapping,
 ) -> dict:
-    plan = _as_plan(plan)
     before = tensor_digest(named_tensors)
     mapping_started = time.perf_counter()
-    transfer = plan.map_target(named_tensors)
+    transfer = compressor.map_target(named_tensors)
     mapping_seconds = time.perf_counter() - mapping_started
     if int(transfer["matched_tensors"]) != len(named_tensors):
         raise RuntimeError(
             f"NeuralZip failed complete floating-state mapping at epoch {epoch}."
         )
-    if plan.digest != str(setup["codebook_digest"]):
+    if compressor.setup_digest != str(setup["codebook_digest"]):
         raise RuntimeError("NeuralZip changed the frozen epoch-0 codebooks.")
 
-    warmup = _encode_batch(plan, named_tensors)
+    warmup = _encode_batch(compressor, named_tensors)
     del warmup
     gc.collect()
-    encoded = _encode_batch(plan, named_tensors)
+    encoded = _encode_batch(compressor, named_tensors)
     if not encoded.used_batch:
         raise RuntimeError("NeuralZip checkpoint encoding must use compress_tensors.")
-    metrics = exponent_metrics(encoded.payloads, plan.codebooks)
-    roundtrip = verify_neuralzip(plan, named_tensors, encoded.payloads)
+    metrics = exponent_metrics(encoded.payloads, compressor.codebooks)
+    roundtrip = verify_neuralzip(compressor, named_tensors, encoded.payloads)
     unchanged = tensor_digest(named_tensors) == before
     if not roundtrip or not unchanged:
         raise RuntimeError(
@@ -250,7 +244,7 @@ def benchmark_neuralzip(
             f"roundtrip={roundtrip}, input_unchanged={unchanged}."
         )
     compressed_bytes = encoded.compressed_bytes + int(
-        serialized_codebooks_size(plan.codebooks)
+        serialized_codebooks_size(compressor.codebooks)
     )
     output = {
         "codec_protocol_version": CODEC_PROTOCOL_VERSION,
@@ -355,7 +349,7 @@ def benchmark_checkpoint_codecs(
     *,
     slug: str,
     epoch: int,
-    plan,
+    compressor: Compressor,
     setup: Mapping,
     tensors: Mapping[str, torch.Tensor],
     common_row: Mapping,
@@ -371,7 +365,7 @@ def benchmark_checkpoint_codecs(
         (
             "NeuralZip",
             lambda: benchmark_neuralzip(
-                plan,
+                compressor,
                 named_tensors,
                 epoch=epoch,
                 setup=setup,
@@ -379,13 +373,13 @@ def benchmark_checkpoint_codecs(
         ),
         ("ZipNN", lambda: benchmark_zipnn(tensors, threads=threads)),
     )
-    for compressor, benchmark in methods:
-        if compressor in completed:
+    for method_name, benchmark in methods:
+        if method_name in completed:
             continue
         metrics = dict(transform_metrics(benchmark()))
-        upsert_result({**common_row, "compressor": compressor, **metrics})
+        upsert_result({**common_row, "compressor": method_name, **metrics})
         print(
-            f"[{slug}] epoch={epoch:03d} {compressor} "
+            f"[{slug}] epoch={epoch:03d} {method_name} "
             f"ratio={metrics['exponent_ratio_pct']:.3f}% "
             f"encode={metrics['encode_seconds']:.6f}s",
             flush=True,

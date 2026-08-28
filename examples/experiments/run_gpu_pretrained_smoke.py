@@ -12,7 +12,7 @@ import torch
 from accelerate import cpu_offload, dispatch_model
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from neuralzip import NeuralZipModel, NeuralZipPlan
+from neuralzip import Compressor, NeuralZipModel
 
 
 def _config() -> LlamaConfig:
@@ -102,18 +102,19 @@ def main() -> None:
         name: value.detach().cpu().clone()
         for name, value in source.state_dict().items()
     }
-    plan = NeuralZipPlan.fit(
-        dict(source.named_parameters()),
+    compressor = Compressor(
+        "neuralzip",
         threads=2,
         ngram_values=(),
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
         max_codebook_sample_bytes=1 << 20,
     )
+    compressor.fit(source)
     shutil.rmtree(args.directory, ignore_errors=True)
     NeuralZipModel.save_pretrained(
         source,
-        plan,
+        compressor,
         args.directory,
         max_shard_size="8KB",
     )

@@ -309,7 +309,7 @@ def load_or_fit_frozen_codec(
     """
 
     from examples.experiments.checkpoint_compression import setup_neuralzip
-    from neuralzip import NeuralZipPlan
+    from neuralzip import Compressor
 
     files = checkpoint_files(checkpoint_dir, epochs)
     if 0 not in files:
@@ -333,14 +333,19 @@ def load_or_fit_frozen_codec(
                 f"Reusable setup in {setup_state_path} used threads={setup.get('threads')}, "
                 f"not {threads}; use a fresh output directory."
             )
-        plan = NeuralZipPlan.load(setup_state_path)
-        if plan.digest != setup["codebook_digest"]:
+        compressor = Compressor(
+            "neuralzip",
+            threads=threads,
+            compression_threshold=0.95,
+            setup=setup_state_path,
+        )
+        if compressor.setup_digest != setup["codebook_digest"]:
             raise RuntimeError(
                 f"Reusable NeuralZip setup is corrupt: {setup_state_path}."
             )
         print(f"[{slug}] loaded reusable epoch-0 NeuralZip setup", flush=True)
     else:
-        plan, setup = setup_neuralzip(named_tensors, threads=threads)
+        compressor, setup = setup_neuralzip(named_tensors, threads=threads)
         setup = {
             **setup,
             "model": slug,
@@ -350,7 +355,7 @@ def load_or_fit_frozen_codec(
             "threads": threads,
             **dict(metadata),
         }
-        plan.save(setup_state_path, named_tensors)
+        compressor.save_setup(setup_state_path)
         atomic_write_json(setup_path, setup)
 
     print(
@@ -359,7 +364,7 @@ def load_or_fit_frozen_codec(
     )
     del checkpoint, named_tensors
     gc.collect()
-    return plan, setup, files
+    return compressor, setup, files
 
 
 def run_checkpoint_trajectory(
@@ -377,7 +382,7 @@ def run_checkpoint_trajectory(
 
     model_dir = args.output_dir / spec.slug
     model_dir.mkdir(parents=True, exist_ok=True)
-    plan, setup, files = frozen_codec_for_trajectory(
+    compressor, setup, files = frozen_codec_for_trajectory(
         spec,
         checkpoint_dir,
         model_dir,
@@ -395,14 +400,14 @@ def run_checkpoint_trajectory(
             epoch=epoch,
             path=files[epoch],
             checkpoint_source=checkpoint_source,
-            plan=plan,
+            compressor=compressor,
             setup=setup,
             args=args,
             result_path=result_path,
         )
         if after_epoch is not None:
             after_epoch(epoch)
-    del plan
+    del compressor
     gc.collect()
 
 

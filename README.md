@@ -46,64 +46,6 @@ python -m pip install -e ".[experiments]"
 
 ```python
 import torch
-
-from neuralzip import Compressor
-
-weights = {
-    "encoder.weight": torch.randn(1024, 1024, dtype=torch.bfloat16),
-    "decoder.weight": torch.randn(1024, 1024, dtype=torch.bfloat16),
-}
-
-compressor = Compressor(
-    "neuralzip",
-    keep_payloads=True,
-    verify=True,
-    threads=4,
-)
-compressed = compressor.compress(weights)
-
-print(f"Stored size: {100 * compressed['compression_ratio']:.2f}% of the input")
-print(f"Setup: {compressed['setup_seconds']:.3f} s")
-print(f"Encode: {compressed['encode_seconds']:.3f} s")
-
-Compressor.save(compressed, "weights.nzip")
-restored = compressor.decompress_file("weights.nzip")
-
-for name, tensor in weights.items():
-    assert torch.equal(
-        restored[name].view(torch.uint8),
-        tensor.view(torch.uint8),
-    )
-```
-
-`keep_payloads=True` is required when the result will be saved or decompressed.
-The default, `False`, is useful for measurements that do not need to retain the
-encoded bytes. `verify=True` is enabled by default and checks every included
-tensor after compression.
-
-The equivalent explicit load flow is:
-
-```python
-loaded = Compressor.load("weights.nzip")
-restored = Compressor("neuralzip").decompress(loaded)
-```
-
-## Compressing a model
-
-NeuralZip accepts a `torch.nn.Module` directly:
-
-```python
-compressed = Compressor(
-    "neuralzip",
-    keep_payloads=True,
-).compress(model)
-```
-
-Hugging Face models can be loaded with their native Transformers classes and
-passed to the same API:
-
-```python
-import torch
 from transformers import AutoModelForCausalLM
 
 from neuralzip import Compressor
@@ -112,25 +54,89 @@ model = AutoModelForCausalLM.from_pretrained(
     "openai-community/gpt2",
     dtype=torch.bfloat16,
 )
-compressed = Compressor(
+
+neuralzip = Compressor(
     "neuralzip",
-    keep_payloads=True,
-).compress(model)
+    threads=4,
+)
+setup = neuralzip.fit(model)
+encoded = neuralzip.encode(model, setup=setup)
+restored = neuralzip.decode(encoded)
+
+print(f"Encoded tensor size: {100 * encoded.compression_ratio:.2f}% of the input")
+print(f"Setup: {setup.setup_report.setup_seconds:.3f} s")
+print(f"Encode: {encoded.encode_seconds:.3f} s")
+
+for original, recovered in zip(model.parameters(), restored.parameters()):
+    assert torch.equal(
+        original.detach().cpu().view(torch.uint8),
+        recovered.detach().cpu().view(torch.uint8),
+    )
 ```
 
-For a module, NeuralZip includes its floating-point named parameters. Passing a
-`state_dict()` instead also includes floating-point buffers:
+`fit()` returns an opaque, data-only setup. It contains the clustering and
+Huffman codebooks but has no encoding methods of its own; `Compressor` is the
+single object that fits, maps, encodes, decodes, and prepares GPU inference.
+The encoded value does not retain the source model or any source tensor objects.
+Its byte ratio covers encoded tensor streams and verbatim auxiliary tensor data;
+it is not a serialized full-model file size. Use the `.nzip` archive or GPU
+checkpoint APIs below when exact on-disk accounting is required.
+
+Official ZipNN uses the same model-level interface, without a setup:
 
 ```python
-state = model.state_dict()
-compressor = Compressor("neuralzip", keep_payloads=True)
-compressed = compressor.compress(state)
+zipnn = Compressor("zipnn")
+encoded_zipnn = zipnn.encode(model)
+restored_zipnn = zipnn.decode(encoded_zipnn)
+```
+
+## Inputs and reconstruction
+
+`encode()` accepts Hugging Face models, ordinary `torch.nn.Module` instances,
+and tensor mappings. A Hugging Face result stores its class and copied
+configuration, so `decode()` can construct a new model automatically. A tensor
+mapping decodes to a new flat `dict`.
+
+There is no safe generic constructor for an arbitrary PyTorch module. Supply an
+empty destination or factory when decoding one:
+
+```python
+encoded = neuralzip.encode(custom_model, setup=setup)
+restored = neuralzip.decode(encoded, model_factory=CustomModel)
+# Or: neuralzip.decode(encoded, destination=CustomModel(...))
+```
+
+For a module, NeuralZip compresses floating-point named parameters and
+persistent floating-point buffers. Remaining state—including integer BatchNorm
+counters and non-persistent runtime buffers—is stored verbatim so the decoded
+module preserves its tensor state, aliases, gradient flags, and per-module
+training modes. Arbitrary Python attributes, hooks, and custom `get_extra_state()`
+values are outside this model-level contract. Passing a tensor mapping or
+`state_dict()` encodes its floating tensor leaves and decodes them to a flat
+`dict`.
+
+## Tensor archives
+
+The older `compress()` reporting interface remains available for exact
+benchmark fields and `.nzip` tensor archives:
+
+```python
+archive_compressor = Compressor(
+    "neuralzip", setup=setup, verify=True,
+    keep_payloads=True,
+)
+parameters = dict(model.named_parameters())
+compressed = archive_compressor.compress(parameters)
 Compressor.save(compressed, "model-weights.nzip")
 
-floating_state = compressor.decompress_file("model-weights.nzip")
+floating_state = archive_compressor.decompress_file("model-weights.nzip")
+state = model.state_dict()
 state.update(floating_state)
 model.load_state_dict(state)
 ```
+
+`keep_payloads=True` is required for saving or later decompressing a reporting
+result. `verify=True` checks every included tensor bitwise.
 
 An `.nzip` file is a tensor archive, not a serialized model object. It does not
 contain the model architecture, configuration, non-floating state, optimizer,
@@ -139,40 +145,57 @@ training checkpoint.
 
 ## Reusing a setup
 
-`NeuralZipPlan` separates the one-time setup from encoding. This is the
-recommended interface for checkpoint trajectories and other repeated workloads.
+Call `Compressor.fit()` when clustering and codebook construction should happen
+once and be reused. This is the recommended flow for checkpoint trajectories
+and other repeated workloads.
 
 ```python
-from neuralzip import NeuralZipPlan
+from neuralzip import Compressor
 
 source = dict(source_model.named_parameters())
 target = dict(target_model.named_parameters())
 
 # Pay clustering and codebook construction once.
-plan = NeuralZipPlan.fit(source, threads=8)
-print(f"Setup: {plan.setup_report.setup_seconds:.3f} s")
+compressor = Compressor("neuralzip", threads=8)
+setup = compressor.fit(source)
+print(f"Setup: {setup.setup_report.setup_seconds:.3f} s")
 
 # The same setup can encode its source immediately.
-source_batch = plan.encode(source)
-source_restored = plan.decode(source_batch.payloads)
+source_batch = compressor.encode(source, setup=setup)
+source_restored = compressor.decode(source_batch)
 
 # Save the reusable setup independently of any compressed checkpoint.
-plan.save("family.setup.pkl", source)
+compressor.save_setup("family.setup.pkl", setup=setup)
 
 # Later, map a compatible checkpoint or family member and encode it directly.
-plan = NeuralZipPlan.load("family.setup.pkl")
-mapping = plan.map_target(target)
-target_batch = plan.encode(target)
-target_restored = plan.decode(target_batch.payloads)
+compressor = Compressor("neuralzip", setup="family.setup.pkl", threads=8)
+mapping = compressor.map_target(target)
+target_batch = compressor.encode(target)
+target_restored = compressor.decode(target_batch)
 
 assert mapping["matched_tensors"] == mapping["target_tensors"]
 ```
 
-Transfer is deterministic and value-independent: every target tensor must match
-a source tensor by name, dtype, and byte stream. NeuralZip does not automatically
-search for the nearest architecture; the application chooses the compatible
-source setup. Plan files use Python pickle and should only be loaded from trusted
-sources.
+`encode()` returns a model-level encoded value with byte accounting and separate
+mapping and encoding times. For the full legacy experiment report and an
+archive-ready dictionary, call `compress()` on the fitted or loaded compressor:
+
+```python
+compressor = Compressor(
+    "neuralzip",
+    setup="family.setup.pkl",
+    keep_payloads=True,
+)
+compressed = compressor.compress(target)
+Compressor.save(compressed, "target.nzip")
+```
+
+Transfer is deterministic and value-independent: every target stream must match
+a source stream by tensor name, dtype, and stream index; shapes and values may
+differ. NeuralZip does not automatically search for the nearest architecture;
+the application chooses the compatible source setup. Setup files use Python
+pickle and must only be loaded from trusted sources; never pass an untrusted
+setup file through `setup=`.
 
 ## GPU inference
 
@@ -200,20 +223,21 @@ the resident shards, so loading never downloads or materializes them.
 ```python
 import torch
 
-from neuralzip import NeuralZipModel, NeuralZipPlan
+from neuralzip import Compressor, NeuralZipModel
 
 model = model.to(dtype=torch.bfloat16).eval()
-plan = NeuralZipPlan.fit(
-    dict(model.named_parameters()),
+compressor = Compressor(
+    "neuralzip",
     ngram_values=(),
     packed_source_budget_ratio=0.0,
     packed_time_budget_ratio=0.0,
 )
+compressor.fit(model)
 
 # Persist configuration + resident shards + compressed BF16 weights.
 NeuralZipModel.save_pretrained(
     model,
-    plan,
+    compressor,
     "my-model-neuralzip",
     tokenizer=tokenizer,  # Optional.
     max_shard_size="5GB",
@@ -282,7 +306,11 @@ transformers used by Flux-like pipelines. NeuralZip stores the Diffusers class
 and config, then the component can be injected into its ordinary pipeline:
 
 ```python
-NeuralZipModel.save_pretrained(transformer, plan, "flux-transformer-nzip")
+NeuralZipModel.save_pretrained(
+    transformer,
+    compressor,
+    "flux-transformer-nzip",
+)
 
 transformer = NeuralZipModel.from_pretrained(
     "flux-transformer-nzip",
@@ -304,7 +332,7 @@ and attachment independently:
 ```python
 from neuralzip import NeuralZipRuntime, export_model_for_gpu
 
-exported = export_model_for_gpu(model, plan)
+exported = export_model_for_gpu(model, compressor)
 
 model = model.to("cuda:0")
 NeuralZipRuntime.attach(model, exported)
@@ -321,7 +349,8 @@ print(runtime.export.runtime_candidate_bytes)  # Includes workspace and descript
 model = runtime.restore()
 ```
 
-`plan.prepare_inference(model)` performs the export and attachment together.
+`compressor.prepare_inference(model)` performs the export and attachment
+together for a fitted or loaded compressor.
 An attached model using direct `device=` placement can be copied without
 materializing its compressed weights:
 
@@ -382,8 +411,9 @@ model-level archive API.
 | `compressed_bytes` | Exact serialized output size for the selected tensors |
 | `compression_ratio` | `compressed_bytes / raw_bytes`; lower is better |
 | `setup_seconds` | Clustering and codebook construction |
+| `mapping_seconds` | Metadata-only target mapping when a setup is reused |
 | `encode_seconds` | Target-dependent encoding work |
-| `total_seconds` | `setup_seconds + encode_seconds` |
+| `total_seconds` | Setup or mapping performed by the call, plus encoding |
 | `decode_seconds` | Verification decode time when `verify=True` |
 | `roundtrip_ok` | Whether verification was bitwise exact |
 
@@ -414,18 +444,18 @@ compressor = Compressor(
 - `cluster_js_threshold` controls exponent-histogram clustering.
 
 Advanced controls for sampling, packed exponent n-grams, codebook sharing, and
-time-aware mode selection are also exposed by `Compressor` and
-`NeuralZipPlan.fit()`.
+time-aware mode selection are also exposed by `Compressor`.
 
 For latency-sensitive decoding, use the native sharing-only path:
 
 ```python
-plan = NeuralZipPlan.fit(
-    tensors,
+compressor = Compressor(
+    "neuralzip",
     ngram_values=(),
     packed_source_budget_ratio=0.0,
     packed_time_budget_ratio=0.0,
 )
+compressor.fit(tensors)
 ```
 
 This path decodes all raw and shared-Huff0 chunks through one native job queue.
@@ -505,7 +535,6 @@ The public package surface is intentionally small:
 from neuralzip import (
     Compressor,
     NeuralZipModel,
-    NeuralZipPlan,
     NeuralZipRuntime,
     export_model_for_gpu,
     load_gpu_pretrained,

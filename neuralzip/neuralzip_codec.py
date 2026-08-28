@@ -407,7 +407,7 @@ class NeuralZipCodec(ZipNNCodec):
 
         # Warm code/data caches once, then use the best of three complete
         # measurements. The minimum estimates algorithmic work without letting
-        # scheduler jitter change the frozen family plan.
+        # scheduler jitter change the frozen family setup.
         encode_once()
         return min(encode_once() for _ in range(3))
 
@@ -1060,7 +1060,7 @@ class NeuralZipCodec(ZipNNCodec):
         """Encode one input-size-windowed tensor batch through one job queue."""
         native_specs = [
             (
-                tensor.view(torch.uint8).reshape(-1).numpy(),
+                tensor.reshape(-1).view(torch.uint8).numpy(),
                 int(config["element_size"]),
                 int(config["bit_reorder"]),
                 self._stream_chunk_size(int(config["element_size"])),

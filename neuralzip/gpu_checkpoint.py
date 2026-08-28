@@ -259,7 +259,7 @@ def _bytes_tensor(value: bytes) -> torch.Tensor:
 def _tensor_bytes(tensor: torch.Tensor) -> bytes:
     if tensor.device.type != "cpu":
         tensor = tensor.cpu()
-    return tensor.contiguous().view(torch.uint8).reshape(-1).numpy().tobytes()
+    return tensor.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
 def _tensor_descriptor(tensor: torch.Tensor) -> dict[str, object]:

@@ -1,7 +1,6 @@
 __all__ = [
     "Compressor",
     "NeuralZipModel",
-    "NeuralZipPlan",
     "NeuralZipRuntime",
     "export_model_for_gpu",
     "load_gpu_pretrained",
@@ -22,10 +21,6 @@ def __getattr__(name):
         from .gpu_inference import NeuralZipRuntime
 
         return NeuralZipRuntime
-    if name == "NeuralZipPlan":
-        from .plan import NeuralZipPlan
-
-        return NeuralZipPlan
     if name == "export_model_for_gpu":
         from .gpu_inference import export_model_for_gpu
 

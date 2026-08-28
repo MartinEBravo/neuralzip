@@ -12,6 +12,7 @@ from transformers import LlamaConfig, LlamaForCausalLM, ViTConfig, ViTModel
 from transformers.cache_utils import DynamicCache
 
 from neuralzip import huff0
+from neuralzip.compressor import Compressor
 from neuralzip.gpu_checkpoint import (
     DEFAULT_FILENAME as GPU_EXPORT_FILENAME,
 )
@@ -31,7 +32,6 @@ from neuralzip.gpu_pretrained import (
     save_gpu_pretrained,
 )
 from neuralzip.gpu_resident import iter_resident_shards, load_resident_state
-from neuralzip.plan import NeuralZipPlan
 
 
 class _CPUReferenceDecoder:
@@ -191,16 +191,22 @@ def tiny_llama_artifact(tmp_path_factory):
         ).sequences.clone()
 
     expected_state_names = set(model.state_dict())
-    plan = NeuralZipPlan.fit(
-        dict(model.named_parameters()),
+    compressor = Compressor(
+        "neuralzip",
         threads=1,
         ngram_values=(),
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
         max_codebook_sample_bytes=1 << 20,
     )
+    compressor.fit(dict(model.named_parameters()))
     directory = tmp_path_factory.mktemp("tiny-llama-neuralzip")
-    returned = save_gpu_pretrained(model, plan, directory, max_shard_size="8KB")
+    returned = save_gpu_pretrained(
+        model,
+        compressor,
+        directory,
+        max_shard_size="8KB",
+    )
     assert returned == directory
     return {
         "directory": directory,
@@ -515,16 +521,17 @@ def test_base_transformers_automodel_round_trip(tmp_path):
     pixel_values = torch.randn(1, 3, 16, 16, dtype=torch.bfloat16)
     with torch.inference_mode():
         expected = model(pixel_values).last_hidden_state.clone()
-    plan = NeuralZipPlan.fit(
-        dict(model.named_parameters()),
+    compressor = Compressor(
+        "neuralzip",
         threads=1,
         ngram_values=(),
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
         max_codebook_sample_bytes=1 << 20,
     )
+    compressor.fit(dict(model.named_parameters()))
     directory = tmp_path / "vit-base-model"
-    save_gpu_pretrained(model, plan, directory, max_shard_size="8KB")
+    save_gpu_pretrained(model, compressor, directory, max_shard_size="8KB")
 
     manifest = json.loads((directory / MANIFEST_FILENAME).read_text(encoding="ascii"))
     assert manifest["auto_class"] == "AutoModel"
@@ -551,16 +558,17 @@ def test_diffusers_component_round_trip_without_real_dependency(tmp_path, monkey
     with torch.inference_mode():
         expected = model(inputs).clone()
 
-    plan = NeuralZipPlan.fit(
-        dict(model.named_parameters()),
+    compressor = Compressor(
+        "neuralzip",
         threads=1,
         ngram_values=(),
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
         max_codebook_sample_bytes=1 << 20,
     )
+    compressor.fit(dict(model.named_parameters()))
     directory = tmp_path / "diffusion-component"
-    save_gpu_pretrained(model, plan, directory, max_shard_size="8KB")
+    save_gpu_pretrained(model, compressor, directory, max_shard_size="8KB")
 
     manifest = json.loads((directory / MANIFEST_FILENAME).read_text(encoding="ascii"))
     assert manifest["library"] == "diffusers"

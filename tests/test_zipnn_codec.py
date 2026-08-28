@@ -19,6 +19,25 @@ class ZipNNCodecTests(unittest.TestCase):
                 )
                 self.assertGreater(payload.huffman_chunks, 0)
 
+    def test_scalar_and_empty_tensors_round_trip(self):
+        codec = ZipNNCodec(threads=2)
+        for name, source in (
+            ("scalar", torch.tensor(0.5, dtype=torch.bfloat16)),
+            ("empty", torch.empty(0, 3, dtype=torch.float16)),
+        ):
+            with self.subTest(name=name):
+                payload = codec.compress_tensor(name, source)
+                restored = codec.decompress_tensor(payload)
+
+                self.assertEqual(restored.shape, source.shape)
+                self.assertEqual(restored.dtype, source.dtype)
+                self.assertTrue(
+                    torch.equal(
+                        source.reshape(-1).view(torch.uint8),
+                        restored.reshape(-1).view(torch.uint8),
+                    )
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

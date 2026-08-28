@@ -11,7 +11,9 @@ FLOAT_LAYOUTS = {
 def _tensor_bits(tensor):
     tensor = tensor.detach().cpu().contiguous()
     element_size = tensor.element_size()
-    bytes_view = tensor.view(torch.uint8).reshape(-1, element_size).to(torch.int64)
+    bytes_view = (
+        tensor.reshape(-1).view(torch.uint8).reshape(-1, element_size).to(torch.int64)
+    )
     bits = torch.zeros(bytes_view.shape[0], dtype=torch.int64)
     for byte_index in range(element_size):
         bits |= bytes_view[:, byte_index] << (8 * byte_index)

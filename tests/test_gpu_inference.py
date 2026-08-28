@@ -8,13 +8,13 @@ import torch
 from torch import nn
 
 from neuralzip import huff0
+from neuralzip.compressor import Compressor
 from neuralzip.gpu_inference import (
     NeuralZipModel,
     NeuralZipRuntime,
     export_model_for_gpu,
 )
 from neuralzip.neuralzip_codec import NeuralZipCodec
-from neuralzip.plan import NeuralZipPlan
 
 
 class _ToyBlock(nn.Module):
@@ -78,7 +78,7 @@ def _initialize_model(model):
     return model.eval()
 
 
-def _make_plan(model, modes):
+def _make_compressor(model, modes):
     exponent_samples = bytearray()
     for name, parameter in model.named_parameters():
         if not name.endswith(".weight") or parameter.dtype != torch.bfloat16:
@@ -127,6 +127,10 @@ def _make_plan(model, modes):
         payload.codebook_id: payload for payload in payloads
     }
     for tensor_name, mode in modes.items():
+        codec._mode_by_tensor_stream[(tensor_name, "bfloat16", 0)] = {
+            "kind": "raw",
+            "fixed_cost": 0,
+        }
         if mode == "raw":
             selected = {"kind": "raw", "fixed_cost": 0}
         elif mode == "packed_huff0":
@@ -141,7 +145,11 @@ def _make_plan(model, modes):
                 "codebook_id": int(mode),
             }
         codec._mode_by_tensor_stream[(tensor_name, "bfloat16", 1)] = selected
-    return NeuralZipPlan(codec=codec)
+    compressor = Compressor("neuralzip")
+    compressor.codec = codec
+    compressor._setup_ready = True
+    compressor._reuse_setup = True
+    return compressor
 
 
 class _ReferenceDecoder:
@@ -244,9 +252,9 @@ class GPUInferenceExportTests(unittest.TestCase):
             "blocks.1.fc1.weight": 0,
             "blocks.1.fc2.weight": "raw",
         }
-        plan = _make_plan(model, modes)
+        compressor = _make_compressor(model, modes)
 
-        exported = export_model_for_gpu(model, plan)
+        exported = export_model_for_gpu(model, compressor)
 
         self.assertEqual(
             [(group.block_name, group.codebook_id) for group in exported.groups],
@@ -290,6 +298,27 @@ class GPUInferenceExportTests(unittest.TestCase):
         self.assertEqual(exported.groups[1].bindings[0].workspace_offset, 16)
         self.assertEqual(exported.groups[2].bindings[0].workspace_offset, 0)
 
+    def test_export_remaps_the_complete_model_after_a_partial_target(self):
+        model = _initialize_model(_ToyModel())
+        modes = {name: 0 for name, _parameter in model.named_parameters()}
+        compressor = _make_compressor(model, modes)
+        first = next(iter(model.named_parameters()))
+        compressor.codec.prepare_direct_transfer_target((first,))
+        self.assertEqual(len(compressor.codec._transfer_cluster_by_name), 1)
+
+        exported = export_model_for_gpu(model, compressor)
+
+        compressed_names = {
+            binding.tensor_name
+            for group in exported.groups
+            for binding in group.bindings
+        }
+        self.assertEqual(compressed_names, set(modes))
+        self.assertEqual(
+            set(compressor.codec._transfer_cluster_by_name),
+            set(modes),
+        )
+
     def test_nested_expert_modulelists_belong_to_the_outer_blocks(self):
         model = _initialize_model(_ToyModel(nested=True))
         modes = {
@@ -298,7 +327,7 @@ class GPUInferenceExportTests(unittest.TestCase):
             for expert in range(2)
         }
 
-        exported = export_model_for_gpu(model, _make_plan(model, modes))
+        exported = export_model_for_gpu(model, _make_compressor(model, modes))
 
         self.assertEqual(exported.block_order, ("blocks.0", "blocks.1"))
         self.assertEqual(len(exported.groups), 2)
@@ -310,12 +339,12 @@ class GPUInferenceExportTests(unittest.TestCase):
     def test_embedding_adapter_exports_and_executes_exactly(self):
         model = _initialize_model(_EmbeddingModel())
         modes = {name: 0 for name, _parameter in model.named_parameters()}
-        plan = _make_plan(model, modes)
+        compressor = _make_compressor(model, modes)
         inputs = torch.tensor([[1, 3, 5]], dtype=torch.long)
         with torch.no_grad():
             expected = model(inputs).clone()
 
-        exported = export_model_for_gpu(model, plan, include_embeddings=True)
+        exported = export_model_for_gpu(model, compressor, include_embeddings=True)
         kinds = {
             binding.tensor_name: binding.module_kind for binding in exported.bindings
         }
@@ -336,7 +365,7 @@ class GPUInferenceExportTests(unittest.TestCase):
         self.assertFalse(model.blocks[0].fc1.weight.is_contiguous())
         modes = {name: 0 for name, _parameter in model.named_parameters()}
 
-        exported = export_model_for_gpu(model, _make_plan(model, modes))
+        exported = export_model_for_gpu(model, _make_compressor(model, modes))
         compressed_names = {
             binding.tensor_name
             for group in exported.groups
@@ -358,7 +387,7 @@ class GPUInferenceExportTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "does not yet decode packed"):
-            export_model_for_gpu(model, _make_plan(model, modes))
+            export_model_for_gpu(model, _make_compressor(model, modes))
 
         self.assertIs(model.blocks[0].fc1.weight, original)
 
@@ -369,14 +398,14 @@ class GPUInferenceExportTests(unittest.TestCase):
             for name, _parameter in model.named_parameters()
             if name.endswith("weight")
         }
-        plan = _make_plan(model, modes)
+        compressor = _make_compressor(model, modes)
 
         with mock.patch.object(
             huff0,
             "encode_gpu_bfloat16",
             wraps=huff0.encode_gpu_bfloat16,
         ) as native:
-            exported = export_model_for_gpu(model, plan)
+            exported = export_model_for_gpu(model, compressor)
 
         self.assertEqual(native.call_count, len(exported.groups))
 
@@ -390,7 +419,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
             "blocks.1.fc1.weight": 0,
             "blocks.1.fc2.weight": "raw",
         }
-        self.plan = _make_plan(self.model, self.modes)
+        self.compressor = _make_compressor(self.model, self.modes)
         self.inputs = torch.tensor([[-1.0, -0.5, 0.5, 1.0]], dtype=torch.bfloat16)
         with torch.no_grad():
             self.expected = self.model(self.inputs).clone()
@@ -404,7 +433,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
         returned = NeuralZipModel.from_model(
             self.model,
-            self.plan,
+            self.compressor,
             decoder=decoder,
         )
 
@@ -460,7 +489,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         )
 
     def test_precompressed_attach_never_requires_target_parameters(self):
-        exported = export_model_for_gpu(self.model, self.plan)
+        exported = export_model_for_gpu(self.model, self.compressor)
         for binding in exported.bindings:
             module = self.model.get_submodule(binding.module_name)
             delattr(module, "weight")
@@ -489,7 +518,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
             )
 
     def test_precompressed_attach_rejects_live_target_parameters(self):
-        exported = export_model_for_gpu(self.model, self.plan)
+        exported = export_model_for_gpu(self.model, self.compressor)
 
         with self.assertRaisesRegex(RuntimeError, "must be absent"):
             NeuralZipRuntime.attach(
@@ -508,7 +537,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_cpu_offload_keeps_payloads_on_host_and_decodes_each_block(self):
         decoder = _BatchedReferenceDecoder()
-        exported = export_model_for_gpu(self.model, self.plan)
+        exported = export_model_for_gpu(self.model, self.compressor)
         runtime = NeuralZipRuntime.attach(
             self.model,
             exported,
@@ -544,7 +573,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         self.assertEqual(len(decoder.batch_calls), 4)
 
     def test_cpu_offload_block_limit_and_argument_validation(self):
-        exported = export_model_for_gpu(self.model, self.plan)
+        exported = export_model_for_gpu(self.model, self.compressor)
         decoder = _BatchedReferenceDecoder()
         runtime = NeuralZipRuntime.attach(
             self.model,
@@ -569,7 +598,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_batched_decoder_prepares_once_and_launches_once_per_block(self):
         decoder = _BatchedReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
 
         self.assertEqual([len(groups) for groups, _threads in decoder.prepared], [2, 1])
         self.assertTrue(all(threads == 512 for _groups, threads in decoder.prepared))
@@ -589,7 +618,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_materialize_is_exact_and_restore_returns_an_ordinary_model(self):
         decoder = _ReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         runtime = self.model.neuralzip_runtime
 
         with self.assertRaisesRegex(RuntimeError, r"restore\(\).+state_dict"):
@@ -632,7 +661,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
     def test_accelerate_dispatched_runtime_rejects_restore_and_resave(self):
         NeuralZipModel.from_model(
             self.model,
-            self.plan,
+            self.compressor,
             decoder=_ReferenceDecoder(),
         )
         runtime = self.model.neuralzip_runtime
@@ -649,7 +678,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_restore_releases_runtime_owned_tensor_state(self):
         decoder = _ReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         runtime = self.model.neuralzip_runtime
         tensor_references = [weakref.ref(runtime.workspace)]
         for uploaded in runtime._uploaded_groups:
@@ -685,10 +714,10 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         decoder = _ReferenceDecoder()
         self.model.train()
         with self.assertRaisesRegex(ValueError, r"model\.eval"):
-            NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+            NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
 
         self.model.eval()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         with self.assertRaisesRegex(RuntimeError, "inference-only"):
             self.model(self.inputs)
 
@@ -701,7 +730,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_root_hook_resets_after_failure_and_direct_blocks_are_rejected(self):
         decoder = _ReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         runtime = self.model.neuralzip_runtime
 
         with (
@@ -732,7 +761,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_rejected_concurrent_forward_does_not_release_valid_owner(self):
         decoder = _ReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         runtime = self.model.neuralzip_runtime
         entered = threading.Event()
         release = threading.Event()
@@ -780,7 +809,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
 
     def test_restore_failure_rolls_back_to_attached_runtime(self):
         decoder = _ReferenceDecoder()
-        NeuralZipModel.from_model(self.model, self.plan, decoder=decoder)
+        NeuralZipModel.from_model(self.model, self.compressor, decoder=decoder)
         runtime = self.model.neuralzip_runtime
         failing_module = self.model.blocks[0].fc2
 
@@ -810,7 +839,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         self.assertIs(runtime.restore(), self.model)
 
     def test_upload_failure_leaves_every_parameter_registered(self):
-        exported = export_model_for_gpu(self.model, self.plan)
+        exported = export_model_for_gpu(self.model, self.compressor)
         expected_names = set(dict(self.model.named_parameters()))
 
         with (
@@ -835,7 +864,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "decoder preflight failed"):
             NeuralZipModel.from_model(
                 self.model,
-                self.plan,
+                self.compressor,
                 decoder=_FailingPreflightDecoder(),
             )
 
@@ -848,7 +877,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "decoder preflight failed"):
             NeuralZipModel.from_model(
                 self.model,
-                self.plan,
+                self.compressor,
                 decoder=_FailingPreflightDecoder(),
                 cpu_offload=True,
                 pin_memory=False,
@@ -858,7 +887,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         self.assertFalse(hasattr(self.model, "neuralzip_runtime"))
 
     def test_all_raw_export_is_rejected_without_mutating_model(self):
-        plan = _make_plan(
+        compressor = _make_compressor(
             self.model,
             {name: "raw" for name in self.original_weights},
         )
@@ -867,7 +896,7 @@ class GPUInferenceRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no eligible shared BF16"):
             NeuralZipModel.from_model(
                 self.model,
-                plan,
+                compressor,
                 decoder=_ReferenceDecoder(),
             )
 

@@ -7,7 +7,7 @@ import time
 import torch
 from transformers import AutoModelForCausalLM
 
-from neuralzip import NeuralZipPlan
+from neuralzip import Compressor
 
 
 def _timed_forward(model, inputs, *, warmup, repetitions):
@@ -71,13 +71,14 @@ def main():
     attention_mask = torch.ones_like(input_ids)
 
     setup_started = time.perf_counter()
-    plan = NeuralZipPlan.fit(
-        dict(model.named_parameters()),
+    compressor = Compressor(
+        "neuralzip",
         threads=args.threads,
         ngram_values=(),
         packed_source_budget_ratio=0.0,
         packed_time_budget_ratio=0.0,
     )
+    compressor.fit(model)
     setup_seconds = time.perf_counter() - setup_started
 
     model = model.to(device)
@@ -93,7 +94,7 @@ def main():
     )
 
     attach_started = time.perf_counter()
-    model = plan.prepare_inference(model)
+    model = compressor.prepare_inference(model)
     attach_seconds = time.perf_counter() - attach_started
     compressed_logits, compressed_seconds = _timed_forward(
         model,
@@ -142,7 +143,7 @@ def main():
             else 0.0
         ),
         "workspace_bytes": runtime.export.workspace_bytes,
-        "selected_modes": plan.codec.selected_modes,
+        "selected_modes": compressor.selected_modes,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
     if not exact:

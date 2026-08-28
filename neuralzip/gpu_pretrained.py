@@ -22,6 +22,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from .compressor import Compressor
 from .gpu_adapters import GPUModelAdapter
 from .gpu_checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
 from .gpu_checkpoint import load_gpu_export, save_gpu_export
@@ -40,7 +41,6 @@ from .gpu_resident import (
     load_resident_state,
     save_resident_state,
 )
-from .plan import NeuralZipPlan
 
 FORMAT_NAME = "neuralzip-gpu-pretrained"
 FORMAT_VERSION = 1
@@ -377,7 +377,7 @@ def _file_record(path: Path) -> dict[str, str | int]:
 
 def save_gpu_pretrained(
     model: nn.Module,
-    plan_or_export: NeuralZipPlan
+    compressor_or_export: Compressor
     | NeuralZipModelExport
     | str
     | os.PathLike[str]
@@ -392,46 +392,49 @@ def save_gpu_pretrained(
 ) -> Path:
     """Save a complete, directly loadable NeuralZip inference checkpoint.
 
-    ``plan_or_export`` may be a reusable setup or an already encoded GPU
+    ``compressor_or_export`` may be a fitted Compressor or an encoded GPU
     export. Compressed weights are excluded from the sharded resident state and
     therefore never need to be materialized before loading the checkpoint.
     """
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
-    if directory is None and isinstance(plan_or_export, (str, os.PathLike)):
-        directory = plan_or_export
-        plan_or_export = None
+    if directory is None and isinstance(compressor_or_export, (str, os.PathLike)):
+        directory = compressor_or_export
+        compressor_or_export = None
     if directory is None:
         raise TypeError("directory is required.")
     runtime = getattr(model, "neuralzip_runtime", None)
     resident_source = None
-    if plan_or_export is None:
+    if compressor_or_export is None:
         if not isinstance(runtime, NeuralZipRuntime):
             raise ValueError(
-                "plan_or_export is required unless model already has a NeuralZip runtime."
+                "compressor_or_export is required unless model already has a "
+                "NeuralZip runtime."
             )
         exported = runtime.export
         resident_source = runtime.resident_state_dict()
     elif runtime is not None:
         raise ValueError(
-            "For an attached model, omit plan_or_export and save its current export."
+            "For an attached model, omit compressor_or_export and save its current export."
         )
-    elif isinstance(plan_or_export, NeuralZipPlan):
+    elif isinstance(compressor_or_export, Compressor):
         exported = export_model_for_gpu(
             model,
-            plan_or_export,
+            compressor_or_export,
             adapter=adapter,
             include_embeddings=include_embeddings,
         )
-    elif isinstance(plan_or_export, NeuralZipModelExport):
+    elif isinstance(compressor_or_export, NeuralZipModelExport):
         if adapter is not None or include_embeddings:
             raise ValueError(
-                "adapter/include_embeddings only apply when exporting a plan."
+                "adapter/include_embeddings only apply when exporting a Compressor."
             )
-        exported = plan_or_export
+        exported = compressor_or_export
     else:
-        raise TypeError("plan_or_export must be NeuralZipPlan or NeuralZipModelExport.")
+        raise TypeError(
+            "compressor_or_export must be Compressor or NeuralZipModelExport."
+        )
     if not exported.groups:
         raise ValueError("The GPU export contains no compressed weights.")
 

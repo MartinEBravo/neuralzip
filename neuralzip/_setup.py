@@ -1,0 +1,327 @@
+"""Immutable values and persistence helpers for reusable NeuralZip setups.
+
+Setup files are pickle based and must only be loaded from trusted sources.
+Native Huff0 handles are process-local, so the persisted representation keeps
+only canonical codebook headers and rebuilds independent handles on demand.
+"""
+
+import io
+import os
+import pickle
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import huff0
+from .codec_protocol import SetupReport
+from .hashing import sha256_bytes
+from .neuralzip_codec import NeuralZipCodec
+
+SETUP_MARKER = "frozen-huff0-codebook-v2"
+LEGACY_SETUP_MARKER = "frozen-huff0-codebook-v1"
+POST_SETUP_MODES = frozenset({"raw", "shared_huff0", "packed_huff0"})
+_SETUP_FORMAT_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class NeuralZipSetup:
+    """Opaque, immutable data produced by fitting a NeuralZip compressor.
+
+    A setup intentionally has no mapping, encoding, or decoding methods. It
+    can be shared safely between compressors because every consumer
+    materializes its own :class:`NeuralZipCodec` and native Huff0 handles.
+    """
+
+    _codec_state: bytes = field(repr=False)
+    setup_report: SetupReport | None = None
+    _format_version: int = field(default=_SETUP_FORMAT_VERSION, repr=False)
+
+    def __post_init__(self):
+        if not isinstance(self._codec_state, bytes):
+            raise TypeError("NeuralZip setup state must be immutable bytes.")
+        if not self._codec_state:
+            raise ValueError("NeuralZip setup state cannot be empty.")
+        if self.setup_report is not None and not isinstance(
+            self.setup_report, SetupReport
+        ):
+            raise TypeError("setup_report must be a SetupReport or None.")
+        if int(self._format_version) != _SETUP_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported NeuralZip setup version {self._format_version!r}."
+            )
+
+
+def codebook_digest(codebooks):
+    """Return a stable digest for a setup's serialized codebooks."""
+
+    return sha256_bytes(pickle.dumps(tuple(codebooks), protocol=5))
+
+
+def validate_setup(codec):
+    """Reject codec state that is unsafe to reuse on a later target."""
+
+    if not isinstance(codec, NeuralZipCodec):
+        raise TypeError(f"Expected NeuralZipCodec, got {type(codec)!r}.")
+    if (
+        int(getattr(codec, "prior_count", 1)) <= 0
+        or int(getattr(codec, "exponent_prior_count", 1)) <= 0
+    ):
+        raise ValueError(
+            "Transferable NeuralZip setups require positive Huffman priors."
+        )
+    mode_maps = (
+        codec._mode_by_key,
+        codec._mode_by_tensor_stream,
+        codec._transfer_mode_by_tensor_stream,
+    )
+    invalid = sorted(
+        {
+            str(mode.get("kind"))
+            for mode_map in mode_maps
+            for mode in mode_map.values()
+            if str(mode.get("kind")) not in POST_SETUP_MODES
+        }
+    )
+    if invalid:
+        joined = ", ".join(invalid)
+        raise ValueError(
+            "NeuralZip setups may only use raw, shared, or packed modes; "
+            f"found {joined}. Refit the setup."
+        )
+    if not bool(getattr(codec, "_clusters_prepared", False)) or not getattr(
+        codec, "_mode_by_tensor_stream", None
+    ):
+        raise ValueError("NeuralZip setup is empty. Call Compressor.fit() first.")
+
+
+def _unique_modes(codec):
+    seen = set()
+    for mode_map in (
+        codec._mode_by_key,
+        codec._mode_by_tensor_stream,
+        codec._transfer_mode_by_tensor_stream,
+    ):
+        for mode in mode_map.values():
+            if id(mode) in seen:
+                continue
+            seen.add(id(mode))
+            yield mode
+
+
+def _detached_codec_snapshot(codec):
+    """Copy the serializable setup graph without touching the live codec."""
+
+    snapshot = object.__new__(NeuralZipCodec)
+    snapshot.__dict__ = dict(codec.__dict__)
+
+    # Mode dictionaries are shared across the source indexes. Recreate that
+    # alias graph so replacing native handles below cannot mutate the live
+    # codec, while preserving the relationships expected by encoding.
+    copied_modes = {}
+
+    def clone_mode_map(mode_map):
+        cloned = {}
+        for key, mode in mode_map.items():
+            identity = id(mode)
+            if identity not in copied_modes:
+                copied_modes[identity] = dict(mode)
+            cloned[key] = copied_modes[identity]
+        return cloned
+
+    snapshot._mode_by_key = clone_mode_map(codec._mode_by_key)
+    snapshot._mode_by_tensor_stream = clone_mode_map(codec._mode_by_tensor_stream)
+
+    # Transfer mapping depends on one particular target. It is runtime state,
+    # not part of the reusable source setup, and must never cross persistence
+    # or compressor boundaries.
+    snapshot._transfer_mode_by_tensor_stream = {}
+    snapshot._transfer_cluster_by_name = {}
+    snapshot._transfer_active = False
+
+    # Native decoder handles are reconstructed from immutable payload headers.
+    snapshot._decode_codebooks = {}
+    snapshot._codebook_payload_by_id = {
+        int(payload.codebook_id): payload for payload in snapshot._codebook_payloads
+    }
+    return snapshot
+
+
+def _freeze_native_codebooks(codec):
+    payload_by_id = {
+        int(payload.codebook_id): payload for payload in codec.export_codebooks()
+    }
+    for mode in _unique_modes(codec):
+        codebook = mode.get("codebook")
+        if codebook is None or isinstance(codebook, tuple):
+            continue
+        expected_header = bytes(codebook.codebook)
+        codebook_id = mode.get("codebook_id")
+        payload = payload_by_id.get(codebook_id)
+        if payload is None:
+            raise ValueError(f"Setup is missing codebook {codebook_id!r}.")
+        if bytes(payload.codebook) != expected_header:
+            raise ValueError(f"Codebook {codebook_id} disagrees with its payload.")
+        mode["codebook"] = (SETUP_MARKER, expected_header)
+
+
+def _restore_live_codebooks(codec):
+    payload_by_id = {
+        int(payload.codebook_id): payload for payload in codec.export_codebooks()
+    }
+    for mode in _unique_modes(codec):
+        marker = mode.get("codebook")
+        if not isinstance(marker, tuple):
+            continue
+        if len(marker) == 2 and marker[0] == SETUP_MARKER:
+            _, expected_header = marker
+            codebook = huff0.build_codebook_from_header(expected_header)
+        elif len(marker) == 4 and marker[0] == LEGACY_SETUP_MARKER:
+            _, tokens, prior_count, expected_header = marker
+            codebook = huff0.build_codebook(tokens, prior_count=int(prior_count))
+        else:
+            raise ValueError("Unsupported frozen Huff0 codebook marker.")
+        if codebook.codebook != expected_header:
+            raise RuntimeError("Rebuilt Huff0 codebook differs from the frozen setup.")
+
+        codebook_id = mode.get("codebook_id")
+        payload = payload_by_id.get(codebook_id)
+        if payload is None:
+            raise ValueError(f"Frozen setup is missing codebook {codebook_id!r}.")
+        if bytes(payload.codebook) != bytes(expected_header):
+            raise ValueError(
+                f"Frozen codebook {codebook_id} disagrees with its payload."
+            )
+        mode["codebook"] = codebook
+    codec.load_codebooks(codec.export_codebooks())
+
+
+def _validate_legacy_layout(codec):
+    legacy_layout = getattr(codec, "exponent_layout", "original")
+    if legacy_layout != "original":
+        raise ValueError(
+            "Legacy NeuralZip setups with transposed exponent streams cannot "
+            "be used by the native-only encoder. Refit the setup with the "
+            "original tensor layout."
+        )
+    codec.__dict__.pop("exponent_layout", None)
+
+
+class _LegacyPlanEnvelope:
+    """Unpickling target for historical pickles containing the old wrapper."""
+
+
+class _SetupUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "neuralzip.plan" and name == "NeuralZipPlan":
+            return _LegacyPlanEnvelope
+        return super().find_class(module, name)
+
+
+def _trusted_load(stream):
+    return _SetupUnpickler(stream).load()
+
+
+def setup_from_codec(codec, setup_report=None):
+    """Capture a prepared codec as an immutable, shareable setup value."""
+
+    validate_setup(codec)
+    if setup_report is not None and not isinstance(setup_report, SetupReport):
+        raise TypeError("setup_report must be a SetupReport or None.")
+    snapshot = _detached_codec_snapshot(codec)
+    _freeze_native_codebooks(snapshot)
+    state = pickle.dumps(snapshot, protocol=5)
+    return NeuralZipSetup(state, setup_report=setup_report)
+
+
+def _legacy_value_to_setup(value):
+    if isinstance(value, NeuralZipSetup):
+        NeuralZipSetup.__post_init__(value)
+        return value
+
+    report = None
+    if isinstance(value, _LegacyPlanEnvelope):
+        report = getattr(value, "setup_report", None)
+        value = value.codec
+    if not isinstance(value, NeuralZipCodec):
+        raise TypeError(f"Unsupported NeuralZip setup payload: {type(value)!r}.")
+    _validate_legacy_layout(value)
+    return setup_from_codec(value, setup_report=report)
+
+
+def load_setup(value_or_path):
+    """Normalize a setup value or trusted pickle path to ``NeuralZipSetup``.
+
+    Pickle can execute arbitrary code. ``value_or_path`` must therefore refer
+    only to a file produced by NeuralZip or another fully trusted source.
+    Historical raw-codec and ``NeuralZipPlan`` pickle layouts are accepted.
+    """
+
+    if isinstance(value_or_path, NeuralZipSetup):
+        NeuralZipSetup.__post_init__(value_or_path)
+        return value_or_path
+    path = Path(value_or_path)
+    with path.open("rb") as handle:
+        return _legacy_value_to_setup(_trusted_load(handle))
+
+
+def materialize_setup(value_or_path):
+    """Build one independent live codec from a setup value or trusted path."""
+
+    setup = load_setup(value_or_path)
+    value = _trusted_load(io.BytesIO(setup._codec_state))
+    if not isinstance(value, NeuralZipCodec):
+        raise TypeError(f"Unsupported NeuralZip setup state: {type(value)!r}.")
+    _validate_legacy_layout(value)
+
+    # Be defensive about setup values created by older versions: target-local
+    # transfer decisions must not survive materialization even if they appeared
+    # in the historical pickle.
+    value._transfer_mode_by_tensor_stream = {}
+    value._transfer_cluster_by_name = {}
+    value._transfer_active = False
+    validate_setup(value)
+    _restore_live_codebooks(value)
+    return value
+
+
+def _fsync_directory(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def save_setup(value_or_codec, path, setup_report=None):
+    """Atomically and durably persist a setup value or prepared codec."""
+
+    if isinstance(value_or_codec, NeuralZipCodec):
+        setup = setup_from_codec(value_or_codec, setup_report=setup_report)
+    else:
+        if setup_report is not None:
+            raise TypeError("setup_report is only accepted when saving a codec.")
+        setup = load_setup(value_or_codec)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            pickle.dump(setup, handle, protocol=5)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        _fsync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path

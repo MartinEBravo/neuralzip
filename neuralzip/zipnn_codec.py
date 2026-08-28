@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import torch
 
@@ -31,13 +33,21 @@ ZIPNN_DTYPE_CONFIG = {
 
 def _tensor_raw_bytes(tensor):
     tensor = tensor.detach().cpu().contiguous()
-    return tensor.view(torch.uint8).reshape(-1).numpy().tobytes()
+    return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
 def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
     # Native decoders return an owning bytearray that PyTorch can wrap
     # directly.  Preserve the defensive copy for immutable/archive inputs.
     owner = raw_bytes if isinstance(raw_bytes, bytearray) else bytearray(raw_bytes)
+    shape = tuple(int(dimension) for dimension in shape)
+    expected_bytes = math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+    if len(owner) != expected_bytes:
+        raise ValueError(
+            f"Decoded tensor byte length mismatch: {len(owner)} != {expected_bytes}."
+        )
+    if not owner:
+        return torch.empty(shape, dtype=dtype)
     raw = torch.frombuffer(owner, dtype=torch.uint8)
     return raw.view(dtype).reshape(shape)
 
@@ -241,7 +251,7 @@ class ZipNNCodec:
 
     def _compress_zipnn(self, name, tensor, config):
         element_size = int(config["element_size"])
-        raw = tensor.view(torch.uint8).reshape(-1).numpy()
+        raw = tensor.reshape(-1).view(torch.uint8).numpy()
         native_groups = huff0.compress_zipnn(
             raw,
             element_size=element_size,

@@ -134,10 +134,8 @@ class NeuralZipCodec:
         self._codebook_payload_by_id = {}
         self._computed_cluster_map = {}
         self._clusters_prepared = False
-        self._next_codebook_id = 0
         self._mode_by_tensor_stream = {}
         self._transfer_mode_by_tensor_stream = {}
-        self._transfer_cluster_by_name = {}
         self._transfer_active = False
 
     def reset_decompression(self):
@@ -158,9 +156,20 @@ class NeuralZipCodec:
                 codebook.codebook
             )
 
+    def _codebook_payload(self, codebook_id):
+        payload = self._codebook_payload_by_id.get(codebook_id)
+        if payload is not None:
+            return payload
+        return next(
+            (
+                candidate
+                for candidate in self._codebook_payloads
+                if int(candidate.codebook_id) == codebook_id
+            ),
+            None,
+        )
+
     def cluster_id(self, name):
-        if name in self._transfer_cluster_by_name:
-            return self._transfer_cluster_by_name[name]
         if name in self.cluster_map:
             return self.cluster_map[name]
         if name in self._computed_cluster_map:
@@ -168,7 +177,6 @@ class NeuralZipCodec:
         return _layer_signature(name)
 
     def _prepare_clusters(self, named_tensors):
-        named_tensors = list(named_tensors)
         clusters = []
         computed = {}
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
@@ -178,11 +186,11 @@ class NeuralZipCodec:
                 or tensor.numel() == 0
             ):
                 continue
+            if name in self.cluster_map:
+                continue
 
             distribution = exponent_distribution(tensor)
             weight = int(tensor.numel())
-            if name in self.cluster_map:
-                continue
             best_index = None
             best_distance = float("inf")
             for index, cluster in enumerate(clusters):
@@ -680,13 +688,10 @@ class NeuralZipCodec:
     def _finalize_mode(self, key, selected):
         if selected["kind"] == "raw":
             return selected
-        codebook_id = self._next_codebook_id
-        self._next_codebook_id += 1
+        codebook_id = len(self._codebook_payloads)
         selected["codebook_id"] = codebook_id
         payload = self._candidate_payload(key, selected, codebook_id=codebook_id)
         self._codebook_payloads.append(payload)
-        self._codebook_payload_by_id[codebook_id] = payload
-        self._decode_codebooks[codebook_id] = huff0.build_decodebook(payload.codebook)
         return selected
 
     def prepare_clusters(self, named_tensors):
@@ -698,7 +703,6 @@ class NeuralZipCodec:
         return str(name), dtype_name(tensor.dtype), int(stream_id)
 
     def _prepare_tensor_modes(self, named_tensors):
-        used_codebook_ids = set()
         for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
             if (
                 not torch.is_tensor(tensor)
@@ -707,42 +711,17 @@ class NeuralZipCodec:
             ):
                 continue
 
-            original = tensor.detach().cpu().contiguous()
-            config = _byte_group_dtype_config(original.dtype)
+            config = _byte_group_dtype_config(tensor.dtype)
             for stream_id in range(int(config["element_size"])):
-                key = self._codebook_key(name, original, stream_id)
+                key = self._codebook_key(name, tensor, stream_id)
                 # The source cluster decision already compared compressed size
                 # and direct-encoding time under the configured tolerance.
                 # Re-probing every tensor with a ratio-only local fallback here
                 # would undo that decision and prune all shared codebooks.
                 selected = self._mode_by_key[key]
 
-                plan_key = self._transfer_plan_key(name, original, stream_id)
+                plan_key = self._transfer_plan_key(name, tensor, stream_id)
                 self._mode_by_tensor_stream[plan_key] = selected
-                codebook_id = selected.get("codebook_id")
-                if codebook_id is not None:
-                    used_codebook_ids.add(int(codebook_id))
-
-        removed_codebook_ids = {
-            int(payload.codebook_id)
-            for payload in self._codebook_payloads
-            if int(payload.codebook_id) not in used_codebook_ids
-        }
-        if removed_codebook_ids:
-            self._codebook_payloads = [
-                payload
-                for payload in self._codebook_payloads
-                if int(payload.codebook_id) in used_codebook_ids
-            ]
-            for codebook_id in removed_codebook_ids:
-                self._decode_codebooks.pop(codebook_id, None)
-                self._codebook_payload_by_id.pop(codebook_id, None)
-            for key, mode in tuple(self._mode_by_key.items()):
-                if mode.get("codebook_id") in removed_codebook_ids:
-                    self._mode_by_key[key] = {
-                        "kind": "raw",
-                        "fixed_cost": 0,
-                    }
 
     def prepare_direct_transfer_target(self, named_tensors):
         """Map a family target to a reusable source setup.
@@ -763,17 +742,11 @@ class NeuralZipCodec:
                 "Source codebooks and modes must be built before transfer."
             )
 
-        named_tensors = list(named_tensors)
         transfer_modes = {}
-        transfer_clusters = {}
         missing = []
         target_tensors = 0
-        matched_tensors = 0
-        exact_tensors = 0
         fallback_tensors = 0
         target_symbols = 0
-        matched_symbols = 0
-        exact_symbols = 0
         fallback_symbols = 0
         fallback_assignments = {}
 
@@ -819,32 +792,12 @@ class NeuralZipCodec:
                     )
                 plan.append((plan_key, source_mode))
 
-            tensor_matched = all(plan_key not in missing for plan_key, _ in plan)
-            tensor_exact = tensor_matched and source_name == str(name)
             symbols = int(tensor.numel())
             target_tensors += 1
             target_symbols += symbols
-            if tensor_matched:
-                matched_tensors += 1
-                matched_symbols += symbols
-                if tensor_exact:
-                    exact_tensors += 1
-                    exact_symbols += symbols
-                else:
-                    fallback_tensors += 1
-                    fallback_symbols += symbols
-
-            cluster_name = str(name)
-            if tensor_matched and not tensor_exact:
-                cluster_name = source_name
-            source_cluster = self.cluster_map.get(cluster_name)
-            if source_cluster is None:
-                source_cluster = self._computed_cluster_map.get(cluster_name)
-            transfer_clusters[str(name)] = (
-                str(source_cluster)
-                if tensor_matched and source_cluster is not None
-                else f"transfer-local:{name}"
-            )
+            if source_name != str(name):
+                fallback_tensors += 1
+                fallback_symbols += symbols
 
             for plan_key, selected in plan:
                 transfer_modes[plan_key] = selected
@@ -861,7 +814,6 @@ class NeuralZipCodec:
             )
 
         self._transfer_mode_by_tensor_stream = transfer_modes
-        self._transfer_cluster_by_name = transfer_clusters
         stats = {
             "mapping": (
                 "exact source tensor name, dtype, and stream"
@@ -869,12 +821,12 @@ class NeuralZipCodec:
                 else "exact name or explicit structural alias, dtype, and stream"
             ),
             "target_tensors": target_tensors,
-            "matched_tensors": matched_tensors,
-            "exact_tensors": exact_tensors,
+            "matched_tensors": target_tensors,
+            "exact_tensors": target_tensors - fallback_tensors,
             "fallback_tensors": fallback_tensors,
             "target_exponents": target_symbols,
-            "matched_exponents": matched_symbols,
-            "exact_exponents": exact_symbols,
+            "matched_exponents": target_symbols,
+            "exact_exponents": target_symbols - fallback_symbols,
             "fallback_exponents": fallback_symbols,
             "missing_streams": len(missing),
             "fallback_streams": len(fallback_assignments),
@@ -1022,7 +974,6 @@ class NeuralZipCodec:
             self._mode_by_key[evaluation["key"]] = selected
 
         self._prepare_tensor_modes(named_tensors)
-        self.load_codebooks(self._codebook_payloads)
 
     def _mode_for_tensor_stream(self, name, tensor, stream_id):
         """Return the prepared mode for one concrete tensor byte stream."""
@@ -1179,7 +1130,7 @@ class NeuralZipCodec:
                     )
                 elif final_kind == "packed_huff0":
                     codebook_id = planned_mode.get("codebook_id")
-                    codebook = self._codebook_payload_by_id.get(codebook_id)
+                    codebook = self._codebook_payload(codebook_id)
                     if codebook is None:
                         raise RuntimeError(
                             f"Packed Huff0 mode references missing codebook {codebook_id}."
@@ -1235,21 +1186,29 @@ class NeuralZipCodec:
             bit_reorder=int(config["bit_reorder"]),
         )
 
+    def _decode_assets(self, chunk):
+        codebook = self._codebook_payload(chunk.codebook_id)
+        decodebook = self._decode_codebooks.get(chunk.codebook_id)
+        if codebook is None:
+            raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
+        if decodebook is None:
+            decodebook = huff0.build_decodebook(codebook.codebook)
+            self._decode_codebooks[chunk.codebook_id] = decodebook
+        if codebook.mode != chunk.mode:
+            label = chunk.mode.removesuffix("_huff0")
+            raise ValueError(
+                f"{label.title()} Huff0 chunk references a non-{label} codebook."
+            )
+        return codebook, decodebook
+
     def _decompress_cluster_stream(self, group):
         output = bytearray()
         for chunk in group.chunks:
             if chunk.mode == "raw":
                 decoded = chunk.payload
             elif chunk.mode in {"shared_huff0", "packed_huff0"}:
-                codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
-                decodebook = self._decode_codebooks.get(chunk.codebook_id)
-                if codebook is None or decodebook is None:
-                    raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
+                codebook, decodebook = self._decode_assets(chunk)
                 if chunk.mode == "shared_huff0":
-                    if codebook.mode != "shared_huff0":
-                        raise ValueError(
-                            "Shared Huff0 chunk references a non-shared codebook."
-                        )
                     decoded = huff0.decompress_with_decodebook(
                         huff0.Huff0Payload(
                             payload=chunk.payload,
@@ -1258,10 +1217,6 @@ class NeuralZipCodec:
                         decodebook,
                     )
                 else:
-                    if codebook.mode != "packed_huff0":
-                        raise ValueError(
-                            "Packed Huff0 chunk references a non-packed codebook."
-                        )
                     token_count = _packed_token_count(
                         chunk.symbol_count,
                         chunk.tail_payload,
@@ -1332,14 +1287,7 @@ class NeuralZipCodec:
                 mode = str(chunk.mode)
                 decodebook_handle = None
                 if mode == "shared_huff0":
-                    codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
-                    decodebook = self._decode_codebooks.get(chunk.codebook_id)
-                    if codebook is None or decodebook is None:
-                        raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
-                    if codebook.mode != "shared_huff0":
-                        raise ValueError(
-                            "Shared Huff0 chunk references a non-shared codebook."
-                        )
+                    _, decodebook = self._decode_assets(chunk)
                     decodebook_handle = decodebook.handle
                 native_chunks.append(
                     (
@@ -1426,11 +1374,6 @@ class NeuralZipCodec:
         raw = bytearray(compressed.raw_bytes)
         for stream_id, group in enumerate(compressed.groups):
             stream = self._decompress_cluster_stream(group)
-            expected = int(compressed.numel)
-            if len(stream) != expected:
-                raise ValueError(
-                    f"Byte group {stream_id} has {len(stream)} bytes; expected {expected}."
-                )
             raw[stream_id :: compressed.element_size] = stream
 
         restored = _byte_group_restored_bytes(bytes(raw), dtype, config)

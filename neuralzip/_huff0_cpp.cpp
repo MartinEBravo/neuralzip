@@ -299,64 +299,7 @@ void extract_byte_group_stream_block(
     }
 }
 
-void restore_mixed_stream_tensor_range(
-    const MixedStreamDecodeTensor& request,
-    std::size_t start,
-    std::size_t length) {
-    const int element_size = request.element_size;
-    const std::size_t end = start + length;
-    std::uint8_t* output = request.output_data;
-    if (element_size == 2) {
-        const auto& first = request.lanes[0];
-        const auto& second = request.lanes[1];
-        if (!request.bit_reorder) {
-            for (std::size_t index = start; index < end; ++index) {
-                std::size_t target = index * 2U;
-                output[target] = first[index];
-                output[target + 1U] = second[index];
-            }
-            return;
-        }
-        for (std::size_t index = start; index < end; ++index) {
-            const std::uint8_t penultimate = first[index];
-            const std::uint8_t last = second[index];
-            std::size_t target = index * 2U;
-            output[target] = static_cast<std::uint8_t>(
-                (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
-            output[target + 1U] = static_cast<std::uint8_t>(
-                (last >> 1U) | (penultimate & 0x80U));
-        }
-        return;
-    }
-
-    const auto& first = request.lanes[0];
-    const auto& second = request.lanes[1];
-    const auto& penultimate_lane = request.lanes[2];
-    const auto& last_lane = request.lanes[3];
-    if (!request.bit_reorder) {
-        for (std::size_t index = start; index < end; ++index) {
-            std::size_t target = index * 4U;
-            output[target] = first[index];
-            output[target + 1U] = second[index];
-            output[target + 2U] = penultimate_lane[index];
-            output[target + 3U] = last_lane[index];
-        }
-        return;
-    }
-    for (std::size_t index = start; index < end; ++index) {
-        const std::uint8_t penultimate = penultimate_lane[index];
-        const std::uint8_t last = last_lane[index];
-        std::size_t target = index * 4U;
-        output[target] = first[index];
-        output[target + 1U] = second[index];
-        output[target + 2U] = static_cast<std::uint8_t>(
-            (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
-        output[target + 3U] = static_cast<std::uint8_t>(
-            (last >> 1U) | (penultimate & 0x80U));
-    }
-}
-
-void restore_mixed_stream_aligned_chunk(
+void restore_mixed_stream_chunk(
     const MixedStreamDecodeTensor& request,
     const std::array<const std::uint8_t*, 4>& lanes,
     std::size_t output_offset,
@@ -415,6 +358,21 @@ void restore_mixed_stream_aligned_chunk(
         output[target + 3U] = static_cast<std::uint8_t>(
             (last >> 1U) | (penultimate & 0x80U));
     }
+}
+
+void restore_mixed_stream_tensor_range(
+    const MixedStreamDecodeTensor& request,
+    std::size_t start,
+    std::size_t length) {
+    if (length == 0) {
+        return;
+    }
+    std::array<const std::uint8_t*, 4> lanes{};
+    for (int stream = 0; stream < request.element_size; ++stream) {
+        lanes[static_cast<std::size_t>(stream)] = request.lanes[
+            static_cast<std::size_t>(stream)].data() + start;
+    }
+    restore_mixed_stream_chunk(request, lanes, start, length);
 }
 
 void release_vector(std::vector<std::uint8_t>& data) {
@@ -1109,7 +1067,7 @@ NGramTokenization tokenize_ngrams(
     Py_ssize_t data_len,
     int n,
     const std::vector<std::uint64_t>& vocab,
-    const NGramVocabLookup* lookup = nullptr) {
+    const NGramVocabLookup& lookup) {
     if (n < 1 || n > 8) {
         throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 8].");
     }
@@ -1132,20 +1090,7 @@ NGramTokenization tokenize_ngrams(
     for (Py_ssize_t token_index = 0; token_index < token_count; ++token_index) {
         const std::uint8_t* pointer = data + token_index * n;
         std::uint64_t symbol = pack_ngram_symbol(pointer, n);
-        std::uint8_t token = 255;
-        if (lookup != nullptr) {
-            token = find_ngram_token(*lookup, symbol);
-        } else {
-            auto iterator = std::lower_bound(vocab.begin(), vocab.end(), symbol);
-            if (iterator != vocab.end() && *iterator == symbol) {
-                std::size_t position = static_cast<std::size_t>(
-                    iterator - vocab.begin());
-                if (position >= 255) {
-                    throw std::runtime_error("ngram vocab id overflow.");
-                }
-                token = static_cast<std::uint8_t>(position);
-            }
-        }
+        const std::uint8_t token = find_ngram_token(lookup, symbol);
         if (token != 255) {
             result.tokens.push_back(token);
             continue;
@@ -1257,7 +1202,7 @@ NGramBlockResult encode_ngram_block(
     const Huff0Codebook& codebook,
     Py_ssize_t min_saving_bytes,
     std::size_t max_output_bytes,
-    const NGramVocabLookup* lookup = nullptr) {
+    const NGramVocabLookup& lookup) {
     return encode_tokenized_ngram_block(
         tokenize_ngrams(data, data_len, n, vocab, lookup),
         codebook,
@@ -1277,7 +1222,8 @@ const char* mixed_mode_name(MixedMode mode) {
     return "raw";
 }
 
-constexpr Py_ssize_t kPackedMetadataBytes = 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8;
+// Keep this in sync with payloads.py::PACKED_CHUNK_METADATA_BYTES.
+constexpr Py_ssize_t kPackedMetadataBytes = 41;
 
 std::size_t packed_output_budget(
     std::size_t raw_size,
@@ -1364,7 +1310,7 @@ void process_mixed_block(
         *spec.codebook,
         min_saving_bytes,
         packed_output_budget(result.raw.size(), compression_threshold),
-        &spec.vocab_lookup);
+        spec.vocab_lookup);
     if (finish_packed_block(
             result,
             packed,
@@ -1923,7 +1869,7 @@ nb::object encode_ngram_with_codebook(
             *codebook,
             min_saving_bytes,
             max_bytes,
-            &vocab_lookup);
+            vocab_lookup);
     });
     if (!encoded.encoded) {
         return nb::none();
@@ -2452,7 +2398,7 @@ nb::list decompress_mixed_streams_many(
                                 lane_data[stream] = destination;
                                 scratch_offset += chunk.symbol_count;
                             }
-                            restore_mixed_stream_aligned_chunk(
+                            restore_mixed_stream_chunk(
                                 request,
                                 lane_data,
                                 job.output_offset,

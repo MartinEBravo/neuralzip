@@ -126,7 +126,6 @@ def _detached_codec_snapshot(codec):
     # not part of the reusable source setup, and must never cross persistence
     # or NeuralZip operation boundaries.
     snapshot._transfer_mode_by_tensor_stream = {}
-    snapshot._transfer_cluster_by_name = {}
     snapshot._transfer_active = False
 
     # Native decoder handles are reconstructed from immutable payload headers.

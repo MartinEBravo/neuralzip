@@ -1,173 +1,73 @@
 """Persistent, directly loadable NeuralZip inference checkpoints.
 
-The format deliberately separates ordinary model state from NeuralZip's GPU
-representation.  Resident parameters and buffers live in Safetensors, while
-compressed BF16 weights live in :mod:`neuralzip.gpu.checkpoint`.  A strict
-JSON manifest binds the two files to the model configuration without ever
-deserializing executable Python objects.
+One canonical JSON manifest binds the model metadata, compressed BF16 streams,
+and sharded resident Safetensors without deserializing Python objects.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import tempfile
+import re
+from collections import defaultdict
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
 
 import torch
+from safetensors import safe_open
 from torch import nn
 
-from .adapters import GPUModelAdapter
-from .checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
-from .checkpoint import load_gpu_export, save_gpu_export
+from .. import _persistence
+from .export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
 from .inference import (
+    BF16WeightGroup,
+    LinearWeightBinding,
     NeuralZipModelExport,
     NeuralZipRuntime,
     _offloaded_blocks,
     export_model_for_gpu,
 )
-from .resident import (
-    INDEX_FILENAME as RESIDENT_INDEX_FILENAME,
-)
-from .resident import (
-    ResidentStateManifest,
-    iter_resident_shards,
-    load_resident_state,
-    save_resident_state,
-)
 
 FORMAT_NAME = "neuralzip-gpu-pretrained"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MANIFEST_FILENAME = "neuralzip_config.json"
-# Kept as a public alias for callers that imported the early prototype name.
-RESIDENT_FILENAME = RESIDENT_INDEX_FILENAME
-_AUTO_CLASS_NAMES = (
-    "AutoModelForSpeechSeq2Seq",
-    "AutoModelForVision2Seq",
-    "AutoModelForMultimodalLM",
-    "AutoModelForImageTextToText",
-    "AutoModelForVisualQuestionAnswering",
-    "AutoModelForAudioClassification",
-    "AutoModelForAudioFrameClassification",
-    "AutoModelForAudioTokenization",
-    "AutoModelForAudioXVector",
-    "AutoModelForCTC",
-    "AutoModelForRNNT",
-    "AutoModelForTDT",
-    "AutoModelForTextToSpectrogram",
-    "AutoModelForTextToWaveform",
-    "AutoModelForImageClassification",
-    "AutoModelForVideoClassification",
-    "AutoModelForZeroShotImageClassification",
-    "AutoModelForImageToImage",
-    "AutoModelForImageMatting",
-    "AutoModelForMaskedImageModeling",
-    "AutoModelForDepthEstimation",
-    "AutoModelForNormalEstimation",
-    "AutoModelForPointmapEstimation",
-    "AutoModelForPoseEstimation",
-    "AutoModelForKeypointDetection",
-    "AutoModelForKeypointMatching",
-    "AutoModelForMaskGeneration",
-    "AutoModelForObjectDetection",
-    "AutoModelForZeroShotObjectDetection",
-    "AutoModelForInstanceSegmentation",
-    "AutoModelForImageSegmentation",
-    "AutoModelForSemanticSegmentation",
-    "AutoModelForUniversalSegmentation",
-    "AutoModelForQuestionAnswering",
-    "AutoModelForDocumentQuestionAnswering",
-    "AutoModelForTableQuestionAnswering",
-    "AutoModelForTableRecognition",
-    "AutoModelForTokenClassification",
-    "AutoModelForSequenceClassification",
-    "AutoModelForMultipleChoice",
-    "AutoModelForNextSentencePrediction",
-    "AutoModelForPreTraining",
-    "AutoModelForMaskedLM",
-    "AutoModelForSeq2SeqLM",
-    "AutoModelForCausalLM",
-    "AutoModelForTextEncoding",
-    "AutoModelForTextRecognition",
-    "AutoModelForTimeSeriesPrediction",
-    "AutoModel",
-)
+GPU_EXPORT_FILENAME = "neuralzip-gpu-export.safetensors"
+RESIDENT_SHARD_PATTERN = "neuralzip-resident{suffix}.safetensors"
+_GPU_EXPORT_FORMAT = "neuralzip-gpu-export"
+_RESIDENT_FORMAT = "neuralzip-resident-state"
 _PLACEMENT_BUFFER_NAME = "_neuralzip_placement_payload"
+_RESIDENT_SHARD_RE = re.compile(
+    r"^neuralzip-resident(?:-\d{5}-of-\d{5})?\.safetensors$"
+)
+_SIZE_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|KIB|MIB|GIB|TIB)\s*$",
+    re.IGNORECASE,
+)
+_SIZE_UNITS = {
+    "B": 1,
+    "KB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "TB": 1000**4,
+    "KIB": 1 << 10,
+    "MIB": 1 << 20,
+    "GIB": 1 << 30,
+    "TIB": 1 << 40,
+}
+GPUPretrainedError = _persistence.GPUPretrainedError
+_atomic_safetensors = _persistence.atomic_safetensors
+_atomic_text = _persistence.atomic_text
+_canonical_json = _persistence.canonical_json
+_require_fields = _persistence.require_fields
+_require_int = _persistence.require_int
+_require_name = _persistence.require_name
+_require_string = _persistence.require_string
+_sha256_file = _persistence.sha256_file
 
 
-class GPUPretrainedError(ValueError):
-    """Raised when a complete NeuralZip inference checkpoint is invalid."""
-
-
-def _canonical_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError) as error:
-        raise GPUPretrainedError("The checkpoint manifest is not JSON-safe.") from error
-
-
-def _parse_manifest(path: Path) -> dict[str, object]:
-    try:
-        source = path.read_text(encoding="ascii")
-        value = json.loads(source)
-    except FileNotFoundError:
-        raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise GPUPretrainedError("Unable to read neuralzip_config.json.") from error
-    if not isinstance(value, dict):
-        raise GPUPretrainedError("The checkpoint manifest must be a JSON object.")
-    if _canonical_json(value) + "\n" != source:
-        raise GPUPretrainedError("The checkpoint manifest is not canonical JSON.")
-    return value
-
-
-def _require_fields(
-    value: object,
-    expected: set[str],
-    *,
-    context: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise GPUPretrainedError(f"{context} must be a JSON object.")
-    actual = set(value)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
-        raise GPUPretrainedError(
-            f"Invalid {context} fields: missing={missing}, unexpected={unexpected}."
-        )
-    return value
-
-
-def _require_string(value: object, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise GPUPretrainedError(f"{context} must be a non-empty string.")
-    return value
-
-
-def _require_string_list(value: object, *, context: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item for item in value
-    ):
-        raise GPUPretrainedError(f"{context} must be an array of non-empty strings.")
-    result = tuple(value)
-    if len(result) != len(set(result)):
-        raise GPUPretrainedError(f"{context} must not contain duplicates.")
-    return result
-
-
-def _checkpoint_directory(value: str | os.PathLike[str], *, create: bool) -> Path:
+def _directory_argument(value: str | os.PathLike[str]) -> Path:
     try:
         source = os.fspath(value)
     except TypeError as error:
@@ -176,7 +76,34 @@ def _checkpoint_directory(value: str | os.PathLike[str], *, create: bool) -> Pat
         raise TypeError("directory must be a text path, not bytes.")
     if not source or "\x00" in source:
         raise ValueError("directory must be a non-empty valid path.")
-    path = Path(source)
+    return Path(source)
+
+
+def _parse_manifest(path: Path) -> dict[str, object]:
+    try:
+        source = path.read_text(encoding="ascii")
+        value = _persistence.canonical_json_loads(
+            source, document="checkpoint manifest"
+        )
+    except FileNotFoundError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise GPUPretrainedError("Unable to read neuralzip_config.json.") from error
+    if not isinstance(value, dict):
+        raise GPUPretrainedError("The checkpoint manifest must be a JSON object.")
+    if _canonical_json(value) + "\n" != source:
+        raise GPUPretrainedError("The checkpoint manifest is not canonical JSON.")
+    return value
+
+
+def _require_list(value: object, *, context: str) -> list[object]:
+    if not isinstance(value, list):
+        raise GPUPretrainedError(f"{context} must be a JSON array.")
+    return value
+
+
+def _checkpoint_directory(value: str | os.PathLike[str], *, create: bool) -> Path:
+    path = _directory_argument(value)
     if path.exists() and not path.is_dir():
         raise ValueError("A NeuralZip pretrained checkpoint must be a directory.")
     if create:
@@ -229,68 +156,16 @@ def _resolve_pretrained_source(
     return Path(snapshot)
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_text(path: Path, source: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(source)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _resident_state(
-    model: nn.Module,
-    exported: NeuralZipModelExport,
-    *,
-    state: Mapping[str, torch.Tensor] | None = None,
-) -> dict[str, torch.Tensor]:
-    compressed = {binding.tensor_name for binding in exported.bindings}
-    state = model.state_dict() if state is None else state
-    missing = compressed - set(state)
-    runtime = getattr(model, "neuralzip_runtime", None)
-    if missing and runtime is None:
-        raise GPUPretrainedError(
-            f"The model state is missing compressed tensors: {sorted(missing)}."
-        )
-    if runtime is not None and missing != compressed:
-        raise GPUPretrainedError(
-            "An attached model's resident state unexpectedly contains only part of "
-            "the compressed tensors."
-        )
-    resident = {}
-    for name, value in state.items():
-        if name in compressed:
-            continue
-        if not torch.is_tensor(value) or value.layout != torch.strided:
-            raise GPUPretrainedError(
-                f"Resident state {name!r} is not a dense tensor and cannot be "
-                "stored safely."
-            )
-        resident[name] = value.detach()
-    return resident
-
-
 def _validate_auto_class(value: str | None) -> str | None:
-    if value is not None and value not in _AUTO_CLASS_NAMES:
-        raise ValueError(
-            f"auto_class must be one of {list(_AUTO_CLASS_NAMES)}, or None."
-        )
+    if value is None:
+        return None
+    try:
+        import transformers
+    except ImportError as error:  # pragma: no cover - core dependency declaration.
+        raise RuntimeError("auto_class requires transformers.") from error
+    candidate = getattr(transformers, value, None)
+    if not value.startswith("AutoModel") or not hasattr(candidate, "_model_mapping"):
+        raise ValueError("auto_class must name a Transformers AutoModel class.")
     return value
 
 
@@ -302,16 +177,19 @@ def _infer_auto_class(model: nn.Module) -> str | None:
         import transformers
     except ImportError:  # pragma: no cover - core dependency declaration.
         return None
+    auto_classes = tuple(
+        (name, candidate)
+        for name in dir(transformers)
+        if name.startswith("AutoModel")
+        and hasattr((candidate := getattr(transformers, name, None)), "_model_mapping")
+    )
     auto_map = getattr(config, "auto_map", None)
     if isinstance(auto_map, Mapping):
-        for class_name in _AUTO_CLASS_NAMES:
+        for class_name, _auto_class in auto_classes:
             if class_name in auto_map:
                 return class_name
-    for class_name in _AUTO_CLASS_NAMES:
-        auto_class = getattr(transformers, class_name, None)
-        mapping = getattr(auto_class, "_model_mapping", None)
-        if mapping is None:
-            continue
+    for class_name, auto_class in auto_classes:
+        mapping = auto_class._model_mapping
         try:
             candidate = mapping[type(config)]
         except (KeyError, TypeError, ValueError, AttributeError):
@@ -374,6 +252,190 @@ def _file_record(path: Path) -> dict[str, str | int]:
     }
 
 
+def _bytes_tensor(value: bytes) -> torch.Tensor:
+    if not value:
+        return torch.empty(0, dtype=torch.uint8)
+    return torch.frombuffer(bytearray(value), dtype=torch.uint8).clone()
+
+
+def _tensor_bytes(tensor: torch.Tensor) -> bytes:
+    return tensor.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
+
+
+def _save_gpu_export(
+    exported: NeuralZipModelExport,
+    directory: Path,
+) -> tuple[Path, dict[str, object]]:
+    codebooks = {}
+    for group in exported.groups:
+        codebooks.setdefault(group.codebook_id, group.codebook)
+
+    tensors = {}
+    groups = []
+    for index, group in enumerate(exported.groups):
+        prefix = f"groups.{index:06d}"
+        exponents = group.encoded.exponents
+        tensors[f"{prefix}.bitstream"] = _bytes_tensor(exponents.bitstream)
+        tensors[f"{prefix}.packed_gaps"] = _bytes_tensor(exponents.packed_gaps)
+        tensors[f"{prefix}.sign_mantissa"] = _bytes_tensor(group.encoded.sign_mantissa)
+        tensors[f"{prefix}.output_positions"] = torch.tensor(
+            exponents.output_positions,
+            dtype=torch.int32,
+        )
+        groups.append(
+            {
+                "bindings": [
+                    {
+                        "kind": binding.module_kind,
+                        "module": binding.module_name,
+                        "requires_grad": binding.requires_grad,
+                        "shape": list(binding.shape),
+                    }
+                    for binding in group.bindings
+                ],
+                "bit_length": exponents.bit_length,
+                "block": group.block_name,
+                "codebook": group.codebook_id,
+            }
+        )
+
+    structure = {
+        "codebooks": [
+            {
+                "id": codebook_id,
+                "lengths": list(codebook.code_lengths),
+                "values": list(codebook.code_values),
+            }
+            for codebook_id, codebook in sorted(codebooks.items())
+        ],
+        "groups": groups,
+        "resident_raw_bytes": exported.resident_raw_bytes,
+        "resident_weight_names": list(exported.resident_weight_names),
+    }
+    path = directory / GPU_EXPORT_FILENAME
+    _atomic_safetensors(
+        tensors,
+        path,
+        metadata={"format": _GPU_EXPORT_FORMAT, "version": str(FORMAT_VERSION)},
+    )
+    return path, structure
+
+
+def _storage_key(tensor: torch.Tensor) -> tuple[object, ...]:
+    storage = tensor.untyped_storage()
+    return (
+        tensor.device,
+        storage._cdata,
+        storage.data_ptr(),
+        storage.nbytes(),
+        tensor.storage_offset(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.dtype,
+        bool(tensor.is_conj()),
+        bool(tensor.is_neg()),
+    )
+
+
+def _snapshot_resident(
+    tensors: Mapping[str, torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
+    physical = {}
+    aliases = {}
+    canonical_by_storage = {}
+    for name in sorted(tensors):
+        _require_name(name, context="resident tensor name")
+        tensor = tensors[name]
+        if (
+            not torch.is_tensor(tensor)
+            or tensor.device.type == "meta"
+            or tensor.layout != torch.strided
+            or tensor.is_quantized
+        ):
+            raise GPUPretrainedError(
+                f"Resident state {name!r} must be a dense, materialized tensor."
+            )
+        storage_key = _storage_key(tensor)
+        canonical = canonical_by_storage.get(storage_key)
+        if canonical is not None:
+            aliases[name] = canonical
+            continue
+        canonical_by_storage[storage_key] = name
+        physical[name] = tensor.detach().to(device="cpu").contiguous().clone()
+    return physical, aliases
+
+
+def _parse_max_shard_size(value: int | str) -> int:
+    if isinstance(value, bool):
+        raise TypeError("max_shard_size must be a positive integer or size string.")
+    if isinstance(value, int):
+        size = value
+    elif isinstance(value, str):
+        match = _SIZE_RE.fullmatch(value)
+        if match is None:
+            raise ValueError(
+                "max_shard_size must use B, KB, MB, GB, TB, KiB, MiB, GiB, or TiB."
+            )
+        amount, unit = match.groups()
+        try:
+            size = int(Decimal(amount) * _SIZE_UNITS[unit.upper()])
+        except (InvalidOperation, OverflowError) as error:
+            raise ValueError(
+                "max_shard_size is outside the supported range."
+            ) from error
+    else:
+        raise TypeError("max_shard_size must be a positive integer or size string.")
+    if size <= 0:
+        raise ValueError("max_shard_size must be positive.")
+    return size
+
+
+def _resident_state(model: nn.Module, exported: NeuralZipModelExport):
+    compressed = {binding.tensor_name for binding in exported.bindings}
+    state = model.state_dict()
+    if not compressed.issubset(state):
+        raise GPUPretrainedError("The model state is missing compressed tensors.")
+    return {name: tensor for name, tensor in state.items() if name not in compressed}
+
+
+def _save_resident_state(
+    tensors: Mapping[str, torch.Tensor],
+    directory: Path,
+    *,
+    max_shard_size: int | str,
+) -> tuple[list[dict[str, str | int]], dict[str, object]]:
+    try:
+        from huggingface_hub import split_torch_state_dict_into_shards
+    except ImportError as error:  # pragma: no cover - transformers dependency.
+        raise RuntimeError("Resident sharding requires huggingface_hub.") from error
+
+    physical, aliases = _snapshot_resident(tensors)
+    split = split_torch_state_dict_into_shards(
+        physical,
+        filename_pattern=RESIDENT_SHARD_PATTERN,
+        max_shard_size=_parse_max_shard_size(max_shard_size),
+    )
+    filenames = sorted(split.filename_to_tensors)
+    for filename in filenames:
+        shard = {name: physical[name] for name in split.filename_to_tensors[filename]}
+        _atomic_safetensors(
+            shard,
+            directory / filename,
+            metadata={"format": _RESIDENT_FORMAT, "version": str(FORMAT_VERSION)},
+        )
+    expected = set(filenames)
+    for path in directory.glob("neuralzip-resident*.safetensors"):
+        if _RESIDENT_SHARD_RE.fullmatch(path.name) and path.name not in expected:
+            path.unlink()
+    return (
+        [_file_record(directory / filename) for filename in filenames],
+        {
+            "aliases": aliases,
+            "weight_map": dict(sorted(split.tensor_to_filename.items())),
+        },
+    )
+
+
 def save_gpu_pretrained(
     model: nn.Module,
     directory: str | os.PathLike[str],
@@ -385,29 +447,23 @@ def save_gpu_pretrained(
 ) -> Path:
     """Save a complete, directly loadable NeuralZip inference checkpoint.
 
-    By default the export comes from ``model.neuralzip_runtime``. Compressed
-    weights are excluded from the resident state and never materialized merely
-    to save the checkpoint.
+    Compressed weights come from ``model.neuralzip_runtime`` and are never
+    materialized merely to save the checkpoint.
     """
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
     runtime = getattr(model, "neuralzip_runtime", None)
-    resident_source = None
     if export is None:
         if not isinstance(runtime, NeuralZipRuntime):
-            raise ValueError(
-                "model must have an attached NeuralZip runtime unless export= is "
-                "provided."
-            )
+            raise TypeError("model must have an attached NeuralZip runtime.")
         exported = runtime.export
-        resident_source = runtime.resident_state_dict()
+        resident = runtime.resident_state_dict()
     elif runtime is not None:
-        raise ValueError(
-            "For an attached model, omit export and save its current runtime."
-        )
+        raise ValueError("For an attached model, omit export= and save its runtime.")
     elif isinstance(export, NeuralZipModelExport):
         exported = export
+        resident = _resident_state(model, exported)
     else:
         raise TypeError("export must be a NeuralZipModelExport.")
     if not exported.groups:
@@ -420,13 +476,12 @@ def save_gpu_pretrained(
         raise ValueError("auto_class is only valid for Transformers models.")
 
     target = _checkpoint_directory(directory, create=True)
-    resident = _resident_state(model, exported, state=resident_source)
-    resident_manifest = save_resident_state(
+    resident_files, resident_structure = _save_resident_state(
         resident,
         target,
         max_shard_size=max_shard_size,
     )
-    export_path = save_gpu_export(exported, target)
+    export_path, export_structure = _save_gpu_export(exported, target)
     model_files = _save_model_metadata(model, target, library=library)
 
     if tokenizer is not None:
@@ -436,23 +491,18 @@ def save_gpu_pretrained(
         save_tokenizer(target)
 
     manifest = {
-        "compressed_weight_names": sorted(
-            binding.tensor_name for binding in exported.bindings
-        ),
+        "auto_class": selected_auto_class,
+        "export": export_structure,
         "files": {
             "config": model_files["config"],
             "generation_config": model_files["generation_config"],
             "gpu_export": _file_record(export_path),
-            "resident_index": _file_record(resident_manifest.index_path),
-            "resident_shards": [
-                _file_record(path) for path in resident_manifest.shard_paths
-            ],
+            "resident_shards": resident_files,
         },
         "format": FORMAT_NAME,
-        "auto_class": selected_auto_class,
         "library": library,
         "model_class": type(model).__name__,
-        "resident_tensor_names": list(resident_manifest.tensor_names),
+        "resident": resident_structure,
         "version": FORMAT_VERSION,
     }
     _atomic_text(target / MANIFEST_FILENAME, _canonical_json(manifest) + "\n")
@@ -500,18 +550,25 @@ def _file_from_record(
 
 def _load_checkpoint_metadata(
     directory: Path,
-) -> tuple[dict[str, object], ResidentStateManifest, Path, Path | None]:
+) -> tuple[
+    dict[str, object],
+    Path,
+    Path | None,
+    tuple[Path, ...],
+    dict[str, str],
+    dict[str, str],
+]:
     manifest = _parse_manifest(directory / MANIFEST_FILENAME)
     root = _require_fields(
         manifest,
         {
             "auto_class",
-            "compressed_weight_names",
+            "export",
             "files",
             "format",
             "library",
             "model_class",
-            "resident_tensor_names",
+            "resident",
             "version",
         },
         context="manifest",
@@ -533,26 +590,15 @@ def _load_checkpoint_metadata(
         raise GPUPretrainedError(
             "Only Transformers checkpoints may declare an auto_class."
         )
-    _require_string_list(
-        root["compressed_weight_names"], context="compressed_weight_names"
-    )
     files = _require_fields(
         root["files"],
         {
             "config",
             "generation_config",
             "gpu_export",
-            "resident_index",
             "resident_shards",
         },
         context="manifest.files",
-    )
-    _file_from_record(
-        directory,
-        files["resident_index"],
-        expected_name=RESIDENT_INDEX_FILENAME,
-        context="manifest.files.resident_index",
-        required=True,
     )
     export_path = _file_from_record(
         directory,
@@ -588,21 +634,225 @@ def _load_checkpoint_metadata(
         )
         for index, record in enumerate(shard_records)
     )
-    resident_manifest = load_resident_state(directory)
-    if (
-        tuple(path for path in shard_paths if path is not None)
-        != resident_manifest.shard_paths
-    ):
-        raise GPUPretrainedError(
-            "The full checkpoint and resident shard index disagree."
-        )
-    resident_names = _require_string_list(
-        root["resident_tensor_names"], context="resident_tensor_names"
+
+    resident = _require_fields(
+        root["resident"], {"aliases", "weight_map"}, context="manifest.resident"
     )
-    if resident_names != resident_manifest.tensor_names:
-        raise GPUPretrainedError("The full checkpoint and resident state disagree.")
+    if not isinstance(resident["weight_map"], dict) or not isinstance(
+        resident["aliases"], dict
+    ):
+        raise GPUPretrainedError("Resident mappings must be JSON objects.")
+    weight_map = {
+        _require_name(name, context="resident tensor name"): _require_string(
+            filename, context=f"resident shard for {name!r}"
+        )
+        for name, filename in resident["weight_map"].items()
+    }
+    aliases = {
+        _require_name(alias, context="resident alias name"): _require_name(
+            canonical, context=f"resident alias target for {alias!r}"
+        )
+        for alias, canonical in resident["aliases"].items()
+    }
+    physical_names = set(weight_map)
+    if any(
+        alias in physical_names or canonical not in physical_names or alias == canonical
+        for alias, canonical in aliases.items()
+    ):
+        raise GPUPretrainedError("Resident aliases must target physical tensors.")
+    paths = tuple(path for path in shard_paths if path is not None)
+    if len(paths) != len(set(paths)) or set(weight_map.values()) != {
+        path.name for path in paths
+    }:
+        raise GPUPretrainedError("Resident shards and weight_map disagree.")
     assert export_path is not None
-    return root, resident_manifest, export_path, config_path
+    return root, export_path, config_path, paths, aliases, weight_map
+
+
+def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
+    structure = _require_fields(
+        value,
+        {"codebooks", "groups", "resident_raw_bytes", "resident_weight_names"},
+        context="manifest.export",
+    )
+    try:
+        with safe_open(str(path), framework="pt", device="cpu") as archive:
+            if archive.metadata() != {
+                "format": _GPU_EXPORT_FORMAT,
+                "version": str(FORMAT_VERSION),
+            }:
+                raise GPUPretrainedError("GPU export metadata is invalid.")
+            tensors = {
+                name: archive.get_tensor(name)
+                for name in archive.keys()  # noqa: SIM118 - safe_open is not iterable.
+            }
+    except GPUPretrainedError:
+        raise
+    except Exception as error:
+        raise GPUPretrainedError("Unable to read the GPU export.") from error
+
+    codebooks = {}
+    previous_id = -1
+    for index, raw_record in enumerate(
+        _require_list(structure["codebooks"], context="export.codebooks")
+    ):
+        record = _require_fields(
+            raw_record, {"id", "lengths", "values"}, context=f"codebook {index}"
+        )
+        codebook_id = _require_int(record["id"], context=f"codebook {index} id")
+        if codebook_id <= previous_id:
+            raise GPUPretrainedError("Codebook IDs must be increasing and unique.")
+        previous_id = codebook_id
+        try:
+            codebooks[codebook_id] = GPUCodebook.from_codes(
+                record["lengths"],
+                record["values"],
+            )
+        except (TypeError, ValueError) as error:
+            raise GPUPretrainedError(f"Codebook {codebook_id} is invalid.") from error
+
+    groups = []
+    block_order = []
+    workspace_offsets = defaultdict(int)
+    expected_tensors = set()
+    for index, raw_record in enumerate(
+        _require_list(structure["groups"], context="export.groups")
+    ):
+        context = f"group {index}"
+        record = _require_fields(
+            raw_record,
+            {"bindings", "bit_length", "block", "codebook"},
+            context=context,
+        )
+        block_name = _require_name(record["block"], context=f"{context} block")
+        if block_name not in block_order:
+            block_order.append(block_name)
+        codebook_id = _require_int(record["codebook"], context=f"{context} codebook")
+        if codebook_id not in codebooks:
+            raise GPUPretrainedError(f"{context} references an unknown codebook.")
+
+        group_offset = 0
+        workspace_offset = workspace_offsets[block_name]
+        bindings = []
+        for binding_index, raw_binding in enumerate(
+            _require_list(record["bindings"], context=f"{context} bindings")
+        ):
+            binding_context = f"{context} binding {binding_index}"
+            binding = _require_fields(
+                raw_binding,
+                {"kind", "module", "requires_grad", "shape"},
+                context=binding_context,
+            )
+            module_name = _require_name(
+                binding["module"], context=f"{binding_context} module"
+            )
+            if module_name != block_name and not module_name.startswith(
+                f"{block_name}."
+            ):
+                raise GPUPretrainedError(
+                    f"{binding_context} is outside its transformer block."
+                )
+            try:
+                shape = tuple(binding["shape"])
+                numel = shape[0] * shape[1]
+                bindings.append(
+                    LinearWeightBinding(
+                        block_name=block_name,
+                        module_name=module_name,
+                        tensor_name=f"{module_name}.weight",
+                        shape=shape,
+                        numel=numel,
+                        workspace_offset=workspace_offset + group_offset,
+                        group_offset=group_offset,
+                        requires_grad=binding["requires_grad"],
+                        module_kind=binding["kind"],
+                    )
+                )
+            except (IndexError, TypeError, ValueError) as error:
+                raise GPUPretrainedError(f"{binding_context} is invalid.") from error
+            group_offset += numel
+
+        prefix = f"groups.{index:06d}"
+        names = {
+            kind: f"{prefix}.{kind}"
+            for kind in (
+                "bitstream",
+                "output_positions",
+                "packed_gaps",
+                "sign_mantissa",
+            )
+        }
+        expected_tensors.update(names.values())
+        try:
+            selected = {kind: tensors[name] for kind, name in names.items()}
+        except KeyError as error:
+            raise GPUPretrainedError(f"{context} has a missing buffer.") from error
+        if any(
+            selected[name].dtype != torch.uint8 or selected[name].ndim != 1
+            for name in ("bitstream", "packed_gaps", "sign_mantissa")
+        ):
+            raise GPUPretrainedError(f"{context} has an invalid byte buffer.")
+        positions = selected["output_positions"]
+        if positions.dtype != torch.int32 or positions.ndim != 1:
+            raise GPUPretrainedError(f"{context} has invalid output positions.")
+        try:
+            encoded = GPUEncodedBF16(
+                sign_mantissa=_tensor_bytes(selected["sign_mantissa"]),
+                exponents=GPUEncodedExponents(
+                    bitstream=_tensor_bytes(selected["bitstream"]),
+                    bit_length=_require_int(
+                        record["bit_length"], context=f"{context} bit_length"
+                    ),
+                    symbol_count=group_offset,
+                    packed_gaps=_tensor_bytes(selected["packed_gaps"]),
+                    output_positions=tuple(int(item) for item in positions.tolist()),
+                ),
+            )
+            groups.append(
+                BF16WeightGroup(
+                    block_name=block_name,
+                    codebook_id=codebook_id,
+                    codebook=codebooks[codebook_id],
+                    encoded=encoded,
+                    bindings=tuple(bindings),
+                    workspace_offset=workspace_offset,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise GPUPretrainedError(f"{context} is inconsistent.") from error
+        workspace_offsets[block_name] += group_offset
+
+    if expected_tensors != set(tensors):
+        raise GPUPretrainedError("GPU export buffers do not match its manifest.")
+    if set(codebooks) != {group.codebook_id for group in groups}:
+        raise GPUPretrainedError("Every stored codebook must be used.")
+    resident_names = tuple(
+        _require_name(name, context="resident weight name")
+        for name in _require_list(
+            structure["resident_weight_names"], context="resident_weight_names"
+        )
+    )
+    if any(not name.endswith(".weight") for name in resident_names):
+        raise GPUPretrainedError("Resident weight names must end in '.weight'.")
+    try:
+        return NeuralZipModelExport(
+            groups=tuple(groups),
+            block_order=tuple(block_order),
+            resident_weight_names=resident_names,
+            resident_raw_bytes=_require_int(
+                structure["resident_raw_bytes"], context="resident_raw_bytes"
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise GPUPretrainedError("The GPU export structure is invalid.") from error
+
+
+def _empty_weights():
+    try:
+        from accelerate import init_empty_weights
+    except ImportError:
+        return nullcontext()
+    return init_empty_weights(include_buffers=False)
 
 
 def _auto_model(
@@ -631,11 +881,7 @@ def _auto_model(
         trust_remote_code=trust_remote_code,
     )
     try:
-        try:
-            from accelerate import init_empty_weights
-        except ImportError:
-            return auto_class.from_config(config, trust_remote_code=trust_remote_code)
-        with init_empty_weights(include_buffers=False):
+        with _empty_weights():
             return auto_class.from_config(config, trust_remote_code=trust_remote_code)
     except Exception as error:
         raise GPUPretrainedError(
@@ -663,11 +909,7 @@ def _diffusers_model(directory: Path, model_class_name: str) -> nn.Module:
         )
     try:
         config = model_class.load_config(directory)
-        try:
-            from accelerate import init_empty_weights
-        except ImportError:
-            return model_class.from_config(config)
-        with init_empty_weights(include_buffers=False):
+        with _empty_weights():
             return model_class.from_config(config)
     except Exception as error:
         raise GPUPretrainedError(
@@ -704,24 +946,14 @@ def _validated_compressed_weights(
     return tuple(validated)
 
 
-def _validate_and_remove_compressed_weights(
-    model: nn.Module,
-    exported: NeuralZipModelExport,
-) -> None:
-    for module, _parameter in _validated_compressed_weights(model, exported):
-        module._parameters.pop("weight")
-        module.__dict__.pop("weight", None)
-
-
 def _tensor_slot(model: nn.Module, tensor_name: str) -> tuple[nn.Module, str]:
-    segments = tensor_name.split(".")
-    module = model
-    for segment in segments[:-1]:
-        child = getattr(module, segment, None)
-        if not isinstance(child, nn.Module):
-            raise GPUPretrainedError(f"The model has no tensor path {tensor_name!r}.")
-        module = child
-    return module, segments[-1]
+    parent, _, leaf = tensor_name.rpartition(".")
+    try:
+        return model.get_submodule(parent), leaf
+    except AttributeError as error:
+        raise GPUPretrainedError(
+            f"The model has no tensor path {tensor_name!r}."
+        ) from error
 
 
 def _link_resident_alias(
@@ -771,28 +1003,25 @@ def _link_resident_alias(
 
 def _load_model_state(
     model: nn.Module,
-    resident: ResidentStateManifest,
+    resident_shards: tuple[Path, ...],
+    resident_aliases: Mapping[str, str],
+    resident_weight_map: Mapping[str, str],
     exported: NeuralZipModelExport,
     placement: _Placement,
 ) -> nn.Module:
+    model_state = model.state_dict()
     compressed_names = {binding.tensor_name for binding in exported.bindings}
-    expected_names = set(model.state_dict()) - compressed_names
-    resident_names = set(resident.tensor_names)
+    expected_names = set(model_state) - compressed_names
+    resident_names = set(resident_weight_map) | set(resident_aliases)
     if expected_names != resident_names:
         raise GPUPretrainedError(
             "The model architecture does not match the resident checkpoint state; "
             f"missing={sorted(expected_names - resident_names)}, "
             f"unexpected={sorted(resident_names - expected_names)}."
         )
-    model_state = model.state_dict()
-    for name in resident.tensor_names:
-        canonical = resident.aliases.get(name, name)
-        descriptor = resident.descriptors[canonical]
-        if tuple(model_state[name].shape) != descriptor.shape:
-            raise GPUPretrainedError(
-                f"Resident tensor {name!r} does not match the model architecture."
-            )
-    _validate_and_remove_compressed_weights(model, exported)
+    for module, _parameter in _validated_compressed_weights(model, exported):
+        module._parameters.pop("weight")
+        module.__dict__.pop("weight", None)
 
     try:
         from accelerate.utils import set_module_tensor_to_device
@@ -802,13 +1031,38 @@ def _load_model_state(
         ) from error
 
     aliases_by_canonical = {}
-    for alias, canonical in resident.aliases.items():
+    for alias, canonical in resident_aliases.items():
         aliases_by_canonical.setdefault(canonical, []).append(alias)
     loaded_names = set()
     try:
-        for _path, shard in iter_resident_shards(resident):
+        for path in resident_shards:
+            expected = {
+                name
+                for name, filename in resident_weight_map.items()
+                if filename == path.name
+            }
+            with safe_open(str(path), framework="pt", device="cpu") as archive:
+                if (
+                    archive.metadata()
+                    != {
+                        "format": _RESIDENT_FORMAT,
+                        "version": str(FORMAT_VERSION),
+                    }
+                    or set(archive.keys()) != expected
+                ):
+                    raise GPUPretrainedError(
+                        f"Resident shard {path.name!r} does not match its manifest."
+                    )
+                shard = {name: archive.get_tensor(name) for name in expected}
             for canonical, tensor in shard.items():
                 logical_names = (canonical, *aliases_by_canonical.get(canonical, ()))
+                if any(
+                    tuple(model_state[name].shape) != tuple(tensor.shape)
+                    for name in logical_names
+                ):
+                    raise GPUPretrainedError(
+                        f"Resident tensor {canonical!r} does not match the model."
+                    )
                 destinations = {
                     _storage_device_for_tensor(placement, name)
                     for name in logical_names
@@ -1024,8 +1278,6 @@ def _resolve_placement(
     device: object | None,
     device_map: str | Mapping[str, object] | None,
     max_memory: Mapping[object, object] | None,
-    offload_folder: str | os.PathLike[str] | None,
-    allow_cpu_blocks: bool,
     execution_device: object | None,
     cpu_offload: bool,
     cpu_offload_blocks: int | None,
@@ -1039,8 +1291,6 @@ def _resolve_placement(
         raise ValueError("Pass either device or device_map, not both.")
     if max_memory is not None and device_map != "auto":
         raise ValueError("max_memory requires device_map='auto'.")
-    if offload_folder is not None and device_map is None:
-        raise ValueError("offload_folder requires device_map.")
     if execution_device is not None and device_map is None:
         raise ValueError("execution_device only applies to device_map placement.")
 
@@ -1132,7 +1382,7 @@ def _resolve_placement(
             main_device = torch.device(execution_device)
         elif mapped_cuda:
             main_device = mapped_cuda[0]
-        elif not allow_cpu_blocks and torch.cuda.is_available():
+        elif torch.cuda.is_available():
             main_device = torch.device("cuda", torch.cuda.current_device())
         else:
             main_device = torch.device("cpu")
@@ -1150,26 +1400,23 @@ def _resolve_placement(
             ),
         )
 
-    if not allow_cpu_blocks:
-        non_cuda = {
-            name: str(value)
-            for name, value in placement.block_devices.items()
-            if value.type != "cuda"
-        }
-        if non_cuda:
-            raise GPUPretrainedError(
-                "The native decoder requires every compressed block on CUDA; "
-                f"non-CUDA blocks={non_cuda}. Increase GPU max_memory or provide "
-                "an explicit CUDA device_map."
-            )
+    non_cuda = {
+        name: str(value)
+        for name, value in placement.block_devices.items()
+        if value.type != "cuda"
+    }
+    if non_cuda:
+        raise GPUPretrainedError(
+            "The native decoder requires every compressed block on CUDA; "
+            f"non-CUDA blocks={non_cuda}. Increase GPU max_memory or provide "
+            "an explicit CUDA device_map."
+        )
     return placement
 
 
 def _apply_placement(
     model: nn.Module,
     placement: _Placement,
-    *,
-    offload_folder: str | os.PathLike[str] | None,
 ) -> nn.Module:
     if placement.device_map is None:
         return model.to(placement.direct_device)
@@ -1196,7 +1443,6 @@ def _apply_placement(
         model,
         device_map=placement.device_map,
         main_device=placement.main_device,
-        offload_dir=offload_folder,
         offload_buffers=False,
         force_hooks=(
             bool(placement.cpu_stored_blocks)
@@ -1213,11 +1459,8 @@ def attach_gpu_model(
     device: object | None = None,
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
-    offload_folder: str | os.PathLike[str] | None = None,
     execution_device: object | None = None,
-    adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
-    decoder: Callable[..., Any] | object | None = None,
     cpu_offload: bool = False,
     cpu_offload_blocks: int | None = None,
     pin_memory: bool = True,
@@ -1234,7 +1477,6 @@ def attach_gpu_model(
         model,
         setup,
         threads=threads,
-        adapter=adapter,
         include_embeddings=include_embeddings,
     )
     if not exported.groups:
@@ -1245,8 +1487,6 @@ def attach_gpu_model(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        offload_folder=offload_folder,
-        allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1256,7 +1496,6 @@ def attach_gpu_model(
         model,
         exported,
         block_devices=placement.block_devices,
-        decoder=decoder,
         precompressed=True,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1269,7 +1508,7 @@ def attach_gpu_model(
             module._parameters.pop("weight")
             module.__dict__.pop("weight", None)
         removed = True
-        model = _apply_placement(model, placement, offload_folder=offload_folder)
+        model = _apply_placement(model, placement)
         runtime.model = model
         runtime._install()
     except Exception:
@@ -1291,9 +1530,7 @@ def load_gpu_pretrained(
     device: object | None = None,
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
-    offload_folder: str | os.PathLike[str] | None = None,
     execution_device: object | None = None,
-    decoder: Callable[..., Any] | object | None = None,
     cpu_offload: bool = False,
     cpu_offload_blocks: int | None = None,
     pin_memory: bool = True,
@@ -1322,17 +1559,15 @@ def load_gpu_pretrained(
         cache_dir=cache_dir,
         local_files_only=local_files_only,
     )
-    manifest, resident_manifest, export_path, config_path = _load_checkpoint_metadata(
-        target
-    )
-    exported = load_gpu_export(export_path)
-    compressed_names = _require_string_list(
-        manifest["compressed_weight_names"], context="compressed_weight_names"
-    )
-    if compressed_names != tuple(
-        sorted(binding.tensor_name for binding in exported.bindings)
-    ):
-        raise GPUPretrainedError("The full checkpoint and GPU export disagree.")
+    (
+        manifest,
+        export_path,
+        config_path,
+        resident_shards,
+        resident_aliases,
+        resident_weight_map,
+    ) = _load_checkpoint_metadata(target)
+    exported = _load_gpu_export(export_path, manifest["export"])
     if model is not None and model_factory is not None:
         raise ValueError("Pass either model or model_factory, not both.")
     if model is None:
@@ -1371,13 +1606,18 @@ def load_gpu_pretrained(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        offload_folder=offload_folder,
-        allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
     )
-    model = _load_model_state(model, resident_manifest, exported, placement)
+    model = _load_model_state(
+        model,
+        resident_shards,
+        resident_aliases,
+        resident_weight_map,
+        exported,
+        placement,
+    )
     generation_record = manifest["files"]["generation_config"]
     _load_generation_config(
         model,
@@ -1385,16 +1625,11 @@ def load_gpu_pretrained(
         enabled=generation_record is not None,
         trust_remote_code=trust_remote_code,
     )
-    model = _apply_placement(
-        model,
-        placement,
-        offload_folder=offload_folder,
-    )
+    model = _apply_placement(model, placement)
     NeuralZipRuntime.attach(
         model,
         exported,
         block_devices=placement.block_devices,
-        decoder=decoder,
         precompressed=True,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1408,7 +1643,6 @@ __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
     "MANIFEST_FILENAME",
-    "RESIDENT_FILENAME",
     "GPUPretrainedError",
     "attach_gpu_model",
     "load_gpu_pretrained",

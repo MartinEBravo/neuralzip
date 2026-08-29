@@ -1,6 +1,6 @@
 """Post-setup BF16 inference from NeuralZip-compressed model weights.
 
-Adapters discover block-local ``nn.Linear`` and optional ``nn.Embedding``
+Automatic discovery finds block-local ``nn.Linear`` and optional ``nn.Embedding``
 weights whose exponent stream uses a prepared ``shared_huff0`` codebook. A
 block pre-hook decodes them into one reusable workspace per execution device
 immediately before the block runs. Persistent checkpoints may distribute
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -23,12 +23,8 @@ from torch import nn
 
 from .. import huff0
 from .._setup import materialize_setup
-from ..neuralzip_codec import NeuralZipCodec
 from . import decoder as gpu_decoder
-from .adapters import AutoModuleListAdapter, GPUModelAdapter, GPUWeightKind
 from .export import (
-    DEFAULT_BYTES_PER_THREAD,
-    DEFAULT_THREADS_PER_BLOCK,
     GPUCodebook,
     GPUEncodedBF16,
     encode_bfloat16_native,
@@ -91,14 +87,6 @@ class LinearWeightBinding:
             raise ValueError("module_kind must be 'linear' or 'embedding'.")
         object.__setattr__(self, "shape", shape)
 
-    @property
-    def raw_bytes(self) -> int:
-        return self.numel * 2
-
-    @property
-    def workspace_bytes(self) -> int:
-        return self.raw_bytes
-
 
 @dataclass(frozen=True)
 class BF16WeightGroup:
@@ -146,40 +134,14 @@ class BF16WeightGroup:
         return self.encoded.numel
 
     @property
-    def raw_bytes(self) -> int:
-        return self.numel * 2
-
-    @property
-    def exponent_bytes(self) -> int:
-        return len(self.encoded.exponents.bitstream)
-
-    @property
-    def sign_mantissa_bytes(self) -> int:
-        return len(self.encoded.sign_mantissa)
-
-    @property
     def payload_bytes(self) -> int:
-        return self.exponent_bytes + self.sign_mantissa_bytes
+        return len(self.encoded.exponents.bitstream) + len(self.encoded.sign_mantissa)
 
     @property
     def metadata_bytes(self) -> int:
         return len(self.encoded.exponents.packed_gaps) + (
             4 * len(self.encoded.exponents.output_positions)
         )
-
-    @property
-    def compressed_bytes(self) -> int:
-        """Encoded group buffers, excluding its shared LUT and descriptors."""
-
-        return self.payload_bytes + self.metadata_bytes
-
-    @property
-    def codebook_bytes(self) -> int:
-        return self.codebook.lut_nbytes
-
-    @property
-    def workspace_bytes(self) -> int:
-        return self.raw_bytes
 
 
 @dataclass(frozen=True)
@@ -239,24 +201,6 @@ class NeuralZipModelExport:
         return tuple(binding for group in self.groups for binding in group.bindings)
 
     @property
-    def compressed_weight_count(self) -> int:
-        return len(self.bindings)
-
-    @property
-    def resident_weight_count(self) -> int:
-        return len(self.resident_weight_names)
-
-    @property
-    def raw_bytes(self) -> int:
-        """Original BF16 bytes represented by compressed groups."""
-
-        return sum(group.raw_bytes for group in self.groups)
-
-    @property
-    def original_candidate_bytes(self) -> int:
-        return self.raw_bytes + self.resident_raw_bytes
-
-    @property
     def payload_bytes(self) -> int:
         return sum(group.payload_bytes for group in self.groups)
 
@@ -286,25 +230,14 @@ class NeuralZipModelExport:
 
     @property
     def workspace_numel(self) -> int:
-        totals = defaultdict(int)
-        for group in self.groups:
-            totals[group.block_name] += group.numel
-        return max(totals.values(), default=0)
+        return max(
+            (group.workspace_offset + group.numel for group in self.groups),
+            default=0,
+        )
 
     @property
     def workspace_bytes(self) -> int:
         return self.workspace_numel * 2
-
-    @property
-    def runtime_candidate_bytes(self) -> int:
-        """Compressed buffers + shared workspace + untouched candidate weights."""
-
-        return (
-            self.compressed_bytes
-            + self.launch_descriptor_bytes
-            + self.workspace_bytes
-            + self.resident_raw_bytes
-        )
 
 
 @dataclass(frozen=True)
@@ -312,7 +245,6 @@ class _LinearCandidate:
     block_name: str
     module_name: str
     tensor_name: str
-    module: nn.Module = field(repr=False, compare=False)
     parameter: nn.Parameter = field(repr=False, compare=False)
     module_kind: str = "linear"
 
@@ -326,39 +258,68 @@ class _UploadedGroup:
     packed_gaps: torch.Tensor
     output_positions: torch.Tensor
     output: torch.Tensor
-    payload_offloaded: bool = False
 
 
 def _join_name(parent: str, child: str) -> str:
-    return f"{parent}.{child}" if parent else child
+    if not parent:
+        return child
+    return f"{parent}.{child}" if child else parent
 
 
 def _gpu_candidates(
     model: nn.Module,
     *,
-    adapter: GPUModelAdapter | None,
     include_embeddings: bool,
 ) -> tuple[tuple[str, ...], tuple[_LinearCandidate, ...]]:
-    selected = (
-        AutoModuleListAdapter(include_embeddings=include_embeddings)
-        if adapter is None
-        else adapter
-    )
-    discovery = selected.discover(model)
-    candidates = tuple(
-        _LinearCandidate(
-            block_name=binding.block_name,
-            module_name=binding.module_name,
-            tensor_name=binding.tensor_name,
-            module=binding.module,
-            parameter=binding.parameter,
-            module_kind=(
-                "embedding" if binding.kind is GPUWeightKind.EMBEDDING else "linear"
-            ),
-        )
-        for binding in discovery.bindings
-    )
-    return discovery.block_order, candidates
+    if not isinstance(include_embeddings, bool):
+        raise TypeError("include_embeddings must be a boolean.")
+
+    block_candidates = []
+    for parent_name, parent in model.named_modules(remove_duplicate=False):
+        if not isinstance(parent, nn.ModuleList):
+            continue
+        for child_name, child in parent._modules.items():
+            if child is not None:
+                block_candidates.append((_join_name(parent_name, child_name), child))
+
+    candidate_names = {name for name, _module in block_candidates}
+    blocks = []
+    for name, module in block_candidates:
+        ancestor = name
+        while "." in ancestor:
+            ancestor = ancestor.rsplit(".", 1)[0]
+            if ancestor in candidate_names:
+                break
+        else:
+            blocks.append((name, module))
+    if not blocks:
+        raise ValueError("No direct ModuleList block children were found in the model.")
+
+    candidates = []
+    for block_name, block in blocks:
+        for relative_name, module in block.named_modules(remove_duplicate=False):
+            if isinstance(module, nn.Linear):
+                module_kind = "linear"
+            elif include_embeddings and isinstance(module, nn.Embedding):
+                module_kind = "embedding"
+            else:
+                continue
+            parameter = module._parameters.get("weight")
+            if not isinstance(parameter, nn.Parameter):
+                raise TypeError(
+                    f"Module {_join_name(block_name, relative_name)!r} has no weight."
+                )
+            module_name = _join_name(block_name, relative_name)
+            candidates.append(
+                _LinearCandidate(
+                    block_name=block_name,
+                    module_name=module_name,
+                    tensor_name=f"{module_name}.weight",
+                    parameter=parameter,
+                    module_kind=module_kind,
+                )
+            )
+    return tuple(name for name, _module in blocks), tuple(candidates)
 
 
 def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
@@ -366,28 +327,9 @@ def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
     return cpu.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
-def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF16:
-    return encode_bfloat16_native(
-        raw_bf16,
-        codebook_header,
-        bytes_per_thread=DEFAULT_BYTES_PER_THREAD,
-        threads_per_block=DEFAULT_THREADS_PER_BLOCK,
-    )
-
-
 def _parameter_occurrences(model: nn.Module) -> dict[int, int]:
     occurrences = defaultdict(int)
-    try:
-        named_parameters = model.named_parameters(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        named_parameters = (
-            (name, parameter)
-            for name, module in model.named_modules()
-            for parameter_name, parameter in module._parameters.items()
-            if parameter is not None
-            for name in (_join_name(name, parameter_name),)
-        )
-    for _name, parameter in named_parameters:
+    for _name, parameter in model.named_parameters(remove_duplicate=False):
         occurrences[id(parameter)] += 1
     return dict(occurrences)
 
@@ -396,14 +338,13 @@ def _assemble_gpu_export(
     model: nn.Module,
     block_order: tuple[str, ...],
     candidates: tuple[_LinearCandidate, ...],
-    codebook_payloads,
-    resolve,
+    codec,
 ) -> NeuralZipModelExport:
-    """Build one GPU export from a source-specific candidate resolver."""
+    """Build one GPU export from the materialized, target-mapped codec."""
 
     occurrences = _parameter_occurrences(model)
     payload_by_id = {
-        int(payload.codebook_id): payload for payload in tuple(codebook_payloads)
+        int(payload.codebook_id): payload for payload in codec.export_codebooks()
     }
     codebooks = {}
     grouped_candidates = defaultdict(list)
@@ -428,25 +369,38 @@ def _assemble_gpu_export(
             keep_resident(candidate)
             continue
 
-        selected = resolve(candidate)
-        if selected is None:
+        mode = codec._mode_for_tensor_stream(
+            candidate.tensor_name,
+            parameter,
+            1,
+        )
+        kind = str(mode.get("kind"))
+        if kind == "raw":
             keep_resident(candidate)
             continue
-        codebook_id, raw_loader = selected
+        if kind == "packed_huff0":
+            raise ValueError(
+                "GPU inference does not yet decode packed exponents; "
+                f"{candidate.tensor_name} uses packed_huff0. Fit or transfer "
+                "a sharing-only setup."
+            )
+        if kind != "shared_huff0":
+            raise ValueError(
+                "GPU inference requires raw or shared_huff0 exponent modes; "
+                f"{candidate.tensor_name} uses {kind!r}."
+            )
+
+        codebook_id = mode.get("codebook_id")
         if isinstance(codebook_id, bool) or not isinstance(codebook_id, int):
             raise TypeError(
-                f"Shared exponent mode for {candidate.tensor_name} has no "
-                "integer codebook_id."
+                f"Shared exponent mode for {candidate.tensor_name} has no codebook_id."
             )
-        if not callable(raw_loader):
-            raise TypeError("A GPU candidate raw-data loader must be callable.")
 
         payload = payload_by_id.get(codebook_id)
         if payload is None:
             raise ValueError(f"Missing codebook payload {codebook_id}.")
         if (
-            payload.codec != "huff0"
-            or payload.mode not in {"shared_huff0", "shared_huff0_4x"}
+            payload.mode != "shared_huff0"
             or payload.dtype != "bfloat16"
             or int(payload.stream_id) != 1
         ):
@@ -462,9 +416,7 @@ def _assemble_gpu_export(
             if codebook.max_bits != table.max_bits:
                 raise RuntimeError("Exported Huff0 maximum code length changed.")
             codebooks[codebook_id] = codebook
-        grouped_candidates[(candidate.block_name, codebook_id)].append(
-            (candidate, raw_loader)
-        )
+        grouped_candidates[(candidate.block_name, codebook_id)].append(candidate)
 
     block_index = {name: index for index, name in enumerate(block_order)}
     groups = []
@@ -473,12 +425,12 @@ def _assemble_gpu_export(
         grouped_candidates.items(),
         key=lambda item: (block_index[item[0][0]], item[0][1]),
     ):
-        members.sort(key=lambda item: item[0].module_name)
+        members.sort(key=lambda candidate: candidate.module_name)
         workspace_offset = workspace_offsets[block_name]
         group_offset = 0
         bindings = []
         raw_parts = []
-        for candidate, raw_loader in members:
+        for candidate in members:
             parameter = candidate.parameter
             bindings.append(
                 LinearWeightBinding(
@@ -493,9 +445,7 @@ def _assemble_gpu_export(
                     module_kind=candidate.module_kind,
                 )
             )
-            raw = raw_loader()
-            if not isinstance(raw, bytes):
-                raw = bytes(raw)
+            raw = _tensor_raw_bytes(parameter)
             expected_bytes = parameter.numel() * parameter.element_size()
             if len(raw) != expected_bytes:
                 raise RuntimeError(
@@ -506,7 +456,10 @@ def _assemble_gpu_export(
             group_offset += parameter.numel()
 
         payload = payload_by_id[codebook_id]
-        encoded = _native_gpu_payload(b"".join(raw_parts), payload.codebook)
+        encoded = encode_bfloat16_native(
+            b"".join(raw_parts),
+            payload.codebook,
+        )
         if encoded.exponents.symbol_count != group_offset:
             raise RuntimeError("GPU encoder returned the wrong BF16 element count.")
         groups.append(
@@ -535,7 +488,6 @@ def export_model_for_gpu(
     setup,
     *,
     threads: int = 0,
-    adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
 ) -> NeuralZipModelExport:
     """Export compatible block-local BF16 weights without mutating ``model``."""
@@ -554,180 +506,32 @@ def export_model_for_gpu(
     if not named_tensors:
         raise ValueError("No floating parameters were found.")
     codec.prepare_direct_transfer_target(named_tensors)
-    return _export_model_for_gpu_current_setup(
+    block_order, candidates = _gpu_candidates(
         model,
+        include_embeddings=include_embeddings,
+    )
+    return _assemble_gpu_export(
+        model,
+        block_order,
+        candidates,
         codec,
-        adapter=adapter,
-        include_embeddings=include_embeddings,
     )
 
 
-def _export_model_for_gpu_current_setup(
-    model: nn.Module,
-    codec: NeuralZipCodec,
+def _bytes_tensor(
+    data: bytes,
     *,
-    adapter: GPUModelAdapter | None,
-    include_embeddings: bool,
-) -> NeuralZipModelExport:
-    """Export with an independently materialized and target-mapped codec."""
-
-    block_order, candidates = _gpu_candidates(
-        model,
-        adapter=adapter,
-        include_embeddings=include_embeddings,
+    device: torch.device | None = None,
+    pin_memory: bool = False,
+) -> torch.Tensor:
+    tensor = (
+        torch.frombuffer(bytearray(data), dtype=torch.uint8).clone()
+        if data
+        else torch.empty(0, dtype=torch.uint8)
     )
-
-    def resolve(candidate: _LinearCandidate):
-        parameter = candidate.parameter
-        mode = codec._mode_for_tensor_stream(
-            candidate.tensor_name,
-            parameter,
-            1,
-        )
-        kind = str(mode.get("kind"))
-        if kind == "raw":
-            return None
-        if kind == "packed_huff0":
-            raise ValueError(
-                "GPU inference does not yet decode packed exponents; "
-                f"{candidate.tensor_name} uses packed_huff0. Fit or transfer "
-                "a sharing-only setup."
-            )
-        if kind != "shared_huff0":
-            raise ValueError(
-                f"GPU inference requires raw or shared_huff0 exponent modes; "
-                f"{candidate.tensor_name} uses {kind!r}."
-            )
-
-        codebook_id = mode.get("codebook_id")
-        if isinstance(codebook_id, bool) or not isinstance(codebook_id, int):
-            raise TypeError(
-                f"Shared exponent mode for {candidate.tensor_name} has no codebook_id."
-            )
-        return codebook_id, partial(_tensor_raw_bytes, parameter)
-
-    return _assemble_gpu_export(
-        model,
-        block_order,
-        candidates,
-        codec.export_codebooks(),
-        resolve,
-    )
-
-
-def _encoded_tensor_raw_bytes(payload, decoder: NeuralZipCodec) -> bytes:
-    tensor = decoder.decompress_tensor(payload)
-    if tuple(tensor.shape) != tuple(payload.shape) or tensor.dtype != torch.bfloat16:
-        raise RuntimeError(f"Decoded GPU weight {payload.name!r} changed schema.")
-    return _tensor_raw_bytes(tensor)
-
-
-def export_encoded_model_for_gpu(
-    model: nn.Module,
-    encoded,
-    *,
-    adapter: GPUModelAdapter | None = None,
-    include_embeddings: bool = False,
-) -> NeuralZipModelExport:
-    """Convert a NeuralZip storage result into the CUDA inference layout."""
-
-    from ..encoded_model import EncodedModel
-    from ..payloads import TensorPayload
-
-    if not isinstance(model, nn.Module):
-        raise TypeError("model must be a torch.nn.Module.")
-    if not isinstance(encoded, EncodedModel):
-        raise TypeError("encoded must be an EncodedModel.")
-    if encoded.source_kind == "mapping":
-        raise ValueError("GPU inference requires an encoded torch.nn.Module.")
-
-    block_order, candidates = _gpu_candidates(
-        model,
-        adapter=adapter,
-        include_embeddings=include_embeddings,
-    )
-    payload_by_name = dict(zip(encoded.names, encoded.payloads, strict=True))
-    decoder = NeuralZipCodec(ngram_values=())
-    decoder.load_codebooks(encoded.codebooks)
-
-    def resolve(candidate: _LinearCandidate):
-        payload = payload_by_name.get(candidate.tensor_name)
-        if payload is None:
-            raise ValueError(
-                f"Encoded model has no tensor payload for {candidate.tensor_name!r}."
-            )
-        if not isinstance(payload, TensorPayload):
-            raise TypeError(
-                f"Encoded payload for {candidate.tensor_name!r} is not a TensorPayload."
-            )
-        parameter = candidate.parameter
-        if (
-            payload.strategy != "neuralzip"
-            or payload.dtype != "bfloat16"
-            or tuple(payload.shape) != tuple(parameter.shape)
-            or int(payload.numel) != parameter.numel()
-            or int(payload.element_size) != 2
-            or int(payload.bit_reorder) != 1
-            or len(payload.groups) != 2
-            or payload.exponent_layout != "original"
-        ):
-            raise ValueError(
-                f"Encoded tensor {candidate.tensor_name!r} is incompatible with "
-                "BF16 GPU inference."
-            )
-
-        exponent_chunks = tuple(payload.groups[1].chunks)
-        modes = {str(chunk.mode) for chunk in exponent_chunks}
-        if "packed_huff0" in modes:
-            raise ValueError(
-                "GPU inference does not yet decode packed exponents; "
-                f"{candidate.tensor_name} uses packed_huff0. Encode with a "
-                "sharing-only setup."
-            )
-        unsupported = modes - {"raw", "shared_huff0"}
-        if unsupported:
-            raise ValueError(
-                f"GPU inference cannot convert exponent modes {sorted(unsupported)!r} "
-                f"for {candidate.tensor_name}."
-            )
-        codebook_ids = {
-            int(chunk.codebook_id)
-            for chunk in exponent_chunks
-            if chunk.mode == "shared_huff0"
-        }
-        if not codebook_ids:
-            return None
-        if len(codebook_ids) != 1:
-            raise ValueError(
-                f"Encoded tensor {candidate.tensor_name!r} references multiple "
-                "exponent codebooks."
-            )
-        codebook_id = codebook_ids.pop()
-        return codebook_id, partial(_encoded_tensor_raw_bytes, payload, decoder)
-
-    return _assemble_gpu_export(
-        model,
-        block_order,
-        candidates,
-        encoded.codebooks,
-        resolve,
-    )
-
-
-def _upload_bytes(data: bytes, *, device: torch.device) -> torch.Tensor:
-    if not data:
-        return torch.empty(0, dtype=torch.uint8, device=device)
-    owner = bytearray(data)
-    return torch.frombuffer(owner, dtype=torch.uint8).clone().to(device=device)
-
-
-def _host_bytes(data: bytes, *, pin_memory: bool) -> torch.Tensor:
-    if not data:
-        tensor = torch.empty(0, dtype=torch.uint8)
-    else:
-        owner = bytearray(data)
-        tensor = torch.frombuffer(owner, dtype=torch.uint8).clone()
-    return tensor.pin_memory() if pin_memory else tensor
+    if pin_memory:
+        tensor = tensor.pin_memory()
+    return tensor.to(device=device) if device is not None else tensor
 
 
 def _upload_group(
@@ -739,6 +543,9 @@ def _upload_group(
     offload_payload: bool = False,
     pin_memory: bool = True,
 ) -> _UploadedGroup:
+    payload_options = (
+        {"pin_memory": pin_memory} if offload_payload else {"device": device}
+    )
     positions = torch.tensor(
         group.encoded.exponents.output_positions,
         dtype=torch.int32,
@@ -747,29 +554,20 @@ def _upload_group(
     return _UploadedGroup(
         group=group,
         lut=lut,
-        encoded_exponents=(
-            _host_bytes(
-                group.encoded.exponents.bitstream,
-                pin_memory=pin_memory,
-            )
-            if offload_payload
-            else _upload_bytes(
-                group.encoded.exponents.bitstream,
-                device=device,
-            )
+        encoded_exponents=_bytes_tensor(
+            group.encoded.exponents.bitstream,
+            **payload_options,
         ),
-        sign_mantissa=(
-            _host_bytes(group.encoded.sign_mantissa, pin_memory=pin_memory)
-            if offload_payload
-            else _upload_bytes(group.encoded.sign_mantissa, device=device)
+        sign_mantissa=_bytes_tensor(
+            group.encoded.sign_mantissa,
+            **payload_options,
         ),
-        packed_gaps=_upload_bytes(
+        packed_gaps=_bytes_tensor(
             group.encoded.exponents.packed_gaps,
             device=device,
         ),
         output_positions=positions,
         output=workspace[group.workspace_offset : group.workspace_offset + group.numel],
-        payload_offloaded=offload_payload,
     )
 
 
@@ -896,7 +694,6 @@ class NeuralZipRuntime:
         exported: NeuralZipModelExport,
         *,
         block_devices: Mapping[str, torch.device],
-        decoder: Callable | object,
         precompressed: bool = False,
         cpu_offload: bool = False,
         cpu_offload_blocks: int | None = None,
@@ -910,25 +707,13 @@ class NeuralZipRuntime:
         }
         self.devices = tuple(dict.fromkeys(self.block_devices.values()))
         self.device = self.devices[0] if len(self.devices) == 1 else None
-        self._decoder_backend = decoder
-        self._decoder = decoder.decode if hasattr(decoder, "decode") else decoder
-        if not callable(self._decoder):
-            raise TypeError("decoder must be callable or provide a decode method.")
-        prepare_batch = getattr(decoder, "prepare_batch", None)
-        decode_batch = getattr(decoder, "decode_batch", None)
-        self._prepare_batch = prepare_batch if callable(prepare_batch) else None
-        self._decode_batch = decode_batch if callable(decode_batch) else None
-        if (self._prepare_batch is None) != (self._decode_batch is None):
-            raise TypeError(
-                "A batched decoder must provide both prepare_batch and decode_batch."
-            )
+        self._decoder = gpu_decoder.default_decoder()
         self._state_lock = threading.Lock()
         self._forward_claims = threading.local()
         self._active_block = None
-        self._cuda_stream = None
         self._cuda_streams = {}
         self._hook_handles = []
-        self._state_dict_hook_handle = None
+        self._allow_state_dict = False
         self._restored = False
         self._precompressed = bool(precompressed)
         if not isinstance(pin_memory, bool):
@@ -949,9 +734,6 @@ class NeuralZipRuntime:
             )
             for device in self.devices
         }
-        self.workspace = (
-            self.workspaces[self.device] if self.device is not None else None
-        )
         lut_by_id = {}
         for group in exported.groups:
             group_device = self.block_devices[group.block_name]
@@ -981,36 +763,11 @@ class NeuralZipRuntime:
         self._groups_by_block = {
             name: tuple(groups_by_block[name]) for name in exported.block_order
         }
-        self._prepared_batches = {}
-        if self._prepare_batch is not None:
-            for block_name, uploaded_groups in self._groups_by_block.items():
-                if block_name in self._offloaded_blocks:
-                    continue
-                thread_counts = {
-                    uploaded.group.encoded.exponents.threads_per_block
-                    for uploaded in uploaded_groups
-                }
-                if len(thread_counts) != 1:
-                    raise ValueError(
-                        "Every compressed group in one block must use the same "
-                        "CUDA thread layout."
-                    )
-                descriptors = tuple(
-                    gpu_decoder.BF16DecodeGroup(
-                        lut=uploaded.lut,
-                        encoded_exponents=uploaded.encoded_exponents,
-                        sign_mantissa=uploaded.sign_mantissa,
-                        packed_gaps=uploaded.packed_gaps,
-                        output_positions=uploaded.output_positions,
-                        output=uploaded.output,
-                        max_bits=uploaded.group.codebook.max_bits,
-                    )
-                    for uploaded in uploaded_groups
-                )
-                self._prepared_batches[block_name] = self._prepare_batch(
-                    descriptors,
-                    threads_per_block=thread_counts.pop(),
-                )
+        self._prepared_batches = {
+            block_name: self._prepare_uploaded_batch(uploaded_groups)
+            for block_name, uploaded_groups in self._groups_by_block.items()
+            if block_name not in self._offloaded_blocks
+        }
 
         tensors_by_device = defaultdict(list)
         for workspace in self.workspaces.values():
@@ -1028,10 +785,8 @@ class NeuralZipRuntime:
                 if tensor.is_cuda:
                     tensors_by_device[tensor.device].append(tensor)
         for prepared in self._prepared_batches.values():
-            values = vars(prepared).values() if hasattr(prepared, "__dict__") else ()
-            for value in values:
-                if torch.is_tensor(value) and value.is_cuda:
-                    tensors_by_device[value.device].append(value)
+            for tensor in prepared.descriptor_tensors:
+                tensors_by_device[tensor.device].append(tensor)
         self._cuda_tensors_by_device = {}
         self._attach_events = {}
         for state_device, tensors in tensors_by_device.items():
@@ -1042,14 +797,6 @@ class NeuralZipRuntime:
             event = torch.cuda.Event()
             event.record(torch.cuda.current_stream(device=state_device))
             self._attach_events[state_device] = event
-        self._cuda_tensors = tuple(
-            tensor
-            for tensors in self._cuda_tensors_by_device.values()
-            for tensor in tensors
-        )
-        self._attach_event = (
-            self._attach_events.get(self.device) if self.device is not None else None
-        )
 
     @classmethod
     def _prepare_runtime(
@@ -1059,7 +806,6 @@ class NeuralZipRuntime:
         *,
         device=None,
         block_devices: Mapping[str, object] | None = None,
-        decoder=None,
         precompressed: bool = False,
         cpu_offload: bool = False,
         cpu_offload_blocks: int | None = None,
@@ -1082,13 +828,8 @@ class NeuralZipRuntime:
             device=device,
             block_devices=block_devices,
         )
-        if decoder is None:
-            if any(value.type != "cuda" for value in resolved_block_devices.values()):
-                raise ValueError(
-                    "The default NeuralZip decoder requires CUDA block devices; "
-                    "a decoder may only be injected for testing."
-                )
-            decoder = gpu_decoder.default_decoder()
+        if any(value.type != "cuda" for value in resolved_block_devices.values()):
+            raise ValueError("The NeuralZip decoder requires CUDA block devices.")
 
         # All compressed buffers and the reusable workspace are allocated
         # before the first model parameter is removed.
@@ -1096,7 +837,6 @@ class NeuralZipRuntime:
             model,
             exported,
             block_devices=resolved_block_devices,
-            decoder=decoder,
             precompressed=precompressed,
             cpu_offload=cpu_offload,
             cpu_offload_blocks=cpu_offload_blocks,
@@ -1114,7 +854,6 @@ class NeuralZipRuntime:
         *,
         device=None,
         block_devices: Mapping[str, object] | None = None,
-        decoder=None,
         precompressed: bool = False,
         cpu_offload: bool = False,
         cpu_offload_blocks: int | None = None,
@@ -1126,7 +865,6 @@ class NeuralZipRuntime:
             exported,
             device=device,
             block_devices=block_devices,
-            decoder=decoder,
             precompressed=precompressed,
             cpu_offload=cpu_offload,
             cpu_offload_blocks=cpu_offload_blocks,
@@ -1137,21 +875,13 @@ class NeuralZipRuntime:
         return runtime
 
     def _preflight_decoder(self) -> None:
-        preflight = getattr(self._decoder_backend, "preflight", None)
-        if not callable(preflight):
-            return
         if self._prepared_batches:
-            preflight(tuple(self._prepared_batches.values()))
+            self._decoder.preflight(tuple(self._prepared_batches.values()))
         for block_name in self.export.block_order:
             if block_name not in self._offloaded_blocks:
                 continue
-            if self._prepare_batch is None:
-                raise TypeError(
-                    "Decoder preflight for CPU-offloaded payloads requires "
-                    "batched prepare/decode methods."
-                )
-            transient = self._prepare_offloaded_batch(block_name)
-            preflight((transient,))
+            transient = self._prepare_uploaded_batch(self._groups_by_block[block_name])
+            self._decoder.preflight((transient,))
 
     def _binding_module(self, binding: LinearWeightBinding) -> nn.Module:
         module = self.model.get_submodule(binding.module_name)
@@ -1179,17 +909,11 @@ class NeuralZipRuntime:
         self._uploaded_groups = ()
         self._groups_by_block = {}
         self._prepared_batches = {}
-        self._cuda_tensors = ()
         self._cuda_tensors_by_device = {}
         self._attach_events = {}
         self._cuda_streams = {}
         self.workspaces = {}
-        self.workspace = None
-        self._attach_event = None
-        self._decoder_backend = None
         self._decoder = None
-        self._prepare_batch = None
-        self._decode_batch = None
 
     def _install(self) -> None:
         original_parameters = []
@@ -1221,41 +945,25 @@ class NeuralZipRuntime:
                 module._parameters.pop("weight")
             self._install_weight_views()
 
-            try:
-                model_pre = self.model.register_forward_pre_hook(
-                    self._model_pre_hook,
-                    prepend=True,
-                )
-            except TypeError:  # pragma: no cover - older PyTorch.
-                model_pre = self.model.register_forward_pre_hook(self._model_pre_hook)
-            try:
-                model_post = self.model.register_forward_hook(
-                    self._model_post_hook,
-                    always_call=True,
-                )
-            except TypeError as error:  # pragma: no cover - older PyTorch.
-                raise RuntimeError(
-                    "NeuralZip GPU inference requires a PyTorch version whose "
-                    "forward hooks support always_call=True."
-                ) from error
-            handles.extend((model_pre, model_post))
-            state_dict_handle = self.model.register_state_dict_pre_hook(
-                self._state_dict_pre_hook
+            model_pre = self.model.register_forward_pre_hook(
+                self._model_pre_hook,
+                prepend=True,
             )
-            handles.append(state_dict_handle)
-            self._state_dict_hook_handle = state_dict_handle
+            model_post = self.model.register_forward_hook(
+                self._model_post_hook,
+                always_call=True,
+            )
+            handles.extend((model_pre, model_post))
+            handles.append(
+                self.model.register_state_dict_pre_hook(self._state_dict_pre_hook)
+            )
 
             for block_name in self.export.block_order:
                 block = self.model.get_submodule(block_name)
-                try:
-                    pre = block.register_forward_pre_hook(
-                        partial(self._block_pre_hook, block_name),
-                        prepend=True,
-                    )
-                except TypeError:  # pragma: no cover - older PyTorch.
-                    pre = block.register_forward_pre_hook(
-                        partial(self._block_pre_hook, block_name)
-                    )
+                pre = block.register_forward_pre_hook(
+                    partial(self._block_pre_hook, block_name),
+                    prepend=True,
+                )
                 handles.append(pre)
             self._hook_handles = handles
             setattr(self.model, _RUNTIME_ATTRIBUTE, self)
@@ -1266,7 +974,6 @@ class NeuralZipRuntime:
             for module, parameter in original_parameters:
                 if "weight" not in module._parameters:
                     module.register_parameter("weight", parameter)
-            self._state_dict_hook_handle = None
             raise
 
     def _check_stream(self, device: torch.device) -> None:
@@ -1282,12 +989,8 @@ class NeuralZipRuntime:
             for tensor in self._cuda_tensors_by_device.get(device, ()):
                 tensor.record_stream(stream)
             self._cuda_streams[device] = current
-            if self.device == device:
-                self._cuda_stream = current
         elif current != previous:
-            raise RuntimeError(
-                "NeuralZip supports one CUDA stream per runtime device."
-            )
+            raise RuntimeError("NeuralZip supports one CUDA stream per runtime device.")
 
     def _decode_descriptor(
         self,
@@ -1295,7 +998,7 @@ class NeuralZipRuntime:
     ) -> gpu_decoder.BF16DecodeGroup:
         encoded_exponents = uploaded.encoded_exponents
         sign_mantissa = uploaded.sign_mantissa
-        if uploaded.payload_offloaded:
+        if not encoded_exponents.is_cuda:
             target_device = uploaded.output.device
             encoded_exponents = encoded_exponents.to(
                 device=target_device,
@@ -1315,55 +1018,17 @@ class NeuralZipRuntime:
             max_bits=uploaded.group.codebook.max_bits,
         )
 
-    def _decode_uploaded_group(self, uploaded: _UploadedGroup) -> torch.Tensor:
-        group = uploaded.group
-        descriptor = self._decode_descriptor(uploaded)
-        self._decoder(
-            descriptor.lut,
-            descriptor.encoded_exponents,
-            descriptor.sign_mantissa,
-            descriptor.packed_gaps,
-            descriptor.output_positions,
-            descriptor.output,
-            max_bits=group.codebook.max_bits,
-            threads_per_block=group.encoded.exponents.threads_per_block,
-        )
-        return descriptor.output
-
-    def _prepare_offloaded_batch(self, block_name: str):
-        uploaded_groups = self._groups_by_block[block_name]
-        thread_counts = {
-            uploaded.group.encoded.exponents.threads_per_block
-            for uploaded in uploaded_groups
-        }
-        if len(thread_counts) != 1:
-            raise RuntimeError(
-                "Every offloaded group in one block must use the same "
-                "CUDA thread layout."
-            )
+    def _prepare_uploaded_batch(self, uploaded_groups: tuple[_UploadedGroup, ...]):
         descriptors = tuple(
             self._decode_descriptor(uploaded) for uploaded in uploaded_groups
         )
-        return self._prepare_batch(
-            descriptors,
-            threads_per_block=thread_counts.pop(),
-        )
+        return self._decoder.prepare_batch(descriptors)
 
     def _decode_block(self, block_name: str) -> None:
         prepared = self._prepared_batches.get(block_name)
-        if prepared is not None:
-            self._decode_batch(prepared)
-            return
-        uploaded_groups = self._groups_by_block[block_name]
-        if self._prepare_batch is not None and block_name in self._offloaded_blocks:
-            transient = self._prepare_offloaded_batch(block_name)
-            self._decode_batch(transient)
-            return
-        for uploaded in uploaded_groups:
-            self._decode_uploaded_group(uploaded)
-
-    def _inject_block(self, block_name: str) -> None:
-        self._decode_block(block_name)
+        if prepared is None:
+            prepared = self._prepare_uploaded_batch(self._groups_by_block[block_name])
+        self._decoder.decode_batch(prepared)
 
     def _model_pre_hook(self, _module, _args) -> None:
         claims = getattr(self._forward_claims, "stack", None)
@@ -1403,6 +1068,8 @@ class NeuralZipRuntime:
                 self._active_block = None
 
     def _state_dict_pre_hook(self, _module, _prefix, _keep_vars) -> None:
+        if self._allow_state_dict:
+            return
         raise RuntimeError(
             "Call model.neuralzip_runtime.restore() before state_dict() or "
             "save_pretrained(); attached compressed weights are not registered "
@@ -1422,25 +1089,11 @@ class NeuralZipRuntime:
                     "Cannot re-save an attached model while Accelerate placement or "
                     "offload hooks are active; copy the original NeuralZip checkpoint."
                 )
-            handle = self._state_dict_hook_handle
-            if handle is None:
-                raise RuntimeError("The NeuralZip serialization guard is missing.")
+            self._allow_state_dict = True
             try:
-                index = self._hook_handles.index(handle)
-            except ValueError as error:  # pragma: no cover - internal invariant.
-                raise RuntimeError(
-                    "The NeuralZip serialization guard is invalid."
-                ) from error
-            handle.remove()
-            try:
-                state = self.model.state_dict()
+                return self.model.state_dict()
             finally:
-                replacement = self.model.register_state_dict_pre_hook(
-                    self._state_dict_pre_hook
-                )
-                self._hook_handles[index] = replacement
-                self._state_dict_hook_handle = replacement
-            return state
+                self._allow_state_dict = False
 
     def _block_pre_hook(self, block_name, _module, _args) -> None:
         if self._active_block != "<forward>":
@@ -1448,7 +1101,7 @@ class NeuralZipRuntime:
                 "Invoke the attached root model rather than a compressed block "
                 "directly."
             )
-        self._inject_block(block_name)
+        self._decode_block(block_name)
 
     def _materialize_tensors(self) -> dict[str, torch.Tensor]:
         tensors = {}
@@ -1532,7 +1185,6 @@ class NeuralZipRuntime:
             for handle in self._hook_handles:
                 handle.remove()
             self._hook_handles = []
-            self._state_dict_hook_handle = None
             with self._state_lock:
                 self._restored = True
                 self._active_block = None
@@ -1552,6 +1204,5 @@ __all__ = [
     "LinearWeightBinding",
     "NeuralZipModelExport",
     "NeuralZipRuntime",
-    "export_encoded_model_for_gpu",
     "export_model_for_gpu",
 ]

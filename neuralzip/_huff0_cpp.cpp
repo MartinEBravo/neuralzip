@@ -42,15 +42,6 @@ public:
         other.view_ = {};
     }
 
-    ReadOnlyBuffer& operator=(ReadOnlyBuffer&& other) noexcept {
-        if (this != &other) {
-            release();
-            view_ = other.view_;
-            other.view_ = {};
-        }
-        return *this;
-    }
-
     void acquire(nb::handle source) {
         release();
         if (PyObject_GetBuffer(source.ptr(), &view_, PyBUF_CONTIG_RO) < 0) {
@@ -64,10 +55,6 @@ public:
 
     Py_ssize_t size() const {
         return view_.len;
-    }
-
-    bool readonly() const {
-        return view_.readonly != 0;
     }
 
 private:
@@ -115,10 +102,6 @@ struct NGramBlockResult {
     std::vector<std::uint8_t> payload;
     std::vector<std::uint8_t> escapes;
     std::vector<std::uint8_t> tail;
-    Py_ssize_t symbol_count = 0;
-    Py_ssize_t hits = 0;
-    Py_ssize_t misses = 0;
-    bool encoded = false;
 };
 
 enum class MixedMode {
@@ -139,10 +122,8 @@ struct MixedStreamSpec {
     MixedMode mode = MixedMode::Raw;
     Huff0Codebook* codebook = nullptr;
     nb::object codebook_owner;
-    std::vector<std::uint64_t> vocab;
     NGramVocabLookup vocab_lookup;
     int ngram_n = 1;
-    bool frame_4x = false;
     std::size_t chunk_size = 0;
 };
 
@@ -153,18 +134,13 @@ struct MixedBlockResult {
     std::vector<std::uint8_t> escapes;
     std::vector<std::uint8_t> tail;
     Py_ssize_t symbol_count = 0;
-    Py_ssize_t token_count = 0;
-    Py_ssize_t hits = 0;
-    Py_ssize_t misses = 0;
-    int ngram_n = 1;
     std::string error;
 };
 
 enum class MixedStreamDecodeMode {
     Raw,
-    Zero,
-    LocalHuff0,
     SharedHuff0,
+    PackedHuff0,
 };
 
 struct MixedStreamDecodeChunk {
@@ -172,18 +148,20 @@ struct MixedStreamDecodeChunk {
     ReadOnlyBuffer payload;
     nb::object decodebook_owner;
     Huff0Decodebook* decodebook = nullptr;
+    std::vector<std::uint64_t> vocab;
+    ReadOnlyBuffer escapes;
+    ReadOnlyBuffer tail;
+    int ngram_n = 1;
     std::size_t tensor_index = 0;
     int stream = 0;
     std::size_t output_offset = 0;
     std::size_t symbol_count = 0;
-    bool frame_4x = false;
     std::string error;
 };
 
 struct MixedStreamDecodeTensor {
     int element_size = 0;
     bool bit_reorder = false;
-    std::size_t numel = 0;
     std::vector<std::vector<std::uint8_t>> lanes;
     nb::object output;
     std::uint8_t* output_data = nullptr;
@@ -264,16 +242,6 @@ nb::bytes bytes_from_vector(const std::vector<std::uint8_t>& data) {
     return nb::bytes(data.data(), data.size());
 }
 
-nb::tuple ngram_result_to_tuple(const NGramBlockResult& result) {
-    return nb::make_tuple(
-        bytes_from_vector(result.payload),
-        result.symbol_count,
-        bytes_from_vector(result.escapes),
-        bytes_from_vector(result.tail),
-        result.hits,
-        result.misses);
-}
-
 inline std::uint8_t byte_group_stream_byte(
     const std::uint8_t* raw,
     int element_size,
@@ -309,70 +277,7 @@ void extract_byte_group_stream_block(
     }
 }
 
-void restore_mixed_stream_tensor_range(
-    const MixedStreamDecodeTensor& request,
-    std::size_t start,
-    std::size_t length) {
-    const int element_size = request.element_size;
-    const std::size_t end = start + length;
-    std::uint8_t* output = request.output_data;
-    if (element_size == 2) {
-        const auto& first = request.lanes[0];
-        const auto& second = request.lanes[1];
-        if (!request.bit_reorder) {
-            for (std::size_t index = start; index < end; ++index) {
-                std::size_t target = index * 2U;
-                output[target] = first[index];
-                output[target + 1U] = second[index];
-            }
-            return;
-        }
-        for (std::size_t index = start; index < end; ++index) {
-            const std::uint8_t penultimate = first[index];
-            const std::uint8_t last = second[index];
-            std::size_t target = index * 2U;
-            output[target] = static_cast<std::uint8_t>(
-                (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
-            output[target + 1U] = static_cast<std::uint8_t>(
-                (last >> 1U) | (penultimate & 0x80U));
-        }
-        return;
-    }
-
-    const auto& first = request.lanes[0];
-    const auto& second = request.lanes[1];
-    const auto& penultimate_lane = request.lanes[2];
-    const auto& last_lane = request.lanes[3];
-    if (!request.bit_reorder) {
-        for (std::size_t index = start; index < end; ++index) {
-            std::size_t target = index * 4U;
-            output[target] = first[index];
-            output[target + 1U] = second[index];
-            output[target + 2U] = penultimate_lane[index];
-            output[target + 3U] = last_lane[index];
-        }
-        return;
-    }
-    for (std::size_t index = start; index < end; ++index) {
-        const std::uint8_t penultimate = penultimate_lane[index];
-        const std::uint8_t last = last_lane[index];
-        std::size_t target = index * 4U;
-        output[target] = first[index];
-        output[target + 1U] = second[index];
-        output[target + 2U] = static_cast<std::uint8_t>(
-            (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
-        output[target + 3U] = static_cast<std::uint8_t>(
-            (last >> 1U) | (penultimate & 0x80U));
-    }
-}
-
-inline std::uint8_t mixed_stream_decoded_lane_byte(
-    const std::uint8_t* lane,
-    std::size_t index) {
-    return lane == nullptr ? 0U : lane[index];
-}
-
-void restore_mixed_stream_aligned_chunk(
+void restore_mixed_stream_chunk(
     const MixedStreamDecodeTensor& request,
     const std::array<const std::uint8_t*, 4>& lanes,
     std::size_t output_offset,
@@ -389,15 +294,14 @@ void restore_mixed_stream_aligned_chunk(
         if (!request.bit_reorder) {
             for (std::size_t index = 0; index < length; ++index) {
                 const std::size_t target = index * 2U;
-                output[target] = mixed_stream_decoded_lane_byte(first, index);
-                output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
+                output[target] = first[index];
+                output[target + 1U] = second[index];
             }
             return;
         }
         for (std::size_t index = 0; index < length; ++index) {
-            const std::uint8_t penultimate = mixed_stream_decoded_lane_byte(
-                first, index);
-            const std::uint8_t last = mixed_stream_decoded_lane_byte(second, index);
+            const std::uint8_t penultimate = first[index];
+            const std::uint8_t last = second[index];
             const std::size_t target = index * 2U;
             output[target] = static_cast<std::uint8_t>(
                 (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
@@ -414,21 +318,19 @@ void restore_mixed_stream_aligned_chunk(
     if (!request.bit_reorder) {
         for (std::size_t index = 0; index < length; ++index) {
             const std::size_t target = index * 4U;
-            output[target] = mixed_stream_decoded_lane_byte(first, index);
-            output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
-            output[target + 2U] = mixed_stream_decoded_lane_byte(
-                penultimate_lane, index);
-            output[target + 3U] = mixed_stream_decoded_lane_byte(last_lane, index);
+            output[target] = first[index];
+            output[target + 1U] = second[index];
+            output[target + 2U] = penultimate_lane[index];
+            output[target + 3U] = last_lane[index];
         }
         return;
     }
     for (std::size_t index = 0; index < length; ++index) {
-        const std::uint8_t penultimate = mixed_stream_decoded_lane_byte(
-            penultimate_lane, index);
-        const std::uint8_t last = mixed_stream_decoded_lane_byte(last_lane, index);
+        const std::uint8_t penultimate = penultimate_lane[index];
+        const std::uint8_t last = last_lane[index];
         const std::size_t target = index * 4U;
-        output[target] = mixed_stream_decoded_lane_byte(first, index);
-        output[target + 1U] = mixed_stream_decoded_lane_byte(second, index);
+        output[target] = first[index];
+        output[target + 1U] = second[index];
         output[target + 2U] = static_cast<std::uint8_t>(
             (penultimate & 0x7FU) | ((last & 0x01U) << 7U));
         output[target + 3U] = static_cast<std::uint8_t>(
@@ -436,101 +338,36 @@ void restore_mixed_stream_aligned_chunk(
     }
 }
 
-void release_vector(std::vector<std::uint8_t>& data) {
-    std::vector<std::uint8_t>().swap(data);
-}
-
-std::vector<std::uint8_t> decompress_local_block(
-    const std::uint8_t* payload,
-    Py_ssize_t payload_len,
-    Py_ssize_t symbol_count) {
-    if (symbol_count < 0) {
-        throw std::runtime_error("symbol_count must be non-negative.");
-    }
-    std::vector<std::uint8_t> output(static_cast<std::size_t>(symbol_count));
-    if (symbol_count == 0) {
-        return output;
-    }
-    std::vector<HUF_DTable> dtable(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
-    dtable[0] = static_cast<HUF_DTable>(HUF_TABLELOG_MAX * 0x01000001U);
-    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
-    size_t decoded = HUF_decompress4X_hufOnly_wksp(
-        dtable.data(),
-        output.data(),
-        output.size(),
-        payload,
-        static_cast<std::size_t>(payload_len),
-        workspace.data(),
-        workspace.size() * sizeof(unsigned),
-        kFlags);
-    check_huf(decoded);
-    if (decoded != static_cast<std::size_t>(symbol_count)) {
-        throw std::runtime_error("Huff0 decoded size mismatch.");
-    }
-    return output;
-}
-
-void decompress_local_block_into(
-    const std::uint8_t* payload,
-    Py_ssize_t payload_len,
-    std::uint8_t* output,
-    std::size_t symbol_count) {
-    if (symbol_count == 0) {
+void restore_mixed_stream_tensor_range(
+    const MixedStreamDecodeTensor& request,
+    std::size_t start,
+    std::size_t length) {
+    if (length == 0) {
         return;
     }
-    std::vector<HUF_DTable> dtable(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
-    dtable[0] = static_cast<HUF_DTable>(HUF_TABLELOG_MAX * 0x01000001U);
-    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
-    size_t decoded = HUF_decompress4X_hufOnly_wksp(
-        dtable.data(),
-        output,
-        symbol_count,
-        payload,
-        static_cast<std::size_t>(payload_len),
-        workspace.data(),
-        workspace.size() * sizeof(unsigned),
-        kFlags);
-    check_huf(decoded);
-    if (decoded != symbol_count) {
-        throw std::runtime_error("Huff0 decoded size mismatch.");
+    std::array<const std::uint8_t*, 4> lanes{};
+    for (int stream = 0; stream < request.element_size; ++stream) {
+        lanes[static_cast<std::size_t>(stream)] = request.lanes[
+            static_cast<std::size_t>(stream)].data() + start;
     }
+    restore_mixed_stream_chunk(request, lanes, start, length);
 }
 
-std::array<unsigned, 256> count_symbols(const std::uint8_t* data, Py_ssize_t data_len, unsigned prior_count) {
-    std::array<unsigned, 256> counts{};
-    if (prior_count > 0) {
-        counts.fill(prior_count);
-    }
-    for (Py_ssize_t index = 0; index < data_len; ++index) {
-        if (counts[data[index]] == std::numeric_limits<unsigned>::max()) {
-            throw std::runtime_error("Huff0 symbol count overflow.");
-        }
-        counts[data[index]] += 1;
-    }
-    return counts;
-}
-
-unsigned nonzero_symbol_count(const std::array<unsigned, 256>& counts) {
-    unsigned nonzero = 0;
-    for (unsigned count : counts) {
-        nonzero += count > 0 ? 1U : 0U;
-    }
-    return nonzero;
-}
-
-unsigned max_observed_symbol(const std::array<unsigned, 256>& counts) {
-    for (int symbol = 255; symbol >= 0; --symbol) {
-        if (counts[static_cast<std::size_t>(symbol)] > 0) {
-            return static_cast<unsigned>(symbol);
-        }
-    }
-    return 0;
+void release_vector(std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t>().swap(data);
 }
 
 std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
     const std::array<unsigned, 256>& counts,
     unsigned max_bits) {
-    const unsigned symbol_count = nonzero_symbol_count(counts);
+    unsigned symbol_count = 0;
+    unsigned max_symbol_value = 0;
+    for (unsigned symbol = 0; symbol < counts.size(); ++symbol) {
+        if (counts[symbol] > 0) {
+            ++symbol_count;
+            max_symbol_value = symbol;
+        }
+    }
     if (symbol_count < 2) {
         throw std::runtime_error("Huff0 requires at least two symbols.");
     }
@@ -538,8 +375,6 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
         throw std::runtime_error(
             "Huff0 max_bits cannot represent every observed symbol.");
     }
-    const unsigned max_symbol_value = max_observed_symbol(counts);
-
     auto codebook = std::make_unique<Huff0Codebook>();
     codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
     codebook->covers_all_symbols = symbol_count == counts.size();
@@ -566,19 +401,6 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
     check_huf(header_size);
     codebook->serialized.resize(header_size);
     return codebook;
-}
-
-std::unique_ptr<Huff0Codebook> make_codebook(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    unsigned prior_count,
-    unsigned max_bits) {
-    if (data_len <= 0) {
-        throw std::runtime_error("Cannot build a Huff0 codebook from empty data.");
-    }
-
-    return make_codebook_from_counts(
-        count_symbols(data, data_len, prior_count), max_bits);
 }
 
 std::unique_ptr<Huff0Codebook> make_codebook_from_header(
@@ -619,30 +441,14 @@ ExportedCodeTable export_code_table_from_header(
     const std::uint8_t* header,
     Py_ssize_t header_len,
     unsigned max_bits) {
-    if (header_len <= 0) {
-        throw std::runtime_error("Huff0 codebook header is empty.");
-    }
+    auto codebook = make_codebook_from_header(header, header_len);
     if (max_bits == 0 || max_bits > HUF_TABLELOG_ABSOLUTEMAX) {
         throw std::runtime_error(
             "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
     }
 
-    std::vector<HUF_CElt> ctable(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
-    unsigned max_symbol_value = kMaxSymbolValue;
-    unsigned has_zero_weights = 0;
-    const size_t read_size = HUF_readCTable(
-        ctable.data(),
-        &max_symbol_value,
-        header,
-        static_cast<std::size_t>(header_len),
-        &has_zero_weights);
-    check_huf(read_size);
-    if (read_size != static_cast<std::size_t>(header_len)) {
-        throw std::runtime_error(
-            "Huff0 did not consume the full codebook header.");
-    }
-
-    const HUF_CTableHeader table_header = HUF_readCTableHeader(ctable.data());
+    const HUF_CTableHeader table_header = HUF_readCTableHeader(
+        codebook->ctable.data());
     if (table_header.tableLog > max_bits) {
         throw std::runtime_error(
             "Huff0 codebook exceeds the requested max_bits limit.");
@@ -650,23 +456,18 @@ ExportedCodeTable export_code_table_from_header(
 
     constexpr unsigned ctable_word_bits = sizeof(HUF_CElt) * 8U;
     ExportedCodeTable output;
+    output.max_bits = table_header.tableLog;
     for (unsigned symbol = 0; symbol <= kMaxSymbolValue; ++symbol) {
-        const unsigned length = HUF_getNbBitsFromCTable(ctable.data(), symbol);
-        if (length > max_bits || length > HUF_TABLELOG_ABSOLUTEMAX) {
-            throw std::runtime_error(
-                "Huff0 symbol code exceeds the supported bit limit.");
-        }
+        const unsigned length = HUF_getNbBitsFromCTable(
+            codebook->ctable.data(), symbol);
         output.code_lengths[symbol] = static_cast<std::uint8_t>(length);
-        output.max_bits = std::max(output.max_bits, length);
         if (length == 0) {
             continue;
         }
-        const HUF_CElt entry = ctable[static_cast<std::size_t>(symbol) + 1U];
-        const HUF_CElt value = entry >> (ctable_word_bits - length);
-        if (value >= (static_cast<HUF_CElt>(1U) << length)) {
-            throw std::runtime_error("Invalid Huff0 code value.");
-        }
-        output.code_values[symbol] = static_cast<std::uint16_t>(value);
+        const HUF_CElt entry = codebook->ctable[
+            static_cast<std::size_t>(symbol) + 1U];
+        output.code_values[symbol] = static_cast<std::uint16_t>(
+            entry >> (ctable_word_bits - length));
     }
     return output;
 }
@@ -712,35 +513,15 @@ std::size_t checked_ceil_div(
 
 std::vector<std::uint8_t> pack_gpu_gaps(
     const std::vector<std::uint8_t>& gaps) {
-    const std::size_t packed_bits = checked_size_product(
-        gaps.size(), kGPUGapBits, "Packed GPU gap size overflowed.");
-    const std::size_t packed_bytes = checked_ceil_div(packed_bits, 8U);
-    std::vector<std::uint8_t> output;
-    output.reserve(packed_bytes);
-
-    std::uint32_t accumulator = 0;
-    unsigned pending = 0;
-    for (const std::uint8_t gap : gaps) {
+    std::vector<std::uint8_t> output(
+        gaps.size() / 2U + (gaps.size() % 2U), 0);
+    for (std::size_t index = 0; index < gaps.size(); ++index) {
+        const std::uint8_t gap = gaps[index];
         if (gap >= kGPUGapLimit) {
             throw std::runtime_error("GPU restart gap does not fit in 4 bits.");
         }
-        accumulator = (accumulator << kGPUGapBits) | gap;
-        pending += kGPUGapBits;
-        while (pending >= 8U) {
-            pending -= 8U;
-            output.push_back(static_cast<std::uint8_t>(
-                (accumulator >> pending) & 0xFFU));
-            accumulator = pending == 0
-                ? 0U
-                : accumulator & ((1U << pending) - 1U);
-        }
-    }
-    if (pending != 0) {
-        output.push_back(static_cast<std::uint8_t>(
-            (accumulator << (8U - pending)) & 0xFFU));
-    }
-    if (output.size() != packed_bytes) {
-        throw std::runtime_error("Packed GPU gap size mismatch.");
+        const unsigned shift = (index & 1U) == 0 ? kGPUGapBits : 0U;
+        output[index / 2U] |= static_cast<std::uint8_t>(gap << shift);
     }
     return output;
 }
@@ -784,11 +565,6 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
                 + " at index " + std::to_string(index)
                 + " has no codebook entry.");
         }
-        if (
-            result.bit_length
-            > std::numeric_limits<std::uint64_t>::max() - length) {
-            throw std::overflow_error("GPU exponent bit length overflowed.");
-        }
         result.bit_length += length;
         result.sign_mantissa[index] = static_cast<std::uint8_t>(
             (high & 0x80U) | (low & 0x7FU));
@@ -808,15 +584,8 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
         static_cast<std::size_t>(bytes_per_thread),
         static_cast<std::size_t>(threads_per_block),
         "GPU block byte size overflowed.");
-    if (block_bytes > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error(
-            "GPU block byte size exceeds the uint32 layout limit.");
-    }
     const std::size_t block_count = checked_ceil_div(
         encoded_bytes, block_bytes);
-    if (block_count > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("GPU block count exceeds uint32.");
-    }
     const std::size_t gap_count = checked_size_product(
         block_count,
         static_cast<std::size_t>(threads_per_block),
@@ -920,8 +689,7 @@ std::vector<std::uint8_t> encode_huff0_block(
     const std::uint8_t* data,
     Py_ssize_t data_len,
     const Huff0Codebook& codebook,
-    std::size_t max_output_bytes,
-    bool four_streams = false) {
+    std::size_t max_output_bytes) {
     if (data_len <= 0 || static_cast<std::size_t>(data_len) > kMaxBlockSize) {
         return {};
     }
@@ -938,13 +706,9 @@ std::vector<std::uint8_t> encode_huff0_block(
         return {};
     }
     std::vector<std::uint8_t> output(capacity);
-    const size_t size = four_streams
-        ? HUF_compress4X_usingCTable(
-              output.data(), output.size(), data,
-              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags)
-        : HUF_compress1X_usingCTable(
-              output.data(), output.size(), data,
-              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags);
+    const size_t size = HUF_compress4X_usingCTable(
+        output.data(), output.size(), data,
+        static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags);
     if (HUF_isError(size)) {
         if (max_output_bytes != std::numeric_limits<std::size_t>::max()) {
             return {};
@@ -1007,47 +771,12 @@ const HUF_DTable* select_decode_dtable(
         : decodebook.dtable_x1.data();
 }
 
-std::vector<std::uint8_t> decode_huff0_block(
-    const std::uint8_t* payload,
-    Py_ssize_t payload_len,
-    Py_ssize_t symbol_count,
-    const Huff0Decodebook& decodebook,
-    bool four_streams = false) {
-    if (payload_len < 0) {
-        throw std::runtime_error("payload_len must be non-negative.");
-    }
-    if (symbol_count < 0) {
-        throw std::runtime_error("symbol_count must be non-negative.");
-    }
-    std::vector<std::uint8_t> output(static_cast<std::size_t>(symbol_count));
-    if (symbol_count == 0) {
-        return output;
-    }
-    const HUF_DTable* dtable = select_decode_dtable(
-        decodebook,
-        static_cast<std::size_t>(symbol_count),
-        static_cast<std::size_t>(payload_len));
-    const size_t decoded = four_streams
-        ? HUF_decompress4X_usingDTable(
-              output.data(), output.size(), payload,
-              static_cast<std::size_t>(payload_len), dtable, kFlags)
-        : HUF_decompress1X_usingDTable(
-              output.data(), output.size(), payload,
-              static_cast<std::size_t>(payload_len), dtable, kFlags);
-    check_huf(decoded);
-    if (decoded != static_cast<std::size_t>(symbol_count)) {
-        throw std::runtime_error("Huff0 decoded size mismatch.");
-    }
-    return output;
-}
-
 void decode_huff0_block_into(
     const std::uint8_t* payload,
     Py_ssize_t payload_len,
     std::uint8_t* output,
     std::size_t symbol_count,
-    const Huff0Decodebook& decodebook,
-    bool four_streams = false) {
+    const Huff0Decodebook& decodebook) {
     if (payload_len < 0) {
         throw std::runtime_error("payload_len must be non-negative.");
     }
@@ -1056,69 +785,63 @@ void decode_huff0_block_into(
     }
     const HUF_DTable* dtable = select_decode_dtable(
         decodebook, symbol_count, static_cast<std::size_t>(payload_len));
-    const size_t decoded = four_streams
-        ? HUF_decompress4X_usingDTable(
-              output, symbol_count, payload,
-              static_cast<std::size_t>(payload_len), dtable, kFlags)
-        : HUF_decompress1X_usingDTable(
-              output, symbol_count, payload,
-              static_cast<std::size_t>(payload_len), dtable, kFlags);
+    const size_t decoded = HUF_decompress4X_usingDTable(
+        output, symbol_count, payload,
+        static_cast<std::size_t>(payload_len), dtable, kFlags);
     check_huf(decoded);
     if (decoded != symbol_count) {
         throw std::runtime_error("Huff0 decoded size mismatch.");
     }
 }
 
-std::vector<std::uint8_t> restore_ngram_tokens(
+void restore_ngram_tokens_into(
     const std::vector<std::uint8_t>& tokens,
     int n,
     const std::vector<std::uint64_t>& vocab,
     const std::uint8_t* escapes,
     Py_ssize_t escape_len,
     const std::uint8_t* tail,
-    Py_ssize_t tail_len) {
-    if (n < 2 || n > 8) {
-        throw std::runtime_error("n must be in [2, 8].");
-    }
-    if (tail_len < 0 || tail_len >= n) {
-        throw std::runtime_error("Packed n-gram tail length is invalid.");
+    Py_ssize_t tail_len,
+    std::uint8_t* output,
+    std::size_t output_size) {
+    const std::size_t expected_size =
+        tokens.size() * static_cast<std::size_t>(n)
+        + static_cast<std::size_t>(tail_len);
+    if (expected_size != output_size) {
+        throw std::runtime_error("Packed n-gram decoded size mismatch.");
     }
 
     std::size_t escape_offset = 0;
-    std::vector<std::uint8_t> output;
-    output.reserve(tokens.size() * static_cast<std::size_t>(n)
-                   + static_cast<std::size_t>(tail_len));
+    std::size_t output_offset = 0;
     for (std::uint8_t token : tokens) {
         if (token == 255) {
             std::size_t end = escape_offset + static_cast<std::size_t>(n);
             if (end > static_cast<std::size_t>(escape_len)) {
                 throw std::runtime_error("Packed n-gram escape stream is truncated.");
             }
-            output.insert(output.end(), escapes + escape_offset, escapes + end);
+            std::memcpy(output + output_offset, escapes + escape_offset, n);
             escape_offset = end;
-            continue;
+        } else {
+            if (static_cast<std::size_t>(token) >= vocab.size()) {
+                throw std::runtime_error(
+                    "Packed n-gram token is outside the vocabulary.");
+            }
+            std::uint64_t symbol = vocab[token];
+            for (int offset = 0; offset < n; ++offset) {
+                output[output_offset + static_cast<std::size_t>(offset)] =
+                    static_cast<std::uint8_t>(
+                        (symbol >> (8 * offset)) & 0xFFU);
+            }
         }
-        if (static_cast<std::size_t>(token) >= vocab.size()) {
-            throw std::runtime_error("Packed n-gram token is outside the vocabulary.");
-        }
-        std::uint64_t symbol = vocab[token];
-        for (int offset = 0; offset < n; ++offset) {
-            output.push_back(static_cast<std::uint8_t>((symbol >> (8 * offset)) & 0xFFU));
-        }
+        output_offset += static_cast<std::size_t>(n);
     }
     if (escape_offset != static_cast<std::size_t>(escape_len)) {
         throw std::runtime_error("Packed n-gram escape stream contains unused bytes.");
     }
-    output.insert(output.end(), tail, tail + tail_len);
-    return output;
-}
-
-std::uint64_t pack_ngram_symbol(const std::uint8_t* data, int n) {
-    std::uint64_t symbol = 0;
-    for (int index = 0; index < n; ++index) {
-        symbol |= static_cast<std::uint64_t>(data[index]) << (8 * index);
+    if (tail_len > 0) {
+        std::memcpy(
+            output + output_offset, tail, static_cast<std::size_t>(tail_len));
     }
-    return symbol;
 }
 
 std::vector<std::uint64_t> vocab_from_bytes(
@@ -1152,6 +875,47 @@ std::vector<std::uint64_t> vocab_from_bytes(
         throw std::runtime_error("ngram vocab must be sorted.");
     }
     return vocab;
+}
+
+void decode_mixed_stream_chunk_into(
+    const MixedStreamDecodeChunk& chunk,
+    std::uint8_t* destination) {
+    if (chunk.mode == MixedStreamDecodeMode::Raw) {
+        if (chunk.symbol_count > 0) {
+            std::memcpy(
+                destination, chunk.payload.data(), chunk.symbol_count);
+        }
+        return;
+    }
+    if (chunk.mode == MixedStreamDecodeMode::SharedHuff0) {
+        decode_huff0_block_into(
+            chunk.payload.data(),
+            chunk.payload.size(),
+            destination,
+            chunk.symbol_count,
+            *chunk.decodebook);
+        return;
+    }
+
+    const std::size_t token_count = chunk.symbol_count
+        / static_cast<std::size_t>(chunk.ngram_n);
+    std::vector<std::uint8_t> tokens(token_count);
+    decode_huff0_block_into(
+        chunk.payload.data(),
+        chunk.payload.size(),
+        tokens.data(),
+        token_count,
+        *chunk.decodebook);
+    restore_ngram_tokens_into(
+        tokens,
+        chunk.ngram_n,
+        chunk.vocab,
+        chunk.escapes.data(),
+        chunk.escapes.size(),
+        chunk.tail.data(),
+        chunk.tail.size(),
+        destination,
+        chunk.symbol_count);
 }
 
 std::size_t hash_ngram_symbol(std::uint64_t value) {
@@ -1221,64 +985,7 @@ struct NGramTokenization {
     std::vector<std::uint8_t> tokens;
     std::vector<std::uint8_t> escapes;
     std::vector<std::uint8_t> tail;
-    Py_ssize_t hits = 0;
-    Py_ssize_t misses = 0;
 };
-
-NGramTokenization tokenize_ngrams(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    int n,
-    const std::vector<std::uint64_t>& vocab,
-    const NGramVocabLookup* lookup = nullptr) {
-    if (n < 1 || n > 8) {
-        throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 8].");
-    }
-    if (vocab.empty()) {
-        throw std::runtime_error("ngram vocab is empty.");
-    }
-    if (data_len < 0) {
-        throw std::runtime_error("data length must be non-negative.");
-    }
-
-    Py_ssize_t complete_len = (data_len / n) * n;
-    Py_ssize_t token_count = complete_len / n;
-    NGramTokenization result;
-    result.tokens.reserve(static_cast<std::size_t>(token_count));
-    result.escapes.reserve(static_cast<std::size_t>(complete_len));
-    if (data_len > complete_len) {
-        result.tail.assign(data + complete_len, data + data_len);
-    }
-
-    for (Py_ssize_t token_index = 0; token_index < token_count; ++token_index) {
-        const std::uint8_t* pointer = data + token_index * n;
-        std::uint64_t symbol = pack_ngram_symbol(pointer, n);
-        std::uint8_t token = 255;
-        if (lookup != nullptr) {
-            token = find_ngram_token(*lookup, symbol);
-        } else {
-            auto iterator = std::lower_bound(vocab.begin(), vocab.end(), symbol);
-            if (iterator != vocab.end() && *iterator == symbol) {
-                std::size_t position = static_cast<std::size_t>(
-                    iterator - vocab.begin());
-                if (position >= 255) {
-                    throw std::runtime_error("ngram vocab id overflow.");
-                }
-                token = static_cast<std::uint8_t>(position);
-            }
-        }
-        if (token != 255) {
-            result.tokens.push_back(token);
-            result.hits += 1;
-            continue;
-        }
-
-        result.tokens.push_back(255);
-        result.escapes.insert(result.escapes.end(), pointer, pointer + n);
-        result.misses += 1;
-    }
-    return result;
-}
 
 NGramTokenization tokenize_byte_group_stream_ngrams(
     const std::uint8_t* raw,
@@ -1290,7 +997,8 @@ NGramTokenization tokenize_byte_group_stream_ngrams(
     int n,
     const NGramVocabLookup& lookup) {
     if (n < 1 || n > 8) {
-        throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 8].");
+        throw std::runtime_error(
+            "Huff0 n-gram tokenization supports n in [1, 8].");
     }
     if (lookup.tokens.empty()) {
         throw std::runtime_error("ngram vocabulary lookup is empty.");
@@ -1324,14 +1032,12 @@ NGramTokenization tokenize_byte_group_stream_ngrams(
         std::uint8_t token = find_ngram_token(lookup, symbol);
         if (token != 255) {
             result.tokens.push_back(token);
-            result.hits += 1;
             continue;
         }
 
         result.tokens.push_back(255);
         result.escapes.insert(
             result.escapes.end(), values.begin(), values.begin() + n);
-        result.misses += 1;
     }
 
     for (Py_ssize_t offset = complete_len; offset < data_len; ++offset) {
@@ -1349,8 +1055,7 @@ NGramBlockResult encode_tokenized_ngram_block(
     NGramTokenization tokens,
     const Huff0Codebook& codebook,
     Py_ssize_t min_saving_bytes,
-    std::size_t max_output_bytes,
-    bool four_streams = false) {
+    std::size_t max_output_bytes) {
     NGramBlockResult result;
     if (tokens.tokens.empty()) {
         return result;
@@ -1360,8 +1065,7 @@ NGramBlockResult encode_tokenized_ngram_block(
         tokens.tokens.data(),
         static_cast<Py_ssize_t>(tokens.tokens.size()),
         codebook,
-        max_output_bytes,
-        four_streams);
+        max_output_bytes);
     if (result.payload.empty()
         || result.payload.size() + static_cast<std::size_t>(min_saving_bytes)
             >= tokens.tokens.size()) {
@@ -1369,31 +1073,9 @@ NGramBlockResult encode_tokenized_ngram_block(
         return result;
     }
 
-    result.symbol_count = static_cast<Py_ssize_t>(tokens.tokens.size());
     result.escapes = std::move(tokens.escapes);
     result.tail = std::move(tokens.tail);
-    result.hits = tokens.hits;
-    result.misses = tokens.misses;
-    result.encoded = true;
     return result;
-}
-
-NGramBlockResult encode_ngram_block(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    int n,
-    const std::vector<std::uint64_t>& vocab,
-    const Huff0Codebook& codebook,
-    Py_ssize_t min_saving_bytes,
-    std::size_t max_output_bytes,
-    bool four_streams = false,
-    const NGramVocabLookup* lookup = nullptr) {
-    return encode_tokenized_ngram_block(
-        tokenize_ngrams(data, data_len, n, vocab, lookup),
-        codebook,
-        min_saving_bytes,
-        max_output_bytes,
-        four_streams);
 }
 
 const char* mixed_mode_name(MixedMode mode) {
@@ -1408,87 +1090,77 @@ const char* mixed_mode_name(MixedMode mode) {
     return "raw";
 }
 
+// Keep this in sync with payloads.py::PACKED_CHUNK_METADATA_BYTES.
+constexpr Py_ssize_t kPackedMetadataBytes = 41;
+
+std::size_t packed_output_budget(
+    std::size_t raw_size,
+    double compression_threshold) {
+    return static_cast<std::size_t>(std::max<Py_ssize_t>(
+        0,
+        static_cast<Py_ssize_t>(
+            static_cast<double>(raw_size) * compression_threshold)
+            - kPackedMetadataBytes));
+}
+
+bool finish_packed_block(
+    MixedBlockResult& result,
+    NGramBlockResult& packed,
+    std::size_t raw_size,
+    double compression_threshold) {
+    const double compressed_bytes = static_cast<double>(kPackedMetadataBytes)
+        + static_cast<double>(packed.payload.size())
+        + static_cast<double>(packed.escapes.size())
+        + static_cast<double>(packed.tail.size());
+    if (packed.payload.empty()
+        || compressed_bytes
+            >= static_cast<double>(raw_size) * compression_threshold) {
+        return false;
+    }
+    result.mode = MixedMode::PackedHuff0;
+    result.payload = std::move(packed.payload);
+    result.escapes = std::move(packed.escapes);
+    result.tail = std::move(packed.tail);
+    return true;
+}
+
 void process_mixed_block(
     MixedBlockResult& result,
     const MixedStreamSpec& spec,
     Py_ssize_t min_saving_bytes,
     double compression_threshold) {
     result.mode = MixedMode::Raw;
-    result.ngram_n = 1;
     if (spec.mode == MixedMode::Raw) {
         return;
     }
     if (spec.codebook == nullptr) {
-        throw std::runtime_error("Mixed shared/packed mode is missing a codebook.");
+        throw std::runtime_error("Mixed shared mode is missing a codebook.");
     }
-    if (spec.mode == MixedMode::SharedHuff0) {
-        constexpr Py_ssize_t kSharedMetadataBytes = 1 + 8 + 8 + 8;
-        Py_ssize_t budget = static_cast<Py_ssize_t>(
-            static_cast<double>(result.raw.size()) * compression_threshold)
-            - kSharedMetadataBytes;
-        if (budget > 0) {
-            std::vector<std::uint8_t> payload = encode_huff0_block(
-                result.raw.data(),
-                static_cast<Py_ssize_t>(result.raw.size()),
-                *spec.codebook,
-                static_cast<std::size_t>(budget),
-                spec.frame_4x);
-            if (
-                !payload.empty()
-                && payload.size() + static_cast<std::size_t>(min_saving_bytes)
-                    < result.raw.size()
-                && static_cast<double>(kSharedMetadataBytes)
-                        + static_cast<double>(payload.size())
-                    < static_cast<double>(result.raw.size())
-                        * compression_threshold) {
-                result.mode = MixedMode::SharedHuff0;
-                result.payload = std::move(payload);
-                release_vector(result.raw);
-                return;
-            }
+    constexpr Py_ssize_t kSharedMetadataBytes = 1 + 8 + 8 + 8;
+    Py_ssize_t budget = static_cast<Py_ssize_t>(
+        static_cast<double>(result.raw.size()) * compression_threshold)
+        - kSharedMetadataBytes;
+    if (budget > 0) {
+        std::vector<std::uint8_t> payload = encode_huff0_block(
+            result.raw.data(),
+            static_cast<Py_ssize_t>(result.raw.size()),
+            *spec.codebook,
+            static_cast<std::size_t>(budget));
+        if (
+            !payload.empty()
+            && payload.size() + static_cast<std::size_t>(min_saving_bytes)
+                < result.raw.size()
+            && static_cast<double>(kSharedMetadataBytes)
+                    + static_cast<double>(payload.size())
+                < static_cast<double>(result.raw.size())
+                    * compression_threshold) {
+            result.mode = MixedMode::SharedHuff0;
+            result.payload = std::move(payload);
+            release_vector(result.raw);
         }
-        // A shared post-setup mode must never build a target-local tree.
-        // result already owns the exact raw stream and starts in Raw mode.
-        return;
     }
-
-    constexpr Py_ssize_t kPackedMetadataBytes = 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8;
-    Py_ssize_t budget = std::max<Py_ssize_t>(
-        0,
-        static_cast<Py_ssize_t>(
-            static_cast<double>(result.raw.size()) * compression_threshold)
-            - kPackedMetadataBytes);
-    NGramBlockResult packed = encode_ngram_block(
-        result.raw.data(),
-        static_cast<Py_ssize_t>(result.raw.size()),
-        spec.ngram_n,
-        spec.vocab,
-        *spec.codebook,
-        min_saving_bytes,
-        static_cast<std::size_t>(budget),
-        spec.frame_4x,
-        &spec.vocab_lookup);
-    double compressed_bytes = static_cast<double>(kPackedMetadataBytes)
-        + static_cast<double>(packed.payload.size())
-        + static_cast<double>(packed.escapes.size())
-        + static_cast<double>(packed.tail.size());
-    if (
-        packed.encoded
-        && compressed_bytes
-            < static_cast<double>(result.raw.size()) * compression_threshold) {
-        result.mode = MixedMode::PackedHuff0;
-        result.payload = std::move(packed.payload);
-        result.escapes = std::move(packed.escapes);
-        result.tail = std::move(packed.tail);
-        result.token_count = packed.symbol_count;
-        result.hits = packed.hits;
-        result.misses = packed.misses;
-        result.ngram_n = spec.ngram_n;
-        release_vector(result.raw);
-        return;
-    }
-    // A packed post-setup mode must never build a target-local tree.
-    // result already owns the exact raw stream and starts in Raw mode.
+    // A shared post-setup mode must never build a target-local tree. Raw is
+    // already the exact fallback when the precomputed table is not worthwhile.
 }
 
 void process_mixed_packed_block(
@@ -1503,17 +1175,10 @@ void process_mixed_packed_block(
     Py_ssize_t min_saving_bytes,
     double compression_threshold) {
     result.mode = MixedMode::Raw;
-    result.ngram_n = 1;
     if (spec.codebook == nullptr) {
         throw std::runtime_error("Mixed packed mode is missing a codebook.");
     }
 
-    constexpr Py_ssize_t kPackedMetadataBytes = 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8;
-    Py_ssize_t budget = std::max<Py_ssize_t>(
-        0,
-        static_cast<Py_ssize_t>(
-            static_cast<double>(length) * compression_threshold)
-            - kPackedMetadataBytes);
     NGramBlockResult packed = encode_tokenized_ngram_block(
         tokenize_byte_group_stream_ngrams(
             raw,
@@ -1526,24 +1191,12 @@ void process_mixed_packed_block(
             spec.vocab_lookup),
         *spec.codebook,
         min_saving_bytes,
-        static_cast<std::size_t>(budget),
-        spec.frame_4x);
-    double compressed_bytes = static_cast<double>(kPackedMetadataBytes)
-        + static_cast<double>(packed.payload.size())
-        + static_cast<double>(packed.escapes.size())
-        + static_cast<double>(packed.tail.size());
-    if (
-        packed.encoded
-        && compressed_bytes
-            < static_cast<double>(length) * compression_threshold) {
-        result.mode = MixedMode::PackedHuff0;
-        result.payload = std::move(packed.payload);
-        result.escapes = std::move(packed.escapes);
-        result.tail = std::move(packed.tail);
-        result.token_count = packed.symbol_count;
-        result.hits = packed.hits;
-        result.misses = packed.misses;
-        result.ngram_n = spec.ngram_n;
+        packed_output_budget(length, compression_threshold));
+    if (finish_packed_block(
+            result,
+            packed,
+            length,
+            compression_threshold)) {
         return;
     }
 
@@ -1659,10 +1312,10 @@ std::vector<MixedStreamSpec> parse_mixed_stream_specs(
         static_cast<std::size_t>(element_size));
     for (int stream = 0; stream < element_size; ++stream) {
         nb::tuple item(nb::handle(mode_sequence[stream].ptr()));
-        if (item.size() != 5) {
+        if (item.size() != 4) {
             throw nb::type_error(
                 "Each stream mode must contain kind, codebook, vocabulary, "
-                "ngram_n, and frame_4x.");
+                "and ngram_n.");
         }
 
         std::string kind = nb::cast<std::string>(
@@ -1670,11 +1323,9 @@ std::vector<MixedStreamSpec> parse_mixed_stream_specs(
         nb::handle codebook_source(item[1].ptr());
         nb::handle vocab_source(item[2].ptr());
         const int ngram_n = nb::cast<int>(nb::handle(item[3].ptr()));
-        const bool frame_4x = truthy(nb::handle(item[4].ptr()));
 
         MixedStreamSpec& spec = specs[static_cast<std::size_t>(stream)];
         spec.ngram_n = ngram_n;
-        spec.frame_4x = frame_4x;
         if (kind == "raw") {
             spec.mode = MixedMode::Raw;
             spec.ngram_n = 1;
@@ -1692,17 +1343,17 @@ std::vector<MixedStreamSpec> parse_mixed_stream_specs(
             spec.codebook_owner = nb::borrow<nb::object>(codebook_source);
             spec.codebook = codebook_from_capsule(codebook_source);
             ReadOnlyBuffer vocab(vocab_source);
-            spec.vocab = with_value_errors([&]() {
+            std::vector<std::uint64_t> values = with_value_errors([&]() {
                 return vocab_from_bytes(
                     vocab.data(),
                     vocab.size(),
                     ngram_n);
             });
-            if (spec.vocab.empty()) {
+            if (values.empty()) {
                 throw nb::value_error(
                     "packed_huff0 vocabulary is empty.");
             }
-            spec.vocab_lookup = build_ngram_vocab_lookup(spec.vocab);
+            spec.vocab_lookup = build_ngram_vocab_lookup(values);
         } else {
             throw nb::value_error("Unsupported mixed Huff0 stream mode.");
         }
@@ -1742,19 +1393,12 @@ nb::list mixed_groups_to_python(
             const auto& body = result.mode == MixedMode::Raw
                 ? result.raw
                 : result.payload;
-            nb::object token_count = result.mode == MixedMode::PackedHuff0
-                ? nb::cast(result.token_count)
-                : nb::none();
             chunks.append(nb::make_tuple(
                 mixed_mode_name(result.mode),
                 bytes_from_vector(body),
                 result.symbol_count,
-                std::move(token_count),
                 bytes_from_vector(result.escapes),
-                bytes_from_vector(result.tail),
-                result.ngram_n,
-                result.hits,
-                result.misses));
+                bytes_from_vector(result.tail)));
         }
         groups.append(std::move(chunks));
     }
@@ -1844,25 +1488,6 @@ std::array<unsigned, 256> parse_symbol_counts(
     return output;
 }
 
-std::size_t max_block_size() {
-    return kMaxBlockSize;
-}
-
-nb::tuple build_codebook(
-    nb::handle data_source,
-    Py_ssize_t prior_count,
-    Py_ssize_t max_bits) {
-    validate_codebook_options(prior_count, max_bits);
-    ReadOnlyBuffer data(data_source);
-    return with_value_errors([&]() {
-        return codebook_to_python(make_codebook(
-            data.data(),
-            data.size(),
-            static_cast<unsigned>(prior_count),
-            static_cast<unsigned>(max_bits)));
-    });
-}
-
 nb::tuple build_codebook_from_counts(
     nb::handle count_source,
     Py_ssize_t prior_count,
@@ -1939,41 +1564,15 @@ nb::tuple encode_gpu_bfloat16(
         throw nb::value_error(
             "threads_per_block must be 512 for this ABI.");
     }
-    if (static_cast<std::uint64_t>(bytes_per_thread)
-            > std::numeric_limits<std::uint32_t>::max()
-        || static_cast<std::uint64_t>(threads_per_block)
-            > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error(
-            "GPU layout dimensions must fit in uint32.");
-    }
-
     ReadOnlyBuffer raw(raw_source);
     ReadOnlyBuffer header(header_source);
-    if ((raw.size() & 1) != 0) {
-        throw nb::value_error(
-            "A BF16 byte sequence must have an even length.");
-    }
-
-    const std::uint8_t* raw_data = raw.data();
-    const std::uint8_t* header_data = header.data();
-    std::vector<std::uint8_t> raw_snapshot;
-    std::vector<std::uint8_t> header_snapshot;
-    if (!raw.readonly() && raw.size() > 0) {
-        raw_snapshot.assign(raw.data(), raw.data() + raw.size());
-        raw_data = raw_snapshot.data();
-    }
-    if (!header.readonly() && header.size() > 0) {
-        header_snapshot.assign(
-            header.data(), header.data() + header.size());
-        header_data = header_snapshot.data();
-    }
 
     GPUBFloat16Encoding encoded = with_value_errors([&]() {
         nb::gil_scoped_release release;
         return encode_gpu_bfloat16_layout(
-            raw_data,
+            raw.data(),
             static_cast<std::size_t>(raw.size()),
-            header_data,
+            header.data(),
             header.size(),
             static_cast<std::uint32_t>(bytes_per_thread),
             static_cast<std::uint32_t>(threads_per_block));
@@ -1990,138 +1589,6 @@ nb::tuple encode_gpu_bfloat16(
         nb::tuple(positions),
         encoded.bit_length,
         encoded.max_bits);
-}
-
-nb::object encode_with_codebook(
-    nb::handle data_source,
-    nb::capsule codebook_handle,
-    Py_ssize_t min_saving_bytes,
-    Py_ssize_t max_output_bytes,
-    bool four_streams) {
-    if (min_saving_bytes < 0) {
-        throw nb::value_error(
-            "min_saving_bytes must be non-negative.");
-    }
-    ReadOnlyBuffer data(data_source);
-    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
-    std::vector<std::uint8_t> encoded = with_value_errors([&]() {
-        const std::size_t max_bytes = max_output_bytes < 0
-            ? std::numeric_limits<std::size_t>::max()
-            : static_cast<std::size_t>(max_output_bytes);
-        return encode_huff0_block(
-            data.data(),
-            data.size(),
-            *codebook,
-            max_bytes,
-            four_streams);
-    });
-    if (encoded.empty()
-        || encoded.size() + static_cast<std::size_t>(min_saving_bytes)
-            >= data.size()) {
-        return nb::none();
-    }
-    return nb::make_tuple(
-        bytes_from_vector(encoded),
-        static_cast<Py_ssize_t>(data.size()));
-}
-
-nb::object encode_ngram_with_codebook(
-    nb::handle data_source,
-    nb::capsule codebook_handle,
-    nb::handle vocab_source,
-    Py_ssize_t n,
-    Py_ssize_t min_saving_bytes,
-    Py_ssize_t max_output_bytes,
-    bool four_streams) {
-    if (n < 1 || n > 8) {
-        throw nb::value_error("n must be in [1, 8].");
-    }
-    if (min_saving_bytes < 0) {
-        throw nb::value_error(
-            "min_saving_bytes must be non-negative.");
-    }
-    ReadOnlyBuffer data(data_source);
-    ReadOnlyBuffer vocab_bytes(vocab_source);
-    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
-    NGramBlockResult encoded = with_value_errors([&]() {
-        std::vector<std::uint64_t> vocab = vocab_from_bytes(
-            vocab_bytes.data(),
-            vocab_bytes.size(),
-            static_cast<int>(n));
-        NGramVocabLookup vocab_lookup = build_ngram_vocab_lookup(vocab);
-        const std::size_t max_bytes = max_output_bytes < 0
-            ? std::numeric_limits<std::size_t>::max()
-            : static_cast<std::size_t>(max_output_bytes);
-        return encode_ngram_block(
-            data.data(),
-            data.size(),
-            static_cast<int>(n),
-            vocab,
-            *codebook,
-            min_saving_bytes,
-            max_bytes,
-            four_streams,
-            &vocab_lookup);
-    });
-    if (!encoded.encoded) {
-        return nb::none();
-    }
-    return ngram_result_to_tuple(encoded);
-}
-
-nb::bytes decompress_with_decodebook(
-    nb::handle payload_source,
-    nb::capsule decodebook_handle,
-    Py_ssize_t symbol_count,
-    bool four_streams) {
-    ReadOnlyBuffer payload(payload_source);
-    Huff0Decodebook* decodebook =
-        decodebook_from_capsule(decodebook_handle);
-    return with_value_errors([&]() {
-        return bytes_from_vector(decode_huff0_block(
-            payload.data(),
-            payload.size(),
-            symbol_count,
-            *decodebook,
-            four_streams));
-    });
-}
-
-nb::bytes decompress_ngram_with_decodebook(
-    nb::handle payload_source,
-    nb::capsule decodebook_handle,
-    Py_ssize_t symbol_count,
-    nb::handle vocab_source,
-    Py_ssize_t n,
-    nb::handle escape_source,
-    nb::handle tail_source,
-    bool four_streams) {
-    ReadOnlyBuffer payload(payload_source);
-    ReadOnlyBuffer vocab_bytes(vocab_source);
-    ReadOnlyBuffer escapes(escape_source);
-    ReadOnlyBuffer tail(tail_source);
-    Huff0Decodebook* decodebook =
-        decodebook_from_capsule(decodebook_handle);
-    return with_value_errors([&]() {
-        std::vector<std::uint8_t> tokens = decode_huff0_block(
-            payload.data(),
-            payload.size(),
-            symbol_count,
-            *decodebook,
-            four_streams);
-        std::vector<std::uint64_t> vocab = vocab_from_bytes(
-            vocab_bytes.data(),
-            vocab_bytes.size(),
-            static_cast<int>(n));
-        return bytes_from_vector(restore_ngram_tokens(
-            tokens,
-            static_cast<int>(n),
-            vocab,
-            escapes.data(),
-            escapes.size(),
-            tail.data(),
-            tail.size()));
-    });
 }
 
 nb::list compress_mixed_streams_many(
@@ -2342,7 +1809,6 @@ nb::list decompress_mixed_streams_many(
         MixedStreamDecodeTensor& request = requests[tensor_index];
         request.element_size = element_size;
         request.bit_reorder = bit_reorder;
-        request.numel = numel;
         nb::bytearray output(
             static_cast<const void*>(nullptr), raw_bytes);
         request.output_data =
@@ -2367,10 +1833,11 @@ nb::list decompress_mixed_streams_many(
                  ++chunk_index) {
                 nb::tuple chunk_source(
                     nb::handle(chunk_sequence[chunk_index].ptr()));
-                if (chunk_source.size() != 5) {
+                if (chunk_source.size() != 8) {
                     throw nb::type_error(
                         "Each chunk must contain mode, payload, "
-                        "symbol_count, decodebook, and frame_4x.");
+                        "symbol_count, decodebook, vocabulary, ngram_n, "
+                        "escapes, and tail.");
                 }
                 const std::string kind = nb::cast<std::string>(
                     nb::handle(chunk_source[0].ptr()));
@@ -2379,8 +1846,11 @@ nb::list decompress_mixed_streams_many(
                     nb::cast<Py_ssize_t>(
                         nb::handle(chunk_source[2].ptr()));
                 nb::handle decodebook_source(chunk_source[3].ptr());
-                const bool frame_4x = truthy(
-                    nb::handle(chunk_source[4].ptr()));
+                nb::handle vocab_source(chunk_source[4].ptr());
+                const int ngram_n = nb::cast<int>(
+                    nb::handle(chunk_source[5].ptr()));
+                nb::handle escape_source(chunk_source[6].ptr());
+                nb::handle tail_source(chunk_source[7].ptr());
 
                 if (requested_symbols < 0) {
                     throw nb::value_error(
@@ -2399,7 +1869,6 @@ nb::list decompress_mixed_streams_many(
                 chunk.stream = stream;
                 chunk.output_offset = output_offset;
                 chunk.symbol_count = symbol_count;
-                chunk.frame_4x = frame_4x;
                 chunk.payload.acquire(payload_source);
 
                 if (kind == "raw") {
@@ -2411,31 +1880,6 @@ nb::list decompress_mixed_streams_many(
                     if (chunk.payload.size() != requested_symbols) {
                         throw nb::value_error(
                             "raw chunk payload size must equal symbol_count.");
-                    }
-                } else if (kind == "zero") {
-                    chunk.mode = MixedStreamDecodeMode::Zero;
-                    if (!decodebook_source.is_none()) {
-                        throw nb::value_error(
-                            "zero chunks cannot reference a decodebook.");
-                    }
-                    if (chunk.payload.size() != 0) {
-                        throw nb::value_error(
-                            "zero chunk payload must be empty.");
-                    }
-                } else if (kind == "local_huff0") {
-                    chunk.mode = MixedStreamDecodeMode::LocalHuff0;
-                    if (!decodebook_source.is_none()) {
-                        throw nb::value_error(
-                            "local_huff0 chunks cannot reference a decodebook.");
-                    }
-                    if (symbol_count == 0 || chunk.payload.size() <= 0) {
-                        throw nb::value_error(
-                            "local_huff0 chunks must contain symbols "
-                            "and payload.");
-                    }
-                    if (symbol_count > kMaxBlockSize) {
-                        throw nb::value_error(
-                            "local_huff0 chunk exceeds the Huff0 block limit.");
                     }
                 } else if (kind == "shared_huff0") {
                     chunk.mode = MixedStreamDecodeMode::SharedHuff0;
@@ -2459,9 +1903,41 @@ nb::list decompress_mixed_streams_many(
                     chunk.decodebook =
                         decodebook_from_capsule(decodebook_source);
                 } else if (kind == "packed_huff0") {
-                    throw nb::value_error(
-                        "decompress_mixed_streams_many does not support "
-                        "packed_huff0.");
+                    if (decodebook_source.is_none()) {
+                        throw nb::value_error(
+                            "packed_huff0 chunks require a decodebook handle.");
+                    }
+                    if (ngram_n < 2 || ngram_n > 8) {
+                        throw nb::value_error(
+                            "packed_huff0 requires ngram_n in [2, 8].");
+                    }
+                    ReadOnlyBuffer vocab_bytes(vocab_source);
+                    chunk.vocab = with_value_errors([&]() {
+                        return vocab_from_bytes(
+                            vocab_bytes.data(), vocab_bytes.size(), ngram_n);
+                    });
+                    chunk.escapes.acquire(escape_source);
+                    chunk.tail.acquire(tail_source);
+                    if (chunk.tail.size() != requested_symbols % ngram_n) {
+                        throw nb::value_error(
+                            "Packed Huff0 symbol count and tail are inconsistent.");
+                    }
+                    const std::size_t token_count = symbol_count
+                        / static_cast<std::size_t>(ngram_n);
+                    if (token_count > kMaxBlockSize) {
+                        throw nb::value_error(
+                            "packed_huff0 chunk exceeds the Huff0 block limit.");
+                    }
+                    if (token_count > 0 && chunk.payload.size() <= 0) {
+                        throw nb::value_error(
+                            "packed_huff0 chunks with tokens require a payload.");
+                    }
+                    chunk.mode = MixedStreamDecodeMode::PackedHuff0;
+                    chunk.ngram_n = ngram_n;
+                    chunk.decodebook_owner =
+                        nb::borrow<nb::object>(decodebook_source);
+                    chunk.decodebook =
+                        decodebook_from_capsule(decodebook_source);
                 } else {
                     throw nb::value_error(
                         "Unsupported mixed-stream decode chunk mode.");
@@ -2582,74 +2058,49 @@ nb::list decompress_mixed_streams_many(
                             const std::size_t width =
                                 static_cast<std::size_t>(
                                     request.element_size);
-                            std::size_t huff_lane_count = 0;
+                            std::size_t compressed_lane_count = 0;
                             for (std::size_t stream = 0;
                                  stream < width;
                                  ++stream) {
                                 const MixedStreamDecodeMode mode =
                                     chunks[job.chunk_indices[stream]].mode;
-                                if (mode
-                                        == MixedStreamDecodeMode::LocalHuff0
-                                    || mode
-                                        == MixedStreamDecodeMode::SharedHuff0) {
-                                    ++huff_lane_count;
+                                if (mode != MixedStreamDecodeMode::Raw) {
+                                    ++compressed_lane_count;
                                 }
                             }
-                            if (huff_lane_count > 0
+                            if (compressed_lane_count > 0
                                 && job.symbol_count
                                     > std::numeric_limits<std::size_t>::max()
-                                        / huff_lane_count) {
+                                        / compressed_lane_count) {
                                 throw std::length_error(
-                                    "Aligned Huff0 scratch size overflowed.");
+                                    "Aligned decode scratch size overflowed.");
                             }
 
                             thread_local std::vector<std::uint8_t> scratch;
                             scratch.resize(
-                                huff_lane_count * job.symbol_count);
+                                compressed_lane_count * job.symbol_count);
                             std::array<const std::uint8_t*, 4> lane_data{};
                             std::size_t scratch_offset = 0;
                             for (std::size_t stream = 0;
                                  stream < width;
                                  ++stream) {
-                                MixedStreamDecodeChunk& chunk = chunks[
+                                const MixedStreamDecodeChunk& chunk = chunks[
                                     job.chunk_indices[stream]];
-                                const auto* payload = chunk.payload.data();
-                                switch (chunk.mode) {
-                                case MixedStreamDecodeMode::Raw:
-                                    lane_data[stream] = payload;
-                                    break;
-                                case MixedStreamDecodeMode::Zero:
-                                    lane_data[stream] = nullptr;
-                                    break;
-                                case MixedStreamDecodeMode::LocalHuff0: {
-                                    std::uint8_t* destination =
+                                if (chunk.mode == MixedStreamDecodeMode::Raw) {
+                                    lane_data[stream] = chunk.payload.data();
+                                    continue;
+                                }
+                                std::uint8_t* destination = nullptr;
+                                if (chunk.symbol_count > 0) {
+                                    destination =
                                         scratch.data() + scratch_offset;
-                                    decompress_local_block_into(
-                                        payload,
-                                        chunk.payload.size(),
-                                        destination,
-                                        chunk.symbol_count);
-                                    lane_data[stream] = destination;
-                                    scratch_offset += chunk.symbol_count;
-                                    break;
                                 }
-                                case MixedStreamDecodeMode::SharedHuff0: {
-                                    std::uint8_t* destination =
-                                        scratch.data() + scratch_offset;
-                                    decode_huff0_block_into(
-                                        payload,
-                                        chunk.payload.size(),
-                                        destination,
-                                        chunk.symbol_count,
-                                        *chunk.decodebook,
-                                        chunk.frame_4x);
-                                    lane_data[stream] = destination;
-                                    scratch_offset += chunk.symbol_count;
-                                    break;
-                                }
-                                }
+                                decode_mixed_stream_chunk_into(
+                                    chunk, destination);
+                                lane_data[stream] = destination;
+                                scratch_offset += chunk.symbol_count;
                             }
-                            restore_mixed_stream_aligned_chunk(
+                            restore_mixed_stream_chunk(
                                 request,
                                 lane_data,
                                 job.output_offset,
@@ -2675,41 +2126,7 @@ nb::list decompress_mixed_streams_many(
                             + chunk.output_offset;
                     }
                     try {
-                        const auto* payload = chunk.payload.data();
-                        switch (chunk.mode) {
-                        case MixedStreamDecodeMode::Raw:
-                            if (chunk.symbol_count > 0) {
-                                std::memcpy(
-                                    destination,
-                                    payload,
-                                    chunk.symbol_count);
-                            }
-                            break;
-                        case MixedStreamDecodeMode::Zero:
-                            if (chunk.symbol_count > 0) {
-                                std::memset(
-                                    destination,
-                                    0,
-                                    chunk.symbol_count);
-                            }
-                            break;
-                        case MixedStreamDecodeMode::LocalHuff0:
-                            decompress_local_block_into(
-                                payload,
-                                chunk.payload.size(),
-                                destination,
-                                chunk.symbol_count);
-                            break;
-                        case MixedStreamDecodeMode::SharedHuff0:
-                            decode_huff0_block_into(
-                                payload,
-                                chunk.payload.size(),
-                                destination,
-                                chunk.symbol_count,
-                                *chunk.decodebook,
-                                chunk.frame_4x);
-                            break;
-                        }
+                        decode_mixed_stream_chunk_into(chunk, destination);
                     } catch (const std::exception& error) {
                         chunk.error = error.what();
                     } catch (...) {
@@ -2773,35 +2190,12 @@ nb::list decompress_mixed_streams_many(
     return output;
 }
 
-nb::bytes decompress_block(
-    nb::handle payload_source,
-    Py_ssize_t symbol_count) {
-    ReadOnlyBuffer payload(payload_source);
-    return with_value_errors([&]() {
-        return bytes_from_vector(decompress_local_block(
-            payload.data(),
-            payload.size(),
-            symbol_count));
-    });
-}
-
 }  // namespace
 
 NB_MODULE(_huff0_cpp, module) {
     module.doc() =
         "NeuralZip stream bridge backed by upstream Zstd Huff0.";
-
-    module.def(
-        "max_block_size",
-        &max_block_size,
-        "Return Huff0 maximum block size.");
-    module.def(
-        "build_codebook",
-        &build_codebook,
-        nb::arg("data"),
-        nb::arg("prior_count") = 0,
-        nb::arg("max_bits") = kTableLog,
-        "Build a Huff0 codebook.");
+    module.attr("MAX_BLOCK_SIZE") = kMaxBlockSize;
     module.def(
         "build_codebook_from_counts",
         &build_codebook_from_counts,
@@ -2832,22 +2226,6 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("threads_per_block") = 512,
         "Encode little-endian BF16 bytes into the NeuralZip GPU layout.");
     module.def(
-        "encode_with_codebook",
-        &encode_with_codebook,
-        "Encode using a Huff0 codebook.");
-    module.def(
-        "encode_ngram_with_codebook",
-        &encode_ngram_with_codebook,
-        "Tokenize n-grams and encode token ids using a Huff0 codebook.");
-    module.def(
-        "decompress_with_decodebook",
-        &decompress_with_decodebook,
-        "Decompress using a Huff0 decodebook.");
-    module.def(
-        "decompress_ngram_with_decodebook",
-        &decompress_ngram_with_decodebook,
-        "Decode Huff0 token ids and restore packed n-grams.");
-    module.def(
         "compress_mixed_streams_many",
         &compress_mixed_streams_many,
         nb::arg("tensor_specs"),
@@ -2861,8 +2239,4 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("tensor_specs"),
         nb::arg("threads") = 0,
         "Decode many mixed-stream tensors with one native job queue.");
-    module.def(
-        "decompress_block",
-        &decompress_block,
-        "Decompress one self-contained Huff0 block.");
 }

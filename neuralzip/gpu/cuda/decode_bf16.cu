@@ -239,7 +239,6 @@ __device__ __forceinline__ void decode_bf16_block(
 
         output_idx += 1U;
         long_buffer <<= nbits;
-        free_bits = static_cast<uint8_t>(free_bits + nbits);
     }
     __syncthreads();
 
@@ -252,29 +251,6 @@ __device__ __forceinline__ void decode_bf16_block(
 }
 
 }  // namespace
-
-extern "C" __global__ void decode_bf16(
-    const uint16_t* __restrict__ lut,
-    const int max_bits,
-    const uint8_t* __restrict__ codes,
-    const uint8_t* __restrict__ sign_mantissa,
-    const uint8_t* __restrict__ gaps,
-    const uint32_t* __restrict__ output_positions,
-    uint16_t* __restrict__ outputs,
-    const int n_bytes) {
-    extern __shared__ __align__(16) uint8_t shared_mem[];
-    decode_bf16_block(
-        lut,
-        max_bits,
-        codes,
-        sign_mantissa,
-        gaps,
-        output_positions,
-        outputs,
-        n_bytes,
-        static_cast<uint32_t>(BLOCK_ID),
-        shared_mem);
-}
 
 extern "C" __global__ void decode_bf16_batched(
     const uint64_t* __restrict__ lut_ptrs,

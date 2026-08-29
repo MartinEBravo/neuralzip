@@ -25,6 +25,18 @@ _INT32_MAX = (1 << 31) - 1
 _BATCH_KERNEL_NAME = "decode_bf16_batched"
 _DEFAULT_KERNEL_PATH = Path(__file__).with_name("cuda") / "decode_bf16.cu"
 _MAX_CACHED_STREAMS = 64
+_DESCRIPTOR_NAMES = (
+    "lut_ptrs",
+    "code_ptrs",
+    "sign_mantissa_ptrs",
+    "gap_ptrs",
+    "output_position_ptrs",
+    "output_ptrs",
+    "max_bits",
+    "n_bytes",
+    "block_group_ids",
+    "block_local_ids",
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +45,6 @@ class _DecodeLaunch:
     grid: int
     shared_memory: int
     n_bytes: int
-    n_elements: int
 
 
 @dataclass
@@ -67,28 +78,24 @@ class PreparedBF16Batch:
     """Immutable descriptors for one allocation-free batched CUDA launch."""
 
     groups: tuple[BF16DecodeGroup, ...]
-    lut_ptrs: torch.Tensor
-    code_ptrs: torch.Tensor
-    sign_mantissa_ptrs: torch.Tensor
-    gap_ptrs: torch.Tensor
-    output_position_ptrs: torch.Tensor
-    output_ptrs: torch.Tensor
-    max_bits: torch.Tensor
-    n_bytes: torch.Tensor
-    block_group_ids: torch.Tensor
-    block_local_ids: torch.Tensor
+    descriptor_tensors: tuple[torch.Tensor, ...] = field(
+        repr=False,
+        compare=False,
+    )
     device_index: int
-    grid: int
-    block: int
     shared_memory: int
     kernel_grid: tuple[int, ...] = field(repr=False, compare=False)
     kernel_block: tuple[int, ...] = field(repr=False, compare=False)
     kernel_args: tuple[object, ...] = field(repr=False, compare=False)
-    _outputs: tuple[torch.Tensor, ...] = field(repr=False, compare=False)
+    outputs: tuple[torch.Tensor, ...] = field(repr=False, compare=False)
 
-    @property
-    def outputs(self) -> tuple[torch.Tensor, ...]:
-        return self._outputs
+    def __getattr__(self, name):
+        if name in {"grid", "block"}:
+            return getattr(self, f"kernel_{name}")[0]
+        try:
+            return self.descriptor_tensors[_DESCRIPTOR_NAMES.index(name)]
+        except ValueError:
+            raise AttributeError(name) from None
 
 
 class _TorchStreamAdapter:
@@ -255,7 +262,6 @@ def _validate_decode_inputs(
         grid=grid,
         shared_memory=shared_memory,
         n_bytes=n_bytes,
-        n_elements=n_elements,
     )
 
 
@@ -328,7 +334,6 @@ class CuPyBF16Decoder:
                 return stream
             stream = _cupy_external_stream(cupy, torch_stream)
             self._external_streams[key] = stream
-            self._external_streams.move_to_end(key)
             while len(self._external_streams) > _MAX_CACHED_STREAMS:
                 self._external_streams.popitem(last=False)
             return stream
@@ -465,42 +470,31 @@ class CuPyBF16Decoder:
         n_bytes = integers(launch.n_bytes for launch in launches)
         block_group_ids = integers(block_group_ids)
         block_local_ids = integers(block_local_ids)
+        descriptor_tensors = (
+            lut_ptrs,
+            code_ptrs,
+            sign_mantissa_ptrs,
+            gap_ptrs,
+            output_position_ptrs,
+            output_ptrs,
+            max_bits,
+            n_bytes,
+            block_group_ids,
+            block_local_ids,
+        )
         kernel_args = tuple(
-            np.uint64(tensor.data_ptr())
-            for tensor in (
-                lut_ptrs,
-                code_ptrs,
-                sign_mantissa_ptrs,
-                gap_ptrs,
-                output_position_ptrs,
-                output_ptrs,
-                max_bits,
-                n_bytes,
-                block_group_ids,
-                block_local_ids,
-            )
+            np.uint64(tensor.data_ptr()) for tensor in descriptor_tensors
         )
 
         return PreparedBF16Batch(
             groups=groups,
-            lut_ptrs=lut_ptrs,
-            code_ptrs=code_ptrs,
-            sign_mantissa_ptrs=sign_mantissa_ptrs,
-            gap_ptrs=gap_ptrs,
-            output_position_ptrs=output_position_ptrs,
-            output_ptrs=output_ptrs,
-            max_bits=max_bits,
-            n_bytes=n_bytes,
-            block_group_ids=block_group_ids,
-            block_local_ids=block_local_ids,
+            descriptor_tensors=descriptor_tensors,
             device_index=device_index,
-            grid=grid,
-            block=threads_per_block,
             shared_memory=max(launch.shared_memory for launch in launches),
             kernel_grid=(grid,),
             kernel_block=(threads_per_block,),
             kernel_args=kernel_args,
-            _outputs=tuple(group.output for group in groups),
+            outputs=tuple(group.output for group in groups),
         )
 
     def decode_batch(
@@ -547,52 +541,6 @@ class CuPyBF16Decoder:
             self.decode_batch(prepared)
         device = prepared_batches[0].groups[0].lut.device
         torch.cuda.synchronize(device=device)
-
-    def decode(
-        self,
-        lut,
-        encoded_exponents,
-        sign_mantissa,
-        packed_gaps,
-        output_positions,
-        output,
-        *,
-        max_bits,
-        threads_per_block=_DEFAULT_THREADS_PER_BLOCK,
-    ):
-        """Decode one continuous exponent stream into an existing BF16 tensor.
-
-        The group uses the same batched kernel as runtime block decoding. The
-        launch is asynchronous on PyTorch's current CUDA stream, so all input
-        tensors must remain alive until work on that stream completes.
-        """
-        group = BF16DecodeGroup(
-            lut=lut,
-            encoded_exponents=encoded_exponents,
-            sign_mantissa=sign_mantissa,
-            packed_gaps=packed_gaps,
-            output_positions=output_positions,
-            output=output,
-            max_bits=max_bits,
-        )
-        launch = _validate_decode_inputs(
-            lut,
-            encoded_exponents,
-            sign_mantissa,
-            packed_gaps,
-            output_positions,
-            output,
-            max_bits=max_bits,
-            threads_per_block=threads_per_block,
-        )
-        if launch.n_elements == 0:
-            return output
-        prepared = self.prepare_batch(
-            (group,),
-            threads_per_block=threads_per_block,
-        )
-        self.decode_batch(prepared)
-        return output
 
 
 _DEFAULT_DECODER = CuPyBF16Decoder()

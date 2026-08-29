@@ -129,18 +129,6 @@ class GPUCodebook:
     def lut_nbytes(self) -> int:
         return 2 * len(self.decode_lut)
 
-    def lookup(self, prefix: int) -> tuple[int, int]:
-        """Return ``(symbol, code_length)`` for one ``max_bits`` prefix."""
-
-        if isinstance(prefix, bool) or not isinstance(prefix, int):
-            raise TypeError("prefix must be an integer.")
-        if prefix < 0 or prefix >= len(self.decode_lut):
-            raise ValueError("prefix is outside the decode table.")
-        entry = self.decode_lut[prefix]
-        if entry == 0:
-            raise ValueError("prefix does not identify a codebook symbol.")
-        return entry & 0xFF, entry >> 8
-
 
 def unpack_restart_gaps(
     packed_gaps: bytes | bytearray | memoryview,
@@ -159,20 +147,12 @@ def unpack_restart_gaps(
             f"packed_gaps has {len(packed)} bytes; expected {expected_bytes}."
         )
 
-    values = []
-    bit_offset = 0
-    for _ in range(count):
-        value = 0
-        for _bit in range(GAP_BITS):
-            byte = packed[bit_offset // 8]
-            value = (value << 1) | ((byte >> (7 - bit_offset % 8)) & 1)
-            bit_offset += 1
-        values.append(value)
-
-    for offset in range(bit_offset, len(packed) * 8):
-        if (packed[offset // 8] >> (7 - offset % 8)) & 1:
-            raise ValueError("Unused packed-gap padding bits must be zero.")
-    return tuple(values)
+    if count % 2 and packed[-1] & 0x0F:
+        raise ValueError("Unused packed-gap padding bits must be zero.")
+    return tuple(
+        (packed[index // 2] >> (4 if index % 2 == 0 else 0)) & 0x0F
+        for index in range(count)
+    )
 
 
 @dataclass(frozen=True)
@@ -247,13 +227,6 @@ class GPUEncodedExponents:
     def block_count(self) -> int:
         block_bytes = self.bytes_per_thread * self.threads_per_block
         return (len(self.bitstream) + block_bytes - 1) // block_bytes
-
-    @property
-    def gaps(self) -> tuple[int, ...]:
-        return unpack_restart_gaps(
-            self.packed_gaps,
-            self.block_count * self.threads_per_block,
-        )
 
 
 @dataclass(frozen=True)

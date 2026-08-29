@@ -13,9 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import huff0
-from .codec_protocol import SetupReport
-from .hashing import sha256_bytes
 from .neuralzip_codec import NeuralZipCodec
+from .operations import SetupReport
 
 SETUP_MARKER = "frozen-huff0-codebook-v2"
 LEGACY_SETUP_MARKER = "frozen-huff0-codebook-v1"
@@ -25,10 +24,10 @@ _SETUP_FORMAT_VERSION = 1
 
 @dataclass(frozen=True, slots=True)
 class NeuralZipSetup:
-    """Opaque, immutable data produced by fitting a NeuralZip compressor.
+    """Opaque, immutable data produced by fitting NeuralZip.
 
     A setup intentionally has no mapping, encoding, or decoding methods. It
-    can be shared safely between compressors because every consumer
+    can be shared safely between operations because every consumer
     materializes its own :class:`NeuralZipCodec` and native Huff0 handles.
     """
 
@@ -49,12 +48,6 @@ class NeuralZipSetup:
             raise ValueError(
                 f"Unsupported NeuralZip setup version {self._format_version!r}."
             )
-
-
-def codebook_digest(codebooks):
-    """Return a stable digest for a setup's serialized codebooks."""
-
-    return sha256_bytes(pickle.dumps(tuple(codebooks), protocol=5))
 
 
 def validate_setup(codec):
@@ -91,7 +84,7 @@ def validate_setup(codec):
     if not bool(getattr(codec, "_clusters_prepared", False)) or not getattr(
         codec, "_mode_by_tensor_stream", None
     ):
-        raise ValueError("NeuralZip setup is empty. Call Compressor.fit() first.")
+        raise ValueError("NeuralZip setup is empty. Call NeuralZip.fit() first.")
 
 
 def _unique_modes(codec):
@@ -133,7 +126,7 @@ def _detached_codec_snapshot(codec):
 
     # Transfer mapping depends on one particular target. It is runtime state,
     # not part of the reusable source setup, and must never cross persistence
-    # or compressor boundaries.
+    # or NeuralZip operation boundaries.
     snapshot._transfer_mode_by_tensor_stream = {}
     snapshot._transfer_cluster_by_name = {}
     snapshot._transfer_active = False
@@ -214,6 +207,8 @@ class _SetupUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == "neuralzip.plan" and name == "NeuralZipPlan":
             return _LegacyPlanEnvelope
+        if module == "neuralzip.codec_protocol" and name == "SetupReport":
+            return SetupReport
         return super().find_class(module, name)
 
 
@@ -264,7 +259,7 @@ def load_setup(value_or_path):
         return _legacy_value_to_setup(_trusted_load(handle))
 
 
-def materialize_setup(value_or_path):
+def materialize_setup(value_or_path, *, threads=None):
     """Build one independent live codec from a setup value or trusted path."""
 
     setup = load_setup(value_or_path)
@@ -281,6 +276,11 @@ def materialize_setup(value_or_path):
     value._transfer_active = False
     validate_setup(value)
     _restore_live_codebooks(value)
+    if threads is not None:
+        threads = int(threads)
+        if threads < 0:
+            raise ValueError("threads must be non-negative.")
+        value.threads = threads
     return value
 
 

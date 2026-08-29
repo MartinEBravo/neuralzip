@@ -5,6 +5,14 @@ import numpy as np
 import torch
 
 from . import huff0
+from .byte_group_codec import (
+    DTYPE_BY_NAME,
+    ByteGroupCodec,
+    _byte_group_dtype_config,
+    _byte_group_reordered_bytes,
+    _byte_group_restored_bytes,
+    _tensor_from_raw_bytes,
+)
 from .dtypes import dtype_name
 from .metrics import exponent_distribution, jensen_shannon_distance
 from .mode_selection import (
@@ -26,14 +34,6 @@ from .serialization import (
     PACKED_CHUNK_METADATA_BYTES,
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
-)
-from .byte_group_codec import (
-    DTYPE_BY_NAME,
-    ByteGroupCodec,
-    _tensor_from_raw_bytes,
-    _byte_group_dtype_config,
-    _byte_group_reordered_bytes,
-    _byte_group_restored_bytes,
 )
 
 _TRANSFER_NAME_FALLBACKS = {

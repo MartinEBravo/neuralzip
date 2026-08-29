@@ -1,9 +1,4 @@
-"""Canonical byte accounting for the NeuralZip archive wire format.
-
-The archive writer and payload diagnostics both depend on these functions.
-Keeping the field layout here prevents compression ratios from drifting away
-from the number of bytes that :mod:`neuralzip.archive` actually emits.
-"""
+"""Canonical byte accounting for NeuralZip payloads and encoded models."""
 
 import struct
 
@@ -14,7 +9,6 @@ CHUNK_MODE_IDS = {
     "packed_huff0": 5,
     "local_huff0": 6,
 }
-CHUNK_MODES = {value: key for key, value in CHUNK_MODE_IDS.items()}
 
 
 def _struct_size(fmt):
@@ -103,13 +97,13 @@ def serialized_tensor_size(tensor):
     )
 
 
-def serialized_size(method, codebooks, tensors):
-    """Return the exact byte size of a complete NeuralZip archive."""
+def serialized_size(codebooks, tensors):
+    """Return the complete encoded size under NeuralZip's canonical layout."""
 
     return (
         len(b"NZP1")
         + _struct_size("H")
-        + serialized_text_size(method)
+        + serialized_text_size("neuralzip")
         + _struct_size("Q")
         + serialized_codebooks_size(codebooks)
         + _struct_size("Q")

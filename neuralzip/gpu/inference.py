@@ -22,7 +22,7 @@ import torch
 from torch import nn
 
 from .. import huff0
-from ..compressor import Compressor
+from .._setup import materialize_setup
 from ..neuralzip_codec import NeuralZipCodec
 from . import decoder as gpu_decoder
 from .adapters import AutoModuleListAdapter, GPUModelAdapter, GPUWeightKind
@@ -31,7 +31,6 @@ from .export import (
     DEFAULT_THREADS_PER_BLOCK,
     GPUCodebook,
     GPUEncodedBF16,
-    GPUEncodedExponents,
     encode_bfloat16,
     encode_bfloat16_native,
 )
@@ -541,8 +540,9 @@ def _assemble_gpu_export(
 
 def export_model_for_gpu(
     model: nn.Module,
-    compressor: Compressor,
+    setup,
     *,
+    threads: int = 0,
     adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
 ) -> NeuralZipModelExport:
@@ -550,35 +550,34 @@ def export_model_for_gpu(
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
-    if not isinstance(compressor, Compressor):
-        raise TypeError("compressor must be a Compressor.")
-    if compressor.method != "neuralzip" or not compressor.has_setup:
-        raise ValueError(
-            "compressor must use method='neuralzip' and have a fitted or loaded setup."
-        )
-    with (
-        compressor._state_lock,
-        compressor._target_mapping_transaction(
-            model,
-            include_buffers=False,
-        ),
-    ):
-        return _export_model_for_gpu_current_setup(
-            model,
-            compressor,
-            adapter=adapter,
-            include_embeddings=include_embeddings,
-        )
+    if setup is None:
+        raise TypeError("setup is required.")
+
+    codec = materialize_setup(setup, threads=threads)
+    named_tensors = tuple(
+        (str(name), parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.is_floating_point()
+    )
+    if not named_tensors:
+        raise ValueError("No floating parameters were found.")
+    codec.prepare_direct_transfer_target(named_tensors)
+    return _export_model_for_gpu_current_setup(
+        model,
+        codec,
+        adapter=adapter,
+        include_embeddings=include_embeddings,
+    )
 
 
 def _export_model_for_gpu_current_setup(
     model: nn.Module,
-    compressor: Compressor,
+    codec: NeuralZipCodec,
     *,
     adapter: GPUModelAdapter | None,
     include_embeddings: bool,
 ) -> NeuralZipModelExport:
-    """Export while the compressor lock and complete target mapping are active."""
+    """Export with an independently materialized and target-mapped codec."""
 
     block_order, candidates = _gpu_candidates(
         model,
@@ -588,7 +587,7 @@ def _export_model_for_gpu_current_setup(
 
     def resolve(candidate: _LinearCandidate):
         parameter = candidate.parameter
-        mode = compressor.codec._mode_for_tensor_stream(
+        mode = codec._mode_for_tensor_stream(
             candidate.tensor_name,
             parameter,
             1,
@@ -619,7 +618,7 @@ def _export_model_for_gpu_current_setup(
         model,
         block_order,
         candidates,
-        compressor.codebooks,
+        codec.export_codebooks(),
         resolve,
     )
 
@@ -647,8 +646,6 @@ def export_encoded_model_for_gpu(
         raise TypeError("model must be a torch.nn.Module.")
     if not isinstance(encoded, EncodedModel):
         raise TypeError("encoded must be an EncodedModel.")
-    if encoded.method != "neuralzip":
-        raise ValueError("GPU inference requires a NeuralZip EncodedModel.")
     if encoded.source_kind == "mapping":
         raise ValueError("GPU inference requires an encoded torch.nn.Module.")
 
@@ -1063,7 +1060,7 @@ class NeuralZipRuntime:
         )
 
     @classmethod
-    def attach(
+    def _prepare_runtime(
         cls,
         model: nn.Module,
         exported: NeuralZipModelExport,
@@ -1077,6 +1074,8 @@ class NeuralZipRuntime:
         cpu_offload_block_names: tuple[str, ...] | None = None,
         pin_memory: bool = True,
     ) -> NeuralZipRuntime:
+        """Allocate and preflight runtime state without mutating ``model``."""
+
         if hasattr(model, _RUNTIME_ATTRIBUTE):
             raise RuntimeError("This model already has a NeuralZip runtime.")
         if not exported.groups:
@@ -1113,6 +1112,35 @@ class NeuralZipRuntime:
             pin_memory=pin_memory,
         )
         runtime._preflight_decoder()
+        return runtime
+
+    @classmethod
+    def attach(
+        cls,
+        model: nn.Module,
+        exported: NeuralZipModelExport,
+        *,
+        device=None,
+        block_devices: Mapping[str, object] | None = None,
+        decoder=None,
+        precompressed: bool = False,
+        cpu_offload: bool = False,
+        cpu_offload_blocks: int | None = None,
+        cpu_offload_block_names: tuple[str, ...] | None = None,
+        pin_memory: bool = True,
+    ) -> NeuralZipRuntime:
+        runtime = cls._prepare_runtime(
+            model,
+            exported,
+            device=device,
+            block_devices=block_devices,
+            decoder=decoder,
+            precompressed=precompressed,
+            cpu_offload=cpu_offload,
+            cpu_offload_blocks=cpu_offload_blocks,
+            cpu_offload_block_names=cpu_offload_block_names,
+            pin_memory=pin_memory,
+        )
         runtime._install()
         return runtime
 
@@ -1266,7 +1294,7 @@ class NeuralZipRuntime:
                 self._cuda_stream = current
         elif current != previous:
             raise RuntimeError(
-                "NeuralZipModel supports one CUDA stream per runtime device."
+                "NeuralZip supports one CUDA stream per runtime device."
             )
 
     def _decode_descriptor(
@@ -1353,12 +1381,12 @@ class NeuralZipRuntime:
         claims.append(False)
         if self.model.training:
             raise RuntimeError(
-                "NeuralZipModel is inference-only; keep the attached model in "
+                "NeuralZip is inference-only; keep the attached model in "
                 "evaluation mode."
             )
         if torch.is_grad_enabled():
             raise RuntimeError(
-                "NeuralZipModel is inference-only; run it under torch.no_grad() "
+                "NeuralZip is inference-only; run it under torch.no_grad() "
                 "or torch.inference_mode()."
             )
         with self._state_lock:
@@ -1527,107 +1555,11 @@ class NeuralZipRuntime:
             raise
 
 
-class NeuralZipModel:
-    """Facade for attached and persistent compressed inference models."""
-
-    @classmethod
-    def from_encoded(
-        cls,
-        model: nn.Module,
-        encoded,
-        *,
-        adapter: GPUModelAdapter | None = None,
-        include_embeddings: bool = False,
-        device=None,
-        block_devices: Mapping[str, object] | None = None,
-        decoder=None,
-        cpu_offload: bool = False,
-        cpu_offload_blocks: int | None = None,
-        pin_memory: bool = True,
-    ) -> nn.Module:
-        """Attach an executable runtime sourced from an ``EncodedModel``."""
-
-        exported = export_encoded_model_for_gpu(
-            model,
-            encoded,
-            adapter=adapter,
-            include_embeddings=include_embeddings,
-        )
-        NeuralZipRuntime.attach(
-            model,
-            exported,
-            device=device,
-            block_devices=block_devices,
-            decoder=decoder,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            pin_memory=pin_memory,
-        )
-        return model
-
-    @classmethod
-    def from_model(
-        cls,
-        model: nn.Module,
-        compressor: Compressor,
-        *,
-        adapter: GPUModelAdapter | None = None,
-        include_embeddings: bool = False,
-        device=None,
-        block_devices: Mapping[str, object] | None = None,
-        decoder=None,
-        cpu_offload: bool = False,
-        cpu_offload_blocks: int | None = None,
-        pin_memory: bool = True,
-    ) -> nn.Module:
-        """Return ``model`` after attaching its post-setup NeuralZip runtime."""
-
-        exported = export_model_for_gpu(
-            model,
-            compressor,
-            adapter=adapter,
-            include_embeddings=include_embeddings,
-        )
-        NeuralZipRuntime.attach(
-            model,
-            exported,
-            device=device,
-            block_devices=block_devices,
-            decoder=decoder,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            pin_memory=pin_memory,
-        )
-        return model
-
-    @classmethod
-    def save_pretrained(
-        cls,
-        model: nn.Module,
-        compressor_or_export=None,
-        directory=None,
-        **kwargs,
-    ):
-        """Save a complete GPU-ready checkpoint without materializing weights."""
-
-        from .pretrained import save_gpu_pretrained
-
-        return save_gpu_pretrained(model, compressor_or_export, directory, **kwargs)
-
-    @classmethod
-    def from_pretrained(cls, directory, **kwargs) -> nn.Module:
-        """Load a complete checkpoint and attach its compressed runtime."""
-
-        from .pretrained import load_gpu_pretrained
-
-        return load_gpu_pretrained(directory, **kwargs)
-
-
 __all__ = [
     "BF16WeightGroup",
     "LinearWeightBinding",
-    "NeuralZipModel",
     "NeuralZipModelExport",
     "NeuralZipRuntime",
+    "export_encoded_model_for_gpu",
     "export_model_for_gpu",
 ]

@@ -23,24 +23,6 @@ gpu = [
     "accelerate>=1",
     "cupy-cuda12x>=13",
 ]
-experiments = [
-    "dfloat11==0.5.0",
-    "huggingface-hub",
-    "matplotlib",
-    "pandas",
-    "pillow",
-    "pyarrow",
-    "safetensors",
-    "torchvision",
-]
-test = [
-    "huggingface-hub",
-    "matplotlib",
-    "pandas",
-    "pillow",
-    "pytest",
-    "torchvision",
-]
 
 [tool.setuptools.packages.find]
 where = ["."]

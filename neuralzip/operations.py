@@ -1,0 +1,111 @@
+"""Shared timing, validation, and batching primitives for NeuralZip."""
+
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from .dtypes import dtype_name
+
+
+@dataclass(frozen=True)
+class SetupReport:
+    clustering_seconds: float
+    codebook_setup_seconds: float
+
+    @property
+    def setup_seconds(self):
+        return self.clustering_seconds + self.codebook_setup_seconds
+
+
+@dataclass(frozen=True)
+class EncodedTensorBatch:
+    payloads: tuple
+    raw_bytes: int
+    encode_seconds: float
+
+
+@dataclass(frozen=True)
+class DecodeStats:
+    decode_seconds: float
+
+
+@dataclass(frozen=True)
+class EncodeStats:
+    """Stable size and timing summary returned by ``NeuralZip.encode``."""
+
+    raw_bytes: int
+    compressed_bytes: int
+    compression_ratio: float
+    mapping_seconds: float
+    encode_seconds: float
+    total_seconds: float
+
+
+def named_tensor_items(tensors):
+    """Normalize a mapping or iterable into an immutable named-tensor batch."""
+
+    if isinstance(tensors, Mapping):
+        return tuple(tensors.items())
+    return tuple(tensors)
+
+
+def encode_tensor_batch(codec, tensors):
+    """Encode one named tensor batch under a stable timing/size contract."""
+
+    named_tensors = named_tensor_items(tensors)
+    started = time.perf_counter()
+    payloads = tuple(codec.compress_tensors(named_tensors))
+    encode_seconds = time.perf_counter() - started
+    if len(payloads) != len(named_tensors):
+        raise RuntimeError("Codec returned a different number of tensor payloads.")
+    expected_names = tuple(str(name) for name, _ in named_tensors)
+    payload_names = tuple(str(payload.name) for payload in payloads)
+    if payload_names != expected_names:
+        raise RuntimeError(
+            "Codec changed tensor names or order: "
+            f"expected {expected_names!r}, observed {payload_names!r}."
+        )
+    for (name, tensor), payload in zip(named_tensors, payloads, strict=True):
+        expected_shape = tuple(int(dimension) for dimension in tensor.shape)
+        expected_dtype = dtype_name(tensor.dtype)
+        expected_raw_bytes = int(tensor.numel() * tensor.element_size())
+        if tuple(payload.shape) != expected_shape:
+            raise RuntimeError(
+                f"Codec changed tensor shape for {name!r}: "
+                f"expected {expected_shape!r}, observed {tuple(payload.shape)!r}."
+            )
+        if str(payload.dtype) != expected_dtype:
+            raise RuntimeError(
+                f"Codec changed tensor dtype for {name!r}: "
+                f"expected {expected_dtype!r}, observed {payload.dtype!r}."
+            )
+        if int(payload.raw_bytes) != expected_raw_bytes:
+            raise RuntimeError(
+                f"Codec changed raw tensor size for {name!r}: "
+                f"expected {expected_raw_bytes}, observed {payload.raw_bytes}."
+            )
+
+    raw_bytes = sum(int(payload.raw_bytes) for payload in payloads)
+    return EncodedTensorBatch(
+        payloads=payloads,
+        raw_bytes=raw_bytes,
+        encode_seconds=float(encode_seconds),
+    )
+
+
+def prepare_neuralzip_codec(codec, named_tensors):
+    """Fit clustering and codebooks while keeping both setup costs separate."""
+
+    named_tensors = named_tensor_items(named_tensors)
+    started = time.perf_counter()
+    codec.prepare_clusters(named_tensors)
+    clustering_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    codec.build_codebooks_and_select_modes(named_tensors)
+    codebook_setup_seconds = time.perf_counter() - started
+
+    return SetupReport(
+        clustering_seconds=float(clustering_seconds),
+        codebook_setup_seconds=float(codebook_setup_seconds),
+    )

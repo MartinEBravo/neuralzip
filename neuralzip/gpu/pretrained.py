@@ -22,7 +22,6 @@ from typing import Any
 import torch
 from torch import nn
 
-from ..compressor import Compressor
 from .adapters import GPUModelAdapter
 from .checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
 from .checkpoint import load_gpu_export, save_gpu_export
@@ -377,64 +376,40 @@ def _file_record(path: Path) -> dict[str, str | int]:
 
 def save_gpu_pretrained(
     model: nn.Module,
-    compressor_or_export: Compressor
-    | NeuralZipModelExport
-    | str
-    | os.PathLike[str]
-    | None = None,
-    directory: str | os.PathLike[str] | None = None,
+    directory: str | os.PathLike[str],
     *,
-    adapter: GPUModelAdapter | None = None,
-    include_embeddings: bool = False,
+    export: NeuralZipModelExport | None = None,
     auto_class: str | None = None,
     tokenizer: object | None = None,
     max_shard_size: int | str = "5GB",
 ) -> Path:
     """Save a complete, directly loadable NeuralZip inference checkpoint.
 
-    ``compressor_or_export`` may be a fitted Compressor or an encoded GPU
-    export. Compressed weights are excluded from the sharded resident state and
-    therefore never need to be materialized before loading the checkpoint.
+    By default the export comes from ``model.neuralzip_runtime``. Compressed
+    weights are excluded from the resident state and never materialized merely
+    to save the checkpoint.
     """
 
     if not isinstance(model, nn.Module):
         raise TypeError("model must be a torch.nn.Module.")
-    if directory is None and isinstance(compressor_or_export, (str, os.PathLike)):
-        directory = compressor_or_export
-        compressor_or_export = None
-    if directory is None:
-        raise TypeError("directory is required.")
     runtime = getattr(model, "neuralzip_runtime", None)
     resident_source = None
-    if compressor_or_export is None:
+    if export is None:
         if not isinstance(runtime, NeuralZipRuntime):
             raise ValueError(
-                "compressor_or_export is required unless model already has a "
-                "NeuralZip runtime."
+                "model must have an attached NeuralZip runtime unless export= is "
+                "provided."
             )
         exported = runtime.export
         resident_source = runtime.resident_state_dict()
     elif runtime is not None:
         raise ValueError(
-            "For an attached model, omit compressor_or_export and save its current export."
+            "For an attached model, omit export and save its current runtime."
         )
-    elif isinstance(compressor_or_export, Compressor):
-        exported = export_model_for_gpu(
-            model,
-            compressor_or_export,
-            adapter=adapter,
-            include_embeddings=include_embeddings,
-        )
-    elif isinstance(compressor_or_export, NeuralZipModelExport):
-        if adapter is not None or include_embeddings:
-            raise ValueError(
-                "adapter/include_embeddings only apply when exporting a Compressor."
-            )
-        exported = compressor_or_export
+    elif isinstance(export, NeuralZipModelExport):
+        exported = export
     else:
-        raise TypeError(
-            "compressor_or_export must be Compressor or NeuralZipModelExport."
-        )
+        raise TypeError("export must be a NeuralZipModelExport.")
     if not exported.groups:
         raise ValueError("The GPU export contains no compressed weights.")
 
@@ -1230,6 +1205,84 @@ def _apply_placement(
     )
 
 
+def attach_gpu_model(
+    model: nn.Module,
+    setup,
+    *,
+    threads: int = 0,
+    device: object | None = None,
+    device_map: str | Mapping[str, object] | None = None,
+    max_memory: Mapping[object, object] | None = None,
+    offload_folder: str | os.PathLike[str] | None = None,
+    execution_device: object | None = None,
+    adapter: GPUModelAdapter | None = None,
+    include_embeddings: bool = False,
+    decoder: Callable[..., Any] | object | None = None,
+    cpu_offload: bool = False,
+    cpu_offload_blocks: int | None = None,
+    pin_memory: bool = True,
+) -> nn.Module:
+    """Export, place, and attach a model using an explicit NeuralZip setup."""
+
+    if not isinstance(model, nn.Module):
+        raise TypeError("model must be a torch.nn.Module.")
+    if setup is None:
+        raise TypeError("setup is required.")
+    if hasattr(model, "neuralzip_runtime"):
+        raise RuntimeError("This model already has a NeuralZip runtime.")
+    exported = export_model_for_gpu(
+        model,
+        setup,
+        threads=threads,
+        adapter=adapter,
+        include_embeddings=include_embeddings,
+    )
+    if not exported.groups:
+        raise ValueError("The setup produced no GPU-compressible weights.")
+    placement = _resolve_placement(
+        model,
+        exported,
+        device=device,
+        device_map=device_map,
+        max_memory=max_memory,
+        offload_folder=offload_folder,
+        allow_cpu_blocks=decoder is not None,
+        execution_device=execution_device,
+        cpu_offload=cpu_offload,
+        cpu_offload_blocks=cpu_offload_blocks,
+    )
+    compressed_parameters = _validated_compressed_weights(model, exported)
+    runtime = NeuralZipRuntime._prepare_runtime(
+        model,
+        exported,
+        block_devices=placement.block_devices,
+        decoder=decoder,
+        precompressed=True,
+        cpu_offload=cpu_offload,
+        cpu_offload_blocks=cpu_offload_blocks,
+        cpu_offload_block_names=placement.cpu_stored_blocks,
+        pin_memory=pin_memory,
+    )
+    removed = False
+    try:
+        for module, _parameter in compressed_parameters:
+            module._parameters.pop("weight")
+            module.__dict__.pop("weight", None)
+        removed = True
+        model = _apply_placement(model, placement, offload_folder=offload_folder)
+        runtime.model = model
+        runtime._install()
+    except Exception:
+        if removed:
+            for module, parameter in compressed_parameters:
+                module.__dict__.pop("weight", None)
+                if "weight" not in module._parameters:
+                    module.register_parameter("weight", parameter)
+        runtime._release_device_state()
+        raise
+    return model
+
+
 def load_gpu_pretrained(
     pretrained_model_name_or_path: str | os.PathLike[str],
     *,
@@ -1357,6 +1410,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "RESIDENT_FILENAME",
     "GPUPretrainedError",
+    "attach_gpu_model",
     "load_gpu_pretrained",
     "save_gpu_pretrained",
 ]

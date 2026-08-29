@@ -39,5 +39,7 @@ neuralzip = ["*.cpp"]
 
 [tool.setuptools.data-files]
 "share/neuralzip/licenses/dfloat11" = ["third_party/dfloat11/LICENSE"]
-"share/neuralzip/licenses/go" = ["third_party/go/LICENSE", "third_party/go/PATENTS"]
-"share/neuralzip/licenses/klauspost-compress" = ["third_party/klauspost-compress/LICENSE"]
+"share/neuralzip/licenses/zstd" = [
+    "third_party/zstd/LICENSE",
+    "third_party/zstd/UPSTREAM",
+]

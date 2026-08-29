@@ -1,7 +1,5 @@
 include neuralzip/*.cpp
 include neuralzip/gpu/cuda/*.cu
-recursive-include native/gohuff0 *.go go.mod go.sum
 include third_party/dfloat11/LICENSE
-include third_party/go/LICENSE
-include third_party/go/PATENTS
-include third_party/klauspost-compress/LICENSE
+include third_party/zstd/LICENSE
+include third_party/zstd/UPSTREAM

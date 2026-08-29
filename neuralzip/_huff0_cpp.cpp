@@ -15,21 +15,8 @@
 #include <vector>
 
 extern "C" {
-int nzip_huff0_build_from_counts(
-    const std::uint32_t*, std::uint8_t, std::uint8_t*, std::size_t,
-    std::size_t*, char*, std::size_t);
-int nzip_huff0_build_from_header(
-    const std::uint8_t*, std::size_t, std::uintptr_t*, char*, std::size_t);
-void nzip_huff0_release(std::uintptr_t);
-int nzip_huff0_decode(
-    std::uintptr_t, const std::uint8_t*, std::size_t, std::uint8_t*,
-    std::size_t, int, char*, std::size_t);
-int nzip_huff0_decompress_local(
-    const std::uint8_t*, std::size_t, std::uint8_t*, std::size_t,
-    char*, std::size_t);
-int nzip_huff0_export_table(
-    const std::uint8_t*, std::size_t, std::uint8_t*, std::uint16_t*,
-    std::uint8_t*, char*, std::size_t);
+#include "huf.h"
+#include "zstd_internal.h"
 }
 
 namespace {
@@ -52,32 +39,34 @@ private:
     PyObject* value_;
 };
 
-// Preserve NeuralZip's historical chunk boundary even though the Go backend
-// accepts larger blocks. Stable chunking keeps archive accounting comparable.
-constexpr std::size_t kMaxBlockSize = 128U << 10U;
-constexpr unsigned kMaxSymbolValue = 255;
-constexpr unsigned kTableLog = 11;
-constexpr unsigned kMaxTableLog = 12;
+constexpr std::size_t kMaxBlockSize = HUF_BLOCKSIZE_MAX;
+constexpr unsigned kMaxSymbolValue = HUF_SYMBOLVALUE_MAX;
+constexpr unsigned kTableLog = HUF_TABLELOG_DEFAULT;
+constexpr unsigned kMaxTableLog = HUF_TABLELOG_ABSOLUTEMAX;
 constexpr std::uint64_t kMaxHistogramTotal =
     (static_cast<std::uint64_t>(1) << 30U) - 1U;
-constexpr std::size_t kErrorCapacity = 512;
-constexpr std::size_t kHeaderCapacity = 256;
+
+bool detect_runtime_bmi2() noexcept {
+#if DYNAMIC_BMI2
+    return ZSTD_cpuSupportsBmi2() != 0;
+#else
+    return false;
+#endif
+}
+
+const bool kRuntimeBmi2 = detect_runtime_bmi2();
+const int kFlags = HUF_flags_disableAsm |
+                   (kRuntimeBmi2 ? HUF_flags_bmi2 : 0);
 
 struct Huff0Codebook {
+    std::vector<HUF_CElt> ctable;
     std::vector<std::uint8_t> serialized;
-    std::array<std::uint8_t, 256> code_lengths{};
-    std::array<std::uint16_t, 256> code_values{};
-    unsigned max_bits = 0;
+    bool covers_all_symbols = false;
 };
 
-void populate_codebook_table(Huff0Codebook& codebook);
-
 struct Huff0Decodebook {
-    std::uintptr_t handle = 0;
-
-    ~Huff0Decodebook() {
-        nzip_huff0_release(handle);
-    }
+    std::vector<HUF_DTable> dtable_x1;
+    std::vector<HUF_DTable> dtable_x2;
 };
 
 struct NGramBlockResult {
@@ -222,10 +211,9 @@ std::string run_parallel_jobs(
     return thread_error;
 }
 
-void check_go(int status, const std::array<char, kErrorCapacity>& error) {
-    if (status < 0) {
-        throw std::runtime_error(
-            error[0] == '\0' ? "Go Huff0 backend failed." : error.data());
+void check_huf(size_t code) {
+    if (HUF_isError(code)) {
+        throw std::runtime_error(HUF_getErrorName(code));
     }
 }
 
@@ -438,15 +426,22 @@ std::vector<std::uint8_t> decompress_local_block(
     if (symbol_count == 0) {
         return output;
     }
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_decompress_local(
-        payload,
-        static_cast<std::size_t>(payload_len),
+    std::vector<HUF_DTable> dtable(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
+    dtable[0] = static_cast<HUF_DTable>(HUF_TABLELOG_MAX * 0x01000001U);
+    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
+    size_t decoded = HUF_decompress4X_hufOnly_wksp(
+        dtable.data(),
         output.data(),
         output.size(),
-        error.data(),
-        error.size());
-    check_go(status, error);
+        payload,
+        static_cast<std::size_t>(payload_len),
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(decoded);
+    if (decoded != static_cast<std::size_t>(symbol_count)) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
     return output;
 }
 
@@ -458,19 +453,26 @@ void decompress_local_block_into(
     if (symbol_count == 0) {
         return;
     }
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_decompress_local(
-        payload,
-        static_cast<std::size_t>(payload_len),
+    std::vector<HUF_DTable> dtable(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
+    dtable[0] = static_cast<HUF_DTable>(HUF_TABLELOG_MAX * 0x01000001U);
+    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
+    size_t decoded = HUF_decompress4X_hufOnly_wksp(
+        dtable.data(),
         output,
         symbol_count,
-        error.data(),
-        error.size());
-    check_go(status, error);
+        payload,
+        static_cast<std::size_t>(payload_len),
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(decoded);
+    if (decoded != symbol_count) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
 }
 
-std::array<std::uint32_t, 256> count_symbols(const std::uint8_t* data, Py_ssize_t data_len, unsigned prior_count) {
-    std::array<std::uint32_t, 256> counts{};
+std::array<unsigned, 256> count_symbols(const std::uint8_t* data, Py_ssize_t data_len, unsigned prior_count) {
+    std::array<unsigned, 256> counts{};
     if (prior_count > 0) {
         counts.fill(prior_count);
     }
@@ -483,24 +485,61 @@ std::array<std::uint32_t, 256> count_symbols(const std::uint8_t* data, Py_ssize_
     return counts;
 }
 
+unsigned nonzero_symbol_count(const std::array<unsigned, 256>& counts) {
+    unsigned nonzero = 0;
+    for (unsigned count : counts) {
+        nonzero += count > 0 ? 1U : 0U;
+    }
+    return nonzero;
+}
+
+unsigned max_observed_symbol(const std::array<unsigned, 256>& counts) {
+    for (int symbol = 255; symbol >= 0; --symbol) {
+        if (counts[static_cast<std::size_t>(symbol)] > 0) {
+            return static_cast<unsigned>(symbol);
+        }
+    }
+    return 0;
+}
+
 std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
-    const std::array<std::uint32_t, 256>& counts,
+    const std::array<unsigned, 256>& counts,
     unsigned max_bits) {
+    const unsigned symbol_count = nonzero_symbol_count(counts);
+    if (symbol_count < 2) {
+        throw std::runtime_error("Huff0 requires at least two symbols.");
+    }
+    if (symbol_count > (1U << max_bits)) {
+        throw std::runtime_error(
+            "Huff0 max_bits cannot represent every observed symbol.");
+    }
+    const unsigned max_symbol_value = max_observed_symbol(counts);
+
     auto codebook = std::make_unique<Huff0Codebook>();
-    codebook->serialized.resize(kHeaderCapacity);
-    std::array<char, kErrorCapacity> error{};
-    std::size_t header_size = 0;
-    const int status = nzip_huff0_build_from_counts(
+    codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
+    codebook->covers_all_symbols = symbol_count == counts.size();
+    std::vector<unsigned> build_workspace(HUF_CTABLE_WORKSPACE_SIZE_U32);
+    const size_t table_log = HUF_buildCTable_wksp(
+        codebook->ctable.data(),
         counts.data(),
-        static_cast<std::uint8_t>(max_bits),
+        max_symbol_value,
+        max_bits,
+        build_workspace.data(),
+        build_workspace.size() * sizeof(unsigned));
+    check_huf(table_log);
+
+    codebook->serialized.resize(HUF_CTABLEBOUND);
+    std::vector<std::uint64_t> write_workspace(HUF_WORKSPACE_SIZE_U64);
+    const size_t header_size = HUF_writeCTable_wksp(
         codebook->serialized.data(),
         codebook->serialized.size(),
-        &header_size,
-        error.data(),
-        error.size());
-    check_go(status, error);
+        codebook->ctable.data(),
+        max_symbol_value,
+        static_cast<unsigned>(table_log),
+        write_workspace.data(),
+        write_workspace.size() * sizeof(std::uint64_t));
+    check_huf(header_size);
     codebook->serialized.resize(header_size);
-    populate_codebook_table(*codebook);
     return codebook;
 }
 
@@ -525,8 +564,23 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_header(
     }
 
     auto codebook = std::make_unique<Huff0Codebook>();
+    codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
+    unsigned max_symbol_value = kMaxSymbolValue;
+    unsigned has_zero_weights = 0;
+    const size_t read_size = HUF_readCTable(
+        codebook->ctable.data(),
+        &max_symbol_value,
+        header,
+        static_cast<std::size_t>(header_len),
+        &has_zero_weights);
+    check_huf(read_size);
+    if (read_size != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 did not consume the full codebook header.");
+    }
+    codebook->covers_all_symbols =
+        max_symbol_value == kMaxSymbolValue && has_zero_weights == 0;
     codebook->serialized.assign(header, header + header_len);
-    populate_codebook_table(*codebook);
     return codebook;
 }
 
@@ -543,38 +597,53 @@ ExportedCodeTable export_code_table_from_header(
     if (header_len <= 0) {
         throw std::runtime_error("Huff0 codebook header is empty.");
     }
-    if (max_bits == 0 || max_bits > 12) {
-        throw std::runtime_error("max_bits must be in [1, 12].");
+    if (max_bits == 0 || max_bits > HUF_TABLELOG_ABSOLUTEMAX) {
+        throw std::runtime_error(
+            "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
     }
 
-    ExportedCodeTable output;
-    std::uint8_t actual_max_bits = 0;
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_export_table(
+    std::vector<HUF_CElt> ctable(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
+    unsigned max_symbol_value = kMaxSymbolValue;
+    unsigned has_zero_weights = 0;
+    const size_t read_size = HUF_readCTable(
+        ctable.data(),
+        &max_symbol_value,
         header,
         static_cast<std::size_t>(header_len),
-        output.code_lengths.data(),
-        output.code_values.data(),
-        &actual_max_bits,
-        error.data(),
-        error.size());
-    check_go(status, error);
-    output.max_bits = actual_max_bits;
-    if (output.max_bits > max_bits) {
+        &has_zero_weights);
+    check_huf(read_size);
+    if (read_size != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 did not consume the full codebook header.");
+    }
+
+    const HUF_CTableHeader table_header = HUF_readCTableHeader(ctable.data());
+    if (table_header.tableLog > max_bits) {
         throw std::runtime_error(
             "Huff0 codebook exceeds the requested max_bits limit.");
     }
-    return output;
-}
 
-void populate_codebook_table(Huff0Codebook& codebook) {
-    const ExportedCodeTable table = export_code_table_from_header(
-        codebook.serialized.data(),
-        static_cast<Py_ssize_t>(codebook.serialized.size()),
-        12);
-    codebook.code_lengths = table.code_lengths;
-    codebook.code_values = table.code_values;
-    codebook.max_bits = table.max_bits;
+    constexpr unsigned ctable_word_bits = sizeof(HUF_CElt) * 8U;
+    ExportedCodeTable output;
+    for (unsigned symbol = 0; symbol <= kMaxSymbolValue; ++symbol) {
+        const unsigned length = HUF_getNbBitsFromCTable(ctable.data(), symbol);
+        if (length > max_bits || length > HUF_TABLELOG_ABSOLUTEMAX) {
+            throw std::runtime_error(
+                "Huff0 symbol code exceeds the supported bit limit.");
+        }
+        output.code_lengths[symbol] = static_cast<std::uint8_t>(length);
+        output.max_bits = std::max(output.max_bits, length);
+        if (length == 0) {
+            continue;
+        }
+        const HUF_CElt entry = ctable[static_cast<std::size_t>(symbol) + 1U];
+        const HUF_CElt value = entry >> (ctable_word_bits - length);
+        if (value >= (static_cast<HUF_CElt>(1U) << length)) {
+            throw std::runtime_error("Invalid Huff0 code value.");
+        }
+        output.code_values[symbol] = static_cast<std::uint16_t>(value);
+    }
+    return output;
 }
 
 constexpr unsigned kGPUCodeMaxBits = 12;
@@ -822,119 +891,6 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
     return result;
 }
 
-// klauspost builds and validates the table, but its public Compress entrypoint
-// rescans every block before reusing it. Post-setup encoding writes the
-// validated canonical codes directly so the histogram stays off the hot path.
-struct Huff0BitWriter {
-    std::uint64_t container = 0;
-    unsigned bits = 0;
-    std::vector<std::uint8_t> output;
-    std::size_t position = 0;
-
-    explicit Huff0BitWriter(std::size_t capacity) : output(capacity) {}
-
-    void add(std::uint64_t value, unsigned length) {
-        container |= value << bits;
-        bits += length;
-    }
-
-    void flush32() {
-        if (bits < 32U) {
-            return;
-        }
-        output[position++] = static_cast<std::uint8_t>(container);
-        output[position++] = static_cast<std::uint8_t>(container >> 8U);
-        output[position++] = static_cast<std::uint8_t>(container >> 16U);
-        output[position++] = static_cast<std::uint8_t>(container >> 24U);
-        container >>= 32U;
-        bits -= 32U;
-    }
-
-    void close() {
-        add(1U, 1U);
-        while (bits > 0U) {
-            output[position++] = static_cast<std::uint8_t>(container);
-            if (bits <= 8U) {
-                output.resize(position);
-                return;
-            }
-            container >>= 8U;
-            bits -= 8U;
-        }
-    }
-};
-
-std::vector<std::uint8_t> encode_huff0_1x(
-    const std::uint8_t* data,
-    std::size_t size,
-    const Huff0Codebook& codebook) {
-    Huff0BitWriter writer((size * codebook.max_bits + 8U) / 8U);
-    auto encode_symbol = [&](std::uint8_t symbol) {
-        const unsigned length = codebook.code_lengths[symbol];
-        if (length == 0U) {
-            return false;
-        }
-        writer.add(codebook.code_values[symbol], length);
-        return true;
-    };
-
-    const std::size_t remainder = size & 3U;
-    std::size_t start = size - remainder;
-    for (std::size_t index = remainder; index > 0U; --index) {
-        if (!encode_symbol(data[start + index - 1U])) {
-            return {};
-        }
-    }
-
-    while (start >= 4U) {
-        start -= 4U;
-        writer.flush32();
-        const std::uint8_t third = data[start + 3U];
-        const std::uint8_t second = data[start + 2U];
-        const std::uint8_t first = data[start + 1U];
-        const std::uint8_t zeroth = data[start];
-        const unsigned third_bits = codebook.code_lengths[third];
-        const unsigned second_bits = codebook.code_lengths[second];
-        const unsigned first_bits = codebook.code_lengths[first];
-        const unsigned zeroth_bits = codebook.code_lengths[zeroth];
-        if (
-            third_bits == 0U
-            || second_bits == 0U
-            || first_bits == 0U
-            || zeroth_bits == 0U) {
-            return {};
-        }
-        if (codebook.max_bits <= 8U) {
-            const unsigned second_offset = third_bits;
-            const unsigned first_offset = second_offset + second_bits;
-            const unsigned zeroth_offset = first_offset + first_bits;
-            const std::uint64_t combined =
-                codebook.code_values[third]
-                | (static_cast<std::uint64_t>(codebook.code_values[second])
-                   << second_offset)
-                | (static_cast<std::uint64_t>(codebook.code_values[first])
-                   << first_offset)
-                | (static_cast<std::uint64_t>(codebook.code_values[zeroth])
-                   << zeroth_offset);
-            writer.add(combined, zeroth_offset + zeroth_bits);
-            continue;
-        }
-        writer.add(
-            codebook.code_values[third]
-                | (static_cast<std::uint64_t>(codebook.code_values[second])
-                   << third_bits),
-            third_bits + second_bits);
-        writer.flush32();
-        writer.add(
-            codebook.code_values[first]
-                | (static_cast<std::uint64_t>(codebook.code_values[zeroth])
-                   << first_bits),
-            first_bits + zeroth_bits);
-    }
-    writer.close();
-    return writer.output;
-}
-
 std::vector<std::uint8_t> encode_huff0_block(
     const std::uint8_t* data,
     Py_ssize_t data_len,
@@ -944,41 +900,36 @@ std::vector<std::uint8_t> encode_huff0_block(
     if (data_len <= 0 || static_cast<std::size_t>(data_len) > kMaxBlockSize) {
         return {};
     }
-    const std::size_t size = static_cast<std::size_t>(data_len);
-    if (!four_streams) {
-        std::vector<std::uint8_t> output = encode_huff0_1x(
-            data, size, codebook);
-        if (output.size() >= size || output.size() > max_output_bytes) {
-            return {};
+    if (!codebook.covers_all_symbols) {
+        for (Py_ssize_t index = 0; index < data_len; ++index) {
+            if (HUF_getNbBitsFromCTable(codebook.ctable.data(), data[index]) == 0) {
+                return {};
+            }
         }
-        return output;
     }
-    if (size < 12U) {
+    const std::size_t capacity = HUF_compressBound(
+        static_cast<std::size_t>(data_len));
+    if (capacity == 0) {
         return {};
     }
-
-    const std::size_t segment_size = (size + 3U) / 4U;
-    std::vector<std::uint8_t> output(6U);
-    output.reserve(size);
-    std::size_t offset = 0;
-    for (unsigned stream = 0; stream < 4U; ++stream) {
-        const std::size_t length = std::min(segment_size, size - offset);
-        std::vector<std::uint8_t> encoded = encode_huff0_1x(
-            data + offset, length, codebook);
-        if (encoded.empty() || encoded.size() > std::numeric_limits<std::uint16_t>::max()) {
+    std::vector<std::uint8_t> output(capacity);
+    const size_t size = four_streams
+        ? HUF_compress4X_usingCTable(
+              output.data(), output.size(), data,
+              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags)
+        : HUF_compress1X_usingCTable(
+              output.data(), output.size(), data,
+              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags);
+    if (HUF_isError(size)) {
+        if (max_output_bytes != std::numeric_limits<std::size_t>::max()) {
             return {};
         }
-        if (stream < 3U) {
-            output[stream * 2U] = static_cast<std::uint8_t>(encoded.size());
-            output[stream * 2U + 1U] = static_cast<std::uint8_t>(
-                encoded.size() >> 8U);
-        }
-        output.insert(output.end(), encoded.begin(), encoded.end());
-        offset += length;
+        check_huf(size);
     }
-    if (output.size() >= size || output.size() > max_output_bytes) {
+    if (size == 0 || size > max_output_bytes) {
         return {};
     }
+    output.resize(size);
     return output;
 }
 
@@ -988,15 +939,47 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(const std::uint8_t*
     }
 
     auto decodebook = std::make_unique<Huff0Decodebook>();
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_build_from_header(
+    decodebook->dtable_x1.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX - 1));
+    decodebook->dtable_x1[0] = static_cast<HUF_DTable>(
+        (HUF_TABLELOG_MAX - 1) * 0x01000001U);
+    decodebook->dtable_x2.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX));
+    decodebook->dtable_x2[0] = static_cast<HUF_DTable>(
+        HUF_TABLELOG_MAX * 0x01000001U);
+    std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
+    const size_t read_size_x1 = HUF_readDTableX1_wksp(
+        decodebook->dtable_x1.data(),
         header,
         static_cast<std::size_t>(header_len),
-        &decodebook->handle,
-        error.data(),
-        error.size());
-    check_go(status, error);
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(read_size_x1);
+    if (read_size_x1 != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 X1 did not consume the full codebook header.");
+    }
+    const size_t read_size_x2 = HUF_readDTableX2_wksp(
+        decodebook->dtable_x2.data(),
+        header,
+        static_cast<std::size_t>(header_len),
+        workspace.data(),
+        workspace.size() * sizeof(unsigned),
+        kFlags);
+    check_huf(read_size_x2);
+    if (read_size_x2 != static_cast<std::size_t>(header_len)) {
+        throw std::runtime_error(
+            "Huff0 X2 did not consume the full codebook header.");
+    }
     return decodebook;
+}
+
+const HUF_DTable* select_decode_dtable(
+    const Huff0Decodebook& decodebook,
+    std::size_t symbol_count,
+    std::size_t payload_len) {
+    return HUF_selectDecoder(symbol_count, payload_len) != 0
+        ? decodebook.dtable_x2.data()
+        : decodebook.dtable_x1.data();
 }
 
 std::vector<std::uint8_t> decode_huff0_block(
@@ -1015,17 +998,21 @@ std::vector<std::uint8_t> decode_huff0_block(
     if (symbol_count == 0) {
         return output;
     }
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_decode(
-        decodebook.handle,
-        payload,
-        static_cast<std::size_t>(payload_len),
-        output.data(),
-        output.size(),
-        four_streams ? 1 : 0,
-        error.data(),
-        error.size());
-    check_go(status, error);
+    const HUF_DTable* dtable = select_decode_dtable(
+        decodebook,
+        static_cast<std::size_t>(symbol_count),
+        static_cast<std::size_t>(payload_len));
+    const size_t decoded = four_streams
+        ? HUF_decompress4X_usingDTable(
+              output.data(), output.size(), payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags)
+        : HUF_decompress1X_usingDTable(
+              output.data(), output.size(), payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags);
+    check_huf(decoded);
+    if (decoded != static_cast<std::size_t>(symbol_count)) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
     return output;
 }
 
@@ -1042,17 +1029,19 @@ void decode_huff0_block_into(
     if (symbol_count == 0) {
         return;
     }
-    std::array<char, kErrorCapacity> error{};
-    const int status = nzip_huff0_decode(
-        decodebook.handle,
-        payload,
-        static_cast<std::size_t>(payload_len),
-        output,
-        symbol_count,
-        four_streams ? 1 : 0,
-        error.data(),
-        error.size());
-    check_go(status, error);
+    const HUF_DTable* dtable = select_decode_dtable(
+        decodebook, symbol_count, static_cast<std::size_t>(payload_len));
+    const size_t decoded = four_streams
+        ? HUF_decompress4X_usingDTable(
+              output, symbol_count, payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags)
+        : HUF_decompress1X_usingDTable(
+              output, symbol_count, payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags);
+    check_huf(decoded);
+    if (decoded != symbol_count) {
+        throw std::runtime_error("Huff0 decoded size mismatch.");
+    }
 }
 
 std::vector<std::uint8_t> restore_ngram_tokens(
@@ -1833,7 +1822,7 @@ bool validate_codebook_options(Py_ssize_t prior_count, Py_ssize_t max_bits) {
 bool parse_symbol_counts(
     PyObject* source,
     unsigned prior_count,
-    std::array<std::uint32_t, 256>& output) {
+    std::array<unsigned, 256>& output) {
     OwnedPyRef sequence(PySequence_Fast(
         source, "symbol_counts must be a sequence of 256 integers."));
     if (!sequence.get()) {
@@ -1897,7 +1886,7 @@ bool parse_symbol_counts(
         const std::uint64_t count = counts[index];
         const std::uint64_t scaled =
             count == 0 ? 0 : std::max<std::uint64_t>(1, count >> shift);
-        output[index] = static_cast<std::uint32_t>(scaled + prior_count);
+        output[index] = static_cast<unsigned>(scaled + prior_count);
     }
     return true;
 }
@@ -1969,7 +1958,7 @@ PyObject* py_build_codebook_from_counts(
         return nullptr;
     }
 
-    std::array<std::uint32_t, 256> counts{};
+    std::array<unsigned, 256> counts{};
     if (!parse_symbol_counts(
             count_source, static_cast<unsigned>(prior_count), counts)) {
         return nullptr;
@@ -3410,7 +3399,7 @@ static PyMethodDef methods[] = {
 static PyModuleDef module = {
     PyModuleDef_HEAD_INIT,
     "_huff0_cpp",
-    "NeuralZip stream bridge backed by klauspost/compress Huff0.",
+    "NeuralZip stream bridge backed by upstream Zstd Huff0.",
     -1,
     methods,
 };

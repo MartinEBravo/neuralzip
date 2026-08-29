@@ -1,0 +1,5 @@
+Upstream: https://github.com/facebook/zstd
+Revision: 5233c58e6ca0b1c4c6b353ad79649191ed195bdc
+Archive: https://codeload.github.com/facebook/zstd/tar.gz/5233c58e6ca0b1c4c6b353ad79649191ed195bdc
+SHA256: 4c8e7f2ab048339cf523e0ad62c119d4e4d49f4abf94028dffd5897706b1b68c
+Scope: Huff0 implementation compiled into neuralzip._huff0_cpp

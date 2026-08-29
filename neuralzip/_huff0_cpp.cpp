@@ -2271,29 +2271,20 @@ PyObject* py_encode_gpu_bfloat16(
     return result;
 }
 
-PyObject* py_encode_with_codebook_impl(
-    PyObject* args, PyObject* kwargs, bool four_streams) {
+PyObject* py_encode_with_codebook(PyObject*, PyObject* args) {
     Py_buffer data_view;
     PyObject* capsule = nullptr;
     Py_ssize_t min_saving_bytes = 0;
     Py_ssize_t max_output_bytes = -1;
-    static const char* keyword_names[] = {
-        "data",
-        "codebook",
-        "min_saving_bytes",
-        "max_output_bytes",
-        nullptr,
-    };
-
-    if (!PyArg_ParseTupleAndKeywords(
+    int four_streams = 0;
+    if (!PyArg_ParseTuple(
             args,
-            kwargs,
-            "y*O|nn",
-            const_cast<char**>(keyword_names),
+            "y*Onnp",
             &data_view,
             &capsule,
             &min_saving_bytes,
-            &max_output_bytes)) {
+            &max_output_bytes,
+            &four_streams)) {
         return nullptr;
     }
     if (min_saving_bytes < 0) {
@@ -2347,43 +2338,24 @@ PyObject* py_encode_with_codebook_impl(
     }
 }
 
-PyObject* py_encode_with_codebook(PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_with_codebook_impl(args, kwargs, false);
-}
-
-PyObject* py_encode_with_codebook_4x(PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_with_codebook_impl(args, kwargs, true);
-}
-
-PyObject* py_encode_ngram_with_codebook_impl(
-    PyObject* args, PyObject* kwargs, bool four_streams) {
+PyObject* py_encode_ngram_with_codebook(PyObject*, PyObject* args) {
     Py_buffer data_view;
     PyObject* capsule = nullptr;
     Py_buffer vocab_view;
     Py_ssize_t n = 0;
     Py_ssize_t min_saving_bytes = 0;
     Py_ssize_t max_output_bytes = -1;
-    static const char* keyword_names[] = {
-        "data",
-        "codebook",
-        "vocab",
-        "n",
-        "min_saving_bytes",
-        "max_output_bytes",
-        nullptr,
-    };
-
-    if (!PyArg_ParseTupleAndKeywords(
+    int four_streams = 0;
+    if (!PyArg_ParseTuple(
             args,
-            kwargs,
-            "y*Oy*n|nn",
-            const_cast<char**>(keyword_names),
+            "y*Oy*nnnp",
             &data_view,
             &capsule,
             &vocab_view,
             &n,
             &min_saving_bytes,
-            &max_output_bytes)) {
+            &max_output_bytes,
+            &four_streams)) {
         return nullptr;
     }
     if (n < 1 || n > 8) {
@@ -2440,21 +2412,18 @@ PyObject* py_encode_ngram_with_codebook_impl(
     }
 }
 
-PyObject* py_encode_ngram_with_codebook(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_ngram_with_codebook_impl(args, kwargs, false);
-}
-
-PyObject* py_encode_ngram_with_codebook_4x(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_ngram_with_codebook_impl(args, kwargs, true);
-}
-
-PyObject* py_decompress_with_decodebook_impl(PyObject* args, bool four_streams) {
+PyObject* py_decompress_with_decodebook(PyObject*, PyObject* args) {
     Py_buffer payload_view;
     PyObject* capsule = nullptr;
     Py_ssize_t symbol_count;
-    if (!PyArg_ParseTuple(args, "y*On", &payload_view, &capsule, &symbol_count)) {
+    int four_streams = 0;
+    if (!PyArg_ParseTuple(
+            args,
+            "y*Onp",
+            &payload_view,
+            &capsule,
+            &symbol_count,
+            &four_streams)) {
         return nullptr;
     }
 
@@ -2482,16 +2451,7 @@ PyObject* py_decompress_with_decodebook_impl(PyObject* args, bool four_streams) 
     }
 }
 
-PyObject* py_decompress_with_decodebook(PyObject*, PyObject* args) {
-    return py_decompress_with_decodebook_impl(args, false);
-}
-
-PyObject* py_decompress_with_decodebook_4x(PyObject*, PyObject* args) {
-    return py_decompress_with_decodebook_impl(args, true);
-}
-
-PyObject* py_decompress_ngram_with_decodebook_impl(
-    PyObject* args, bool four_streams) {
+PyObject* py_decompress_ngram_with_decodebook(PyObject*, PyObject* args) {
     Py_buffer payload_view{};
     PyObject* capsule = nullptr;
     Py_ssize_t symbol_count = 0;
@@ -2499,16 +2459,18 @@ PyObject* py_decompress_ngram_with_decodebook_impl(
     Py_ssize_t n = 0;
     Py_buffer escape_view{};
     Py_buffer tail_view{};
+    int four_streams = 0;
     if (!PyArg_ParseTuple(
             args,
-            "y*Ony*ny*y*",
+            "y*Ony*ny*y*p",
             &payload_view,
             &capsule,
             &symbol_count,
             &vocab_view,
             &n,
             &escape_view,
-            &tail_view)) {
+            &tail_view,
+            &four_streams)) {
         return nullptr;
     }
 
@@ -2550,14 +2512,6 @@ PyObject* py_decompress_ngram_with_decodebook_impl(
         PyErr_SetString(PyExc_ValueError, error.what());
         return nullptr;
     }
-}
-
-PyObject* py_decompress_ngram_with_decodebook(PyObject*, PyObject* args) {
-    return py_decompress_ngram_with_decodebook_impl(args, false);
-}
-
-PyObject* py_decompress_ngram_with_decodebook_4x(PyObject*, PyObject* args) {
-    return py_decompress_ngram_with_decodebook_impl(args, true);
 }
 
 PyObject* py_compress_mixed_streams_many(
@@ -3382,14 +3336,10 @@ static PyMethodDef methods[] = {
     {"build_decodebook", py_build_decodebook, METH_VARARGS, "Build a Huff0 decode table from a serialized codebook."},
     {"export_code_table", reinterpret_cast<PyCFunction>(py_export_code_table), METH_VARARGS | METH_KEYWORDS, "Export exact Huff0 symbol lengths and canonical code values."},
     {"encode_gpu_bfloat16", reinterpret_cast<PyCFunction>(py_encode_gpu_bfloat16), METH_VARARGS | METH_KEYWORDS, "Encode little-endian BF16 bytes into the NeuralZip GPU layout."},
-    {"encode_with_codebook", reinterpret_cast<PyCFunction>(py_encode_with_codebook), METH_VARARGS | METH_KEYWORDS, "Encode using a Huff0 codebook."},
-    {"encode_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Encode four Huff0 streams using a precomputed codebook."},
-    {"encode_ngram_with_codebook", reinterpret_cast<PyCFunction>(py_encode_ngram_with_codebook), METH_VARARGS | METH_KEYWORDS, "Tokenize n-grams and encode token ids using a Huff0 codebook."},
-    {"encode_ngram_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_ngram_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Tokenize n-grams and encode token ids as four Huff0 streams using a precomputed codebook."},
+    {"encode_with_codebook", py_encode_with_codebook, METH_VARARGS, "Encode using a Huff0 codebook."},
+    {"encode_ngram_with_codebook", py_encode_ngram_with_codebook, METH_VARARGS, "Tokenize n-grams and encode token ids using a Huff0 codebook."},
     {"decompress_with_decodebook", py_decompress_with_decodebook, METH_VARARGS, "Decompress using a Huff0 decodebook."},
-    {"decompress_with_decodebook_4x", py_decompress_with_decodebook_4x, METH_VARARGS, "Decompress four Huff0 streams using a precomputed decodebook."},
     {"decompress_ngram_with_decodebook", py_decompress_ngram_with_decodebook, METH_VARARGS, "Decode Huff0 token ids and restore packed n-grams."},
-    {"decompress_ngram_with_decodebook_4x", py_decompress_ngram_with_decodebook_4x, METH_VARARGS, "Decode four Huff0 token streams and restore packed n-grams."},
     {"compress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_compress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed-stream Huff0 native job queue."},
     {"decompress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_decompress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Decode many mixed-stream tensors with one native job queue."},
     {"decompress_block", py_decompress_block, METH_VARARGS, "Decompress one self-contained Huff0 block."},

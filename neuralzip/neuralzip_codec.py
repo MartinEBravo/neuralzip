@@ -5,35 +5,29 @@ import numpy as np
 import torch
 
 from . import huff0
-from .byte_group_codec import (
+from .codec_primitives import (
     DTYPE_BY_NAME,
-    ByteGroupCodec,
     _byte_group_dtype_config,
     _byte_group_reordered_bytes,
     _byte_group_restored_bytes,
     _tensor_from_raw_bytes,
-)
-from .dtypes import dtype_name
-from .metrics import exponent_distribution, jensen_shannon_distance
-from .mode_selection import (
+    dtype_name,
+    exponent_distribution,
+    jensen_shannon_distance,
+    restore_2d_stream,
     select_fastest_within_ratio,
     select_packed_time_budget,
-)
-from .packed_exponents import (
-    restore_2d_stream,
     tokenize_ngrams,
     topk_vocab,
 )
 from .payloads import (
+    PACKED_CHUNK_METADATA_BYTES,
+    RAW_CHUNK_METADATA_BYTES,
+    SHARED_CHUNK_METADATA_BYTES,
     ByteGroupPayload,
     CodebookPayload,
     StreamChunk,
     TensorPayload,
-)
-from .serialization import (
-    PACKED_CHUNK_METADATA_BYTES,
-    RAW_CHUNK_METADATA_BYTES,
-    SHARED_CHUNK_METADATA_BYTES,
 )
 
 _TRANSFER_NAME_FALLBACKS = {
@@ -48,7 +42,7 @@ def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
 
 
-class NeuralZipCodec(ByteGroupCodec):
+class NeuralZipCodec:
     """JS-clustered Huffman with deterministic packed-exponent selection."""
 
     def __init__(
@@ -72,12 +66,19 @@ class NeuralZipCodec(ByteGroupCodec):
         enable_shared_codebooks=True,
         direct_batch_bytes=128 << 20,
     ):
-        super().__init__(
-            min_saving_bytes=min_saving_bytes,
-            chunk_size=chunk_size,
-            compression_threshold=compression_threshold,
-            threads=threads,
-        )
+        self.min_saving_bytes = int(min_saving_bytes)
+        self.chunk_size = int(chunk_size)
+        self.compression_threshold = float(compression_threshold)
+        self.threads = int(threads)
+        if self.min_saving_bytes < 0:
+            raise ValueError("min_saving_bytes must be non-negative.")
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        if not 0 < self.compression_threshold <= 1:
+            raise ValueError("compression_threshold must be in (0, 1].")
+        if self.threads < 0:
+            raise ValueError("threads must be non-negative.")
+
         self.prior_count = int(prior_count)
         self.exponent_prior_count = int(exponent_prior_count)
         self.cluster_map = {
@@ -120,6 +121,9 @@ class NeuralZipCodec(ByteGroupCodec):
         self.reset_compression()
         self.reset_decompression()
 
+    def _stream_chunk_size(self, element_size):
+        return max(1, self.chunk_size // int(element_size))
+
     def reset_compression(self):
         self._mode_by_key = {}
         self._codebook_payloads = []
@@ -127,7 +131,6 @@ class NeuralZipCodec(ByteGroupCodec):
         self._computed_cluster_map = {}
         self._clusters_prepared = False
         self._next_codebook_id = 0
-        self._selected_mode_counts = {}
         self._mode_by_tensor_stream = {}
         self._transfer_mode_by_tensor_stream = {}
         self._transfer_cluster_by_name = {}
@@ -152,19 +155,6 @@ class NeuralZipCodec(ByteGroupCodec):
             self._decode_codebooks[codebook_id] = huff0.build_decodebook(
                 codebook.codebook
             )
-
-    def codebook_metadata_bytes(self):
-        return sum(codebook.metadata_bytes for codebook in self._codebook_payloads)
-
-    @property
-    def cluster_count(self):
-        return len(
-            set(self.cluster_map.values()) | set(self._computed_cluster_map.values())
-        )
-
-    @property
-    def selected_modes(self):
-        return dict(self._selected_mode_counts)
 
     def cluster_id(self, name):
         if name in self._transfer_cluster_by_name:
@@ -722,12 +712,6 @@ class NeuralZipCodec(ByteGroupCodec):
         self._decode_codebooks[codebook_id] = huff0.build_decodebook(payload.codebook)
         return selected
 
-    def _record_selected_mode(self, mode):
-        kind = mode["kind"]
-        if kind == "packed_huff0":
-            kind = f"packed_huff0_n{mode['ngram_n']}"
-        self._selected_mode_counts[kind] = self._selected_mode_counts.get(kind, 0) + 1
-
     def prepare_clusters(self, named_tensors):
         self._prepare_clusters(named_tensors)
         self._clusters_prepared = True
@@ -782,10 +766,6 @@ class NeuralZipCodec(ByteGroupCodec):
                         "kind": "raw",
                         "fixed_cost": 0,
                     }
-
-        self._selected_mode_counts = {}
-        for mode in self._mode_by_key.values():
-            self._record_selected_mode(mode)
 
     def prepare_direct_transfer_target(self, named_tensors):
         """Map a family target to a reusable source setup.
@@ -1063,7 +1043,6 @@ class NeuralZipCodec(ByteGroupCodec):
                 selected = evaluation["opportunity"]["mode"]
             selected = self._finalize_mode(evaluation["key"], selected)
             self._mode_by_key[evaluation["key"]] = selected
-            self._record_selected_mode(selected)
 
         self._prepare_tensor_modes(named_tensors)
         self.load_codebooks(self._codebook_payloads)
@@ -1091,10 +1070,6 @@ class NeuralZipCodec(ByteGroupCodec):
                 "Codebooks and modes must be built before NeuralZip compression."
             )
         return mode
-
-    def compress_tensor(self, name, tensor):
-        """Compress one tensor through the same native batch path as a model."""
-        return self.compress_tensors(((name, tensor),))[0]
 
     def _compress_direct_native_batch(self, tensor_specs):
         """Encode one input-size-windowed tensor batch through one job queue."""

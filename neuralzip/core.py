@@ -7,17 +7,12 @@ from os import PathLike
 import torch
 
 from ._setup import load_setup as load_setup_state
-from ._setup import materialize_setup, setup_from_codec, validate_setup
+from ._setup import materialize_setup, setup_from_codec
 from ._setup import save_setup as save_setup_state
 from .encoded_model import EncodedModel, decode_model, make_encoded_model
 from .neuralzip_codec import NeuralZipCodec
-from .operations import (
-    DecodeStats,
-    EncodeStats,
-    encode_tensor_batch,
-    prepare_neuralzip_codec,
-)
-from .serialization import serialized_size
+from .operations import DecodeStats, EncodeStats, SetupReport
+from .payloads import serialized_size
 
 
 def _named_tensors(value, prefix=""):
@@ -186,8 +181,15 @@ class NeuralZip:
 
         named_tensors = _model_tensors(model)
         codec = NeuralZipCodec(**_fit_options(setup_options))
-        report = prepare_neuralzip_codec(codec, named_tensors)
-        validate_setup(codec)
+        started = time.perf_counter()
+        codec.prepare_clusters(named_tensors)
+        clustering_seconds = time.perf_counter() - started
+        started = time.perf_counter()
+        codec.build_codebooks_and_select_modes(named_tensors)
+        report = SetupReport(
+            clustering_seconds=clustering_seconds,
+            codebook_setup_seconds=time.perf_counter() - started,
+        )
         return setup_from_codec(codec, report)
 
     @staticmethod
@@ -222,16 +224,18 @@ class NeuralZip:
         mapping_started = time.perf_counter()
         codec.prepare_direct_transfer_target(named_tensors)
         mapping_seconds = time.perf_counter() - mapping_started
-        batch = encode_tensor_batch(codec, named_tensors)
+        encode_started = time.perf_counter()
+        payloads = tuple(codec.compress_tensors(named_tensors))
+        encode_seconds = time.perf_counter() - encode_started
         codebooks = codec.export_codebooks()
         encoded = make_encoded_model(
             source,
             names=tuple(name for name, _ in named_tensors),
-            payloads=batch.payloads,
+            payloads=payloads,
             codebooks=codebooks,
-            raw_bytes=batch.raw_bytes,
-            compressed_bytes=serialized_size(codebooks, batch.payloads),
-            encode_seconds=batch.encode_seconds,
+            raw_bytes=sum(int(payload.raw_bytes) for payload in payloads),
+            compressed_bytes=serialized_size(codebooks, payloads),
+            encode_seconds=encode_seconds,
             mapping_seconds=mapping_seconds,
             requires_grad=tuple(tensor.requires_grad for _, tensor in named_tensors),
         )

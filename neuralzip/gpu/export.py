@@ -1,9 +1,9 @@
-"""CPU-side primitives for NeuralZip's BF16 GPU inference format.
+"""Validated Python representation of NeuralZip's native BF16 GPU format.
 
 The GPU representation keeps the sign and mantissa byte verbatim and stores
 the eight exponent bits in one continuous, MSB-first Huffman bitstream.  It is
-deliberately independent of a CUDA runtime so archives can be prepared and
-validated on machines without a GPU.
+emitted by the required native extension and can be archived or validated on
+machines without a CUDA runtime.
 
 The flat decode table uses one unsigned 16-bit entry per ``max_bits`` prefix::
 
@@ -15,7 +15,6 @@ with a single lookup and advance by ``entry >> 8`` bits.
 
 from __future__ import annotations
 
-from bisect import bisect_left
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -47,75 +46,6 @@ def _as_int_tuple(
     if any(isinstance(value, bool) or not isinstance(value, int) for value in output):
         raise TypeError(f"{name} must contain only integers.")
     return output
-
-
-@dataclass(frozen=True)
-class BF16Lanes:
-    """The two lossless byte lanes of a little-endian BF16 sequence."""
-
-    exponents: bytes
-    sign_mantissa: bytes
-
-    def __post_init__(self) -> None:
-        exponents = _as_bytes(self.exponents, name="exponents")
-        sign_mantissa = _as_bytes(self.sign_mantissa, name="sign_mantissa")
-        if len(exponents) != len(sign_mantissa):
-            raise ValueError("BF16 lanes must contain the same number of elements.")
-        object.__setattr__(self, "exponents", exponents)
-        object.__setattr__(self, "sign_mantissa", sign_mantissa)
-
-    @property
-    def numel(self) -> int:
-        return len(self.exponents)
-
-    def assemble(self) -> bytes:
-        return assemble_bfloat16_lanes(self)
-
-
-def split_bfloat16_lanes(raw_bfloat16: bytes | bytearray | memoryview) -> BF16Lanes:
-    """Split little-endian BF16 words into exponent and sign/mantissa lanes.
-
-    The returned ``sign_mantissa`` byte has the sign in bit 7 and the seven
-    mantissa bits in bits 6..0. This keeps the exponent and sign together in
-    the high byte before byte-stream grouping.
-    """
-
-    raw = _as_bytes(raw_bfloat16, name="raw_bfloat16")
-    if len(raw) % 2:
-        raise ValueError("A BF16 byte sequence must have an even length.")
-
-    exponents = bytearray(len(raw) // 2)
-    sign_mantissa = bytearray(len(raw) // 2)
-    for index in range(len(exponents)):
-        low = raw[2 * index]
-        high = raw[2 * index + 1]
-        exponents[index] = ((high & 0x7F) << 1) | (low >> 7)
-        sign_mantissa[index] = (high & 0x80) | (low & 0x7F)
-    return BF16Lanes(bytes(exponents), bytes(sign_mantissa))
-
-
-def assemble_bfloat16_lanes(
-    exponents: BF16Lanes | bytes | bytearray | memoryview,
-    sign_mantissa: bytes | bytearray | memoryview | None = None,
-) -> bytes:
-    """Reassemble exact little-endian BF16 words from their two byte lanes."""
-
-    if isinstance(exponents, BF16Lanes):
-        if sign_mantissa is not None:
-            raise TypeError("sign_mantissa must be omitted when passing BF16Lanes.")
-        lanes = exponents
-    else:
-        if sign_mantissa is None:
-            raise TypeError("sign_mantissa is required when passing exponent bytes.")
-        lanes = BF16Lanes(exponents, sign_mantissa)
-
-    raw = bytearray(2 * lanes.numel)
-    for index, (exponent, other) in enumerate(
-        zip(lanes.exponents, lanes.sign_mantissa, strict=True)
-    ):
-        raw[2 * index] = (other & 0x7F) | ((exponent & 1) << 7)
-        raw[2 * index + 1] = (other & 0x80) | (exponent >> 1)
-    return bytes(raw)
 
 
 @dataclass(frozen=True)
@@ -210,27 +140,6 @@ class GPUCodebook:
         if entry == 0:
             raise ValueError("prefix does not identify a codebook symbol.")
         return entry & 0xFF, entry >> 8
-
-
-def pack_restart_gaps(gaps: Sequence[int] | Iterable[int]) -> bytes:
-    """Pack gap values MSB first, matching ``numpy.packbits`` semantics."""
-
-    values = _as_int_tuple(gaps, name="gaps")
-    accumulator = 0
-    pending = 0
-    packed = bytearray()
-    for gap in values:
-        if gap < 0 or gap >= 1 << GAP_BITS:
-            raise ValueError(f"Each gap must fit in {GAP_BITS} bits.")
-        accumulator = (accumulator << GAP_BITS) | gap
-        pending += GAP_BITS
-        while pending >= 8:
-            pending -= 8
-            packed.append((accumulator >> pending) & 0xFF)
-            accumulator &= (1 << pending) - 1 if pending else 0
-    if pending:
-        packed.append((accumulator << (8 - pending)) & 0xFF)
-    return bytes(packed)
 
 
 def unpack_restart_gaps(
@@ -369,144 +278,22 @@ class GPUEncodedBF16:
         return len(self.sign_mantissa)
 
 
-def _restart_metadata(
-    symbol_starts: Sequence[int],
-    *,
-    bit_length: int,
-    encoded_bytes: int,
-    bytes_per_thread: int,
-    threads_per_block: int,
-) -> tuple[bytes, tuple[int, ...]]:
-    block_bytes = bytes_per_thread * threads_per_block
-    blocks = (encoded_bytes + block_bytes - 1) // block_bytes
-    if blocks == 0:
-        return b"", (0,)
-
-    segment_bits = bytes_per_thread * 8
-    populated_segments = (encoded_bytes + bytes_per_thread - 1) // bytes_per_thread
-    gaps = [0] * (blocks * threads_per_block)
-    for segment in range(populated_segments):
-        boundary = segment * segment_bits
-        symbol_index = bisect_left(symbol_starts, boundary)
-        next_boundary = (
-            symbol_starts[symbol_index]
-            if symbol_index < len(symbol_starts)
-            else bit_length
-        )
-        gap = next_boundary - boundary
-        if gap < 0 or gap >= 1 << GAP_BITS:
-            raise ValueError(
-                f"A code crosses too much of a CUDA segment to fit in {GAP_BITS}-bit gaps."
-            )
-        gaps[segment] = gap
-
-    block_bits = block_bytes * 8
-    positions = tuple(
-        bisect_left(symbol_starts, block * block_bits) for block in range(blocks)
-    ) + (len(symbol_starts),)
-    return pack_restart_gaps(gaps), positions
-
-
-def encode_exponents(
-    exponents: bytes | bytearray | memoryview,
-    codebook: GPUCodebook,
-    *,
-    bytes_per_thread: int = DEFAULT_BYTES_PER_THREAD,
-    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
-) -> GPUEncodedExponents:
-    """Huffman-encode exponent bytes into a continuous MSB-first stream."""
-
-    source = _as_bytes(exponents, name="exponents")
-    for name, value in (
-        ("bytes_per_thread", bytes_per_thread),
-        ("threads_per_block", threads_per_block),
-    ):
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise TypeError(f"{name} must be an integer.")
-        if value <= 0:
-            raise ValueError(f"{name} must be positive.")
-    if bytes_per_thread != DEFAULT_BYTES_PER_THREAD:
-        raise ValueError(
-            f"bytes_per_thread must be {DEFAULT_BYTES_PER_THREAD} for this ABI."
-        )
-    if threads_per_block != DEFAULT_THREADS_PER_BLOCK:
-        raise ValueError(
-            f"threads_per_block must be {DEFAULT_THREADS_PER_BLOCK} for this ABI."
-        )
-
-    encoded = bytearray()
-    accumulator = 0
-    pending = 0
-    bit_length = 0
-    starts = []
-    for index, symbol in enumerate(source):
-        length = codebook.code_lengths[symbol]
-        if length == 0:
-            raise ValueError(
-                f"Exponent symbol {symbol} at index {index} has no codebook entry."
-            )
-        starts.append(bit_length)
-        accumulator = (accumulator << length) | codebook.code_values[symbol]
-        pending += length
-        bit_length += length
-        while pending >= 8:
-            pending -= 8
-            encoded.append((accumulator >> pending) & 0xFF)
-            accumulator &= (1 << pending) - 1 if pending else 0
-    if pending:
-        encoded.append((accumulator << (8 - pending)) & 0xFF)
-
-    packed_gaps, output_positions = _restart_metadata(
-        starts,
-        bit_length=bit_length,
-        encoded_bytes=len(encoded),
-        bytes_per_thread=bytes_per_thread,
-        threads_per_block=threads_per_block,
-    )
-    return GPUEncodedExponents(
-        bitstream=bytes(encoded),
-        bit_length=bit_length,
-        symbol_count=len(source),
-        packed_gaps=packed_gaps,
-        output_positions=output_positions,
-        bytes_per_thread=bytes_per_thread,
-        threads_per_block=threads_per_block,
-    )
-
-
-def encode_bfloat16(
-    raw_bfloat16: bytes | bytearray | memoryview,
-    codebook: GPUCodebook,
-    *,
-    bytes_per_thread: int = DEFAULT_BYTES_PER_THREAD,
-    threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
-) -> GPUEncodedBF16:
-    """Prepare an exact little-endian BF16 byte sequence for GPU decoding."""
-
-    lanes = split_bfloat16_lanes(raw_bfloat16)
-    return GPUEncodedBF16(
-        sign_mantissa=lanes.sign_mantissa,
-        exponents=encode_exponents(
-            lanes.exponents,
-            codebook,
-            bytes_per_thread=bytes_per_thread,
-            threads_per_block=threads_per_block,
-        ),
-    )
-
-
 def encode_bfloat16_native(
     raw_bfloat16: bytes | bytearray | memoryview,
     codebook_header: bytes | bytearray | memoryview,
     *,
     bytes_per_thread: int = DEFAULT_BYTES_PER_THREAD,
     threads_per_block: int = DEFAULT_THREADS_PER_BLOCK,
-) -> GPUEncodedBF16 | None:
+) -> GPUEncodedBF16:
     """Use the native Huff0 backend to emit the CUDA inference layout."""
 
-    native_encoder = getattr(_huff0_cpp, "encode_gpu_bfloat16", None)
-    if native_encoder is None:
-        return None
+    try:
+        native_encoder = _huff0_cpp.encode_gpu_bfloat16
+    except AttributeError as error:  # pragma: no cover - mismatched binary install.
+        raise RuntimeError(
+            "The installed NeuralZip native extension does not provide the BF16 "
+            "GPU encoder; reinstall NeuralZip so Python and native code match."
+        ) from error
     (
         encoded_exponents,
         sign_mantissa,
@@ -534,97 +321,13 @@ def encode_bfloat16_native(
     )
 
 
-def _decode_with_starts(
-    encoded: GPUEncodedExponents,
-    codebook: GPUCodebook,
-) -> tuple[bytes, tuple[int, ...]]:
-    padded = encoded.bitstream + bytes((codebook.max_bits + 14) // 8)
-    window_bytes = (7 + codebook.max_bits + 7) // 8
-    window_bits = 8 * window_bytes
-    mask = (1 << codebook.max_bits) - 1
-    output = bytearray(encoded.symbol_count)
-    starts = []
-    bit_offset = 0
-
-    for index in range(encoded.symbol_count):
-        starts.append(bit_offset)
-        byte_offset, intra_byte = divmod(bit_offset, 8)
-        window = int.from_bytes(
-            padded[byte_offset : byte_offset + window_bytes],
-            "big",
-        )
-        prefix = (window >> (window_bits - intra_byte - codebook.max_bits)) & mask
-        entry = codebook.decode_lut[prefix]
-        if entry == 0:
-            raise ValueError(f"Invalid Huffman prefix at exponent index {index}.")
-        length = entry >> 8
-        if bit_offset + length > encoded.bit_length:
-            raise ValueError("Exponent bitstream ends in the middle of a Huffman code.")
-        output[index] = entry & 0xFF
-        bit_offset += length
-
-    if bit_offset != encoded.bit_length:
-        raise ValueError(
-            "Exponent symbol_count does not consume exactly the encoded bitstream."
-        )
-    return bytes(output), tuple(starts)
-
-
-def decode_exponents_reference(
-    encoded: GPUEncodedExponents,
-    codebook: GPUCodebook,
-    *,
-    validate_metadata: bool = True,
-) -> bytes:
-    """Decode an exponent stream on CPU and optionally verify restart metadata."""
-
-    output, starts = _decode_with_starts(encoded, codebook)
-    if validate_metadata:
-        expected_gaps, expected_positions = _restart_metadata(
-            starts,
-            bit_length=encoded.bit_length,
-            encoded_bytes=len(encoded.bitstream),
-            bytes_per_thread=encoded.bytes_per_thread,
-            threads_per_block=encoded.threads_per_block,
-        )
-        if encoded.packed_gaps != expected_gaps:
-            raise ValueError("Packed gaps do not match the exponent bitstream.")
-        if encoded.output_positions != expected_positions:
-            raise ValueError("Output positions do not match the exponent bitstream.")
-    return output
-
-
-def decode_bfloat16_reference(
-    encoded: GPUEncodedBF16,
-    codebook: GPUCodebook,
-    *,
-    validate_metadata: bool = True,
-) -> bytes:
-    """Reference-decode a GPU payload to bitwise-exact little-endian BF16."""
-
-    exponents = decode_exponents_reference(
-        encoded.exponents,
-        codebook,
-        validate_metadata=validate_metadata,
-    )
-    return assemble_bfloat16_lanes(exponents, encoded.sign_mantissa)
-
-
 __all__ = [
     "DEFAULT_BYTES_PER_THREAD",
     "DEFAULT_THREADS_PER_BLOCK",
     "MAX_CODE_BITS",
-    "BF16Lanes",
     "GPUCodebook",
     "GPUEncodedBF16",
     "GPUEncodedExponents",
-    "assemble_bfloat16_lanes",
-    "decode_bfloat16_reference",
-    "decode_exponents_reference",
-    "encode_bfloat16",
     "encode_bfloat16_native",
-    "encode_exponents",
-    "pack_restart_gaps",
-    "split_bfloat16_lanes",
     "unpack_restart_gaps",
 ]

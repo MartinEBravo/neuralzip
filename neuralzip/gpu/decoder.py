@@ -22,10 +22,8 @@ from .export import GAP_BITS, MAX_CODE_BITS
 _BYTES_PER_THREAD = 8
 _DEFAULT_THREADS_PER_BLOCK = 512
 _INT32_MAX = (1 << 31) - 1
-_KERNEL_NAME = "decode_bf16"
 _BATCH_KERNEL_NAME = "decode_bf16_batched"
 _DEFAULT_KERNEL_PATH = Path(__file__).with_name("cuda") / "decode_bf16.cu"
-_MAX_CACHED_LAUNCHES = 256
 _MAX_CACHED_STREAMS = 64
 
 
@@ -33,23 +31,18 @@ _MAX_CACHED_STREAMS = 64
 class _DecodeLaunch:
     device_index: int
     grid: int
-    block: int
     shared_memory: int
     n_bytes: int
     n_elements: int
-    kernel_grid: tuple[int, ...] = field(repr=False, compare=False)
-    kernel_block: tuple[int, ...] = field(repr=False, compare=False)
-    kernel_args: tuple[object, ...] = field(repr=False, compare=False)
 
 
 @dataclass
 class _CompiledKernel:
     module: object
     function: object
-    batch_function: object
     default_shared_memory: int | None = None
     optin_shared_memory: int | None = None
-    configured_shared_memory: dict[str, int] = field(default_factory=dict)
+    configured_shared_memory: int = 0
     configuration_lock: threading.Lock = field(
         default_factory=threading.Lock,
         repr=False,
@@ -128,58 +121,6 @@ def _load_cupy():
 
 def _position_values(output_positions):
     return output_positions.detach().to(device="cpu", dtype=torch.int64).tolist()
-
-
-def _tensor_launch_key(tensor, *, track_contents=False):
-    if not torch.is_tensor(tensor):
-        return None
-    try:
-        key = (
-            id(tensor),
-            int(tensor.data_ptr()),
-            int(tensor.numel()),
-            tensor.dtype,
-            tensor.device,
-            int(tensor.dim()),
-            bool(tensor.is_contiguous()),
-        )
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return None
-    if track_contents:
-        try:
-            version = int(tensor._version)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            # PyTorch inference tensors intentionally omit version counters.
-            # Their metadata buffers are immutable by the runtime contract.
-            version = None
-        key += (version,)
-    return key
-
-
-def _decode_launch_key(
-    lut,
-    encoded_exponents,
-    sign_mantissa,
-    packed_gaps,
-    output_positions,
-    output,
-    *,
-    max_bits,
-    threads_per_block,
-):
-    if not isinstance(max_bits, int) or not isinstance(threads_per_block, int):
-        return None
-    keys = (
-        _tensor_launch_key(lut),
-        _tensor_launch_key(encoded_exponents),
-        _tensor_launch_key(sign_mantissa),
-        _tensor_launch_key(packed_gaps),
-        _tensor_launch_key(output_positions, track_contents=True),
-        _tensor_launch_key(output),
-    )
-    if any(key is None for key in keys):
-        return None
-    return (max_bits, threads_per_block, *keys)
 
 
 def _device_property(properties, name):
@@ -312,22 +253,9 @@ def _validate_decode_inputs(
     return _DecodeLaunch(
         device_index=int(device.index),
         grid=grid,
-        block=threads_per_block,
         shared_memory=shared_memory,
         n_bytes=n_bytes,
         n_elements=n_elements,
-        kernel_grid=(grid,),
-        kernel_block=(threads_per_block,),
-        kernel_args=(
-            np.uint64(lut.data_ptr()),
-            np.int32(max_bits),
-            np.uint64(encoded_exponents.data_ptr()),
-            np.uint64(sign_mantissa.data_ptr()),
-            np.uint64(packed_gaps.data_ptr()),
-            np.uint64(output_positions.data_ptr()),
-            np.uint64(output.data_ptr()),
-            np.int32(n_bytes),
-        ),
     )
 
 
@@ -337,11 +265,9 @@ class CuPyBF16Decoder:
     def __init__(self, kernel_path=None):
         self.kernel_path = Path(kernel_path or _DEFAULT_KERNEL_PATH)
         self._kernels = {}
-        self._launches = OrderedDict()
         self._external_streams = OrderedDict()
         self._compile_lock = threading.Lock()
         self._cupy_lock = threading.Lock()
-        self._launch_lock = threading.Lock()
         self._stream_lock = threading.Lock()
         self._cupy = None
 
@@ -375,10 +301,9 @@ class CuPyBF16Decoder:
                     module = cupy.RawModule(
                         code=source,
                         options=("--std=c++14",),
-                        name_expressions=(_KERNEL_NAME, _BATCH_KERNEL_NAME),
+                        name_expressions=(_BATCH_KERNEL_NAME,),
                     )
-                    kernel = module.get_function(_KERNEL_NAME)
-                    batch_kernel = module.get_function(_BATCH_KERNEL_NAME)
+                    kernel = module.get_function(_BATCH_KERNEL_NAME)
             except Exception as error:
                 raise RuntimeError(
                     "Failed to compile NeuralZip's BF16 CUDA decoder with "
@@ -390,7 +315,6 @@ class CuPyBF16Decoder:
             compiled = _CompiledKernel(
                 module=module,
                 function=kernel,
-                batch_function=batch_kernel,
             )
             self._kernels[device_index] = compiled
             return compiled
@@ -409,64 +333,15 @@ class CuPyBF16Decoder:
                 self._external_streams.popitem(last=False)
             return stream
 
-    def _launch_for_inputs(
-        self,
-        lut,
-        encoded_exponents,
-        sign_mantissa,
-        packed_gaps,
-        output_positions,
-        output,
-        *,
-        max_bits,
-        threads_per_block,
-    ):
-        key = _decode_launch_key(
-            lut,
-            encoded_exponents,
-            sign_mantissa,
-            packed_gaps,
-            output_positions,
-            output,
-            max_bits=max_bits,
-            threads_per_block=threads_per_block,
-        )
-        if key is not None:
-            with self._launch_lock:
-                launch = self._launches.get(key)
-                if launch is not None:
-                    self._launches.move_to_end(key)
-                    return launch
-
-        launch = _validate_decode_inputs(
-            lut,
-            encoded_exponents,
-            sign_mantissa,
-            packed_gaps,
-            output_positions,
-            output,
-            max_bits=max_bits,
-            threads_per_block=threads_per_block,
-        )
-        if key is not None:
-            with self._launch_lock:
-                self._launches[key] = launch
-                self._launches.move_to_end(key)
-                while len(self._launches) > _MAX_CACHED_LAUNCHES:
-                    self._launches.popitem(last=False)
-        return launch
-
     def _ensure_shared_memory(
         self,
         cupy,
         compiled,
         device_index,
         required_bytes,
-        *,
-        kernel_name,
     ):
         default_limit = compiled.default_shared_memory
-        configured = compiled.configured_shared_memory.get(kernel_name, 0)
+        configured = compiled.configured_shared_memory
         if default_limit is not None and (
             required_bytes <= default_limit or required_bytes <= configured
         ):
@@ -474,7 +349,7 @@ class CuPyBF16Decoder:
 
         with compiled.configuration_lock:
             default_limit = compiled.default_shared_memory
-            configured = compiled.configured_shared_memory.get(kernel_name, 0)
+            configured = compiled.configured_shared_memory
             if default_limit is not None and (
                 required_bytes <= default_limit or required_bytes <= configured
             ):
@@ -506,20 +381,15 @@ class CuPyBF16Decoder:
                     "limit. Reduce threads_per_block or split the encoded group."
                 )
 
-            function = (
-                compiled.function
-                if kernel_name == _KERNEL_NAME
-                else compiled.batch_function
-            )
             try:
-                function.max_dynamic_shared_size_bytes = required_bytes
+                compiled.function.max_dynamic_shared_size_bytes = required_bytes
             except (AttributeError, RuntimeError, TypeError) as error:
                 raise RuntimeError(
                     "This CuPy version cannot opt the NeuralZip kernel into the "
                     f"required {required_bytes} bytes of dynamic shared memory. "
                     "Upgrade CuPy or split the encoded group."
                 ) from error
-            compiled.configured_shared_memory[kernel_name] = required_bytes
+            compiled.configured_shared_memory = required_bytes
 
     def prepare_batch(
         self,
@@ -652,14 +522,13 @@ class CuPyBF16Decoder:
                 compiled,
                 prepared.device_index,
                 prepared.shared_memory,
-                kernel_name=_BATCH_KERNEL_NAME,
             )
             stream = self._external_stream_for(
                 cupy,
                 torch_stream,
                 prepared.device_index,
             )
-            compiled.batch_function(
+            compiled.function(
                 prepared.kernel_grid,
                 prepared.kernel_block,
                 prepared.kernel_args,
@@ -693,10 +562,20 @@ class CuPyBF16Decoder:
     ):
         """Decode one continuous exponent stream into an existing BF16 tensor.
 
-        The launch is asynchronous on PyTorch's current CUDA stream. All input
+        The group uses the same batched kernel as runtime block decoding. The
+        launch is asynchronous on PyTorch's current CUDA stream, so all input
         tensors must remain alive until work on that stream completes.
         """
-        launch = self._launch_for_inputs(
+        group = BF16DecodeGroup(
+            lut=lut,
+            encoded_exponents=encoded_exponents,
+            sign_mantissa=sign_mantissa,
+            packed_gaps=packed_gaps,
+            output_positions=output_positions,
+            output=output,
+            max_bits=max_bits,
+        )
+        launch = _validate_decode_inputs(
             lut,
             encoded_exponents,
             sign_mantissa,
@@ -708,31 +587,11 @@ class CuPyBF16Decoder:
         )
         if launch.n_elements == 0:
             return output
-
-        cupy = self._cupy_for_launch()
-        compiled = self._kernel_for_device(cupy, launch.device_index)
-
-        torch_stream = torch.cuda.current_stream(device=lut.device)
-        with cupy.cuda.Device(launch.device_index):
-            self._ensure_shared_memory(
-                cupy,
-                compiled,
-                launch.device_index,
-                launch.shared_memory,
-                kernel_name=_KERNEL_NAME,
-            )
-            stream = self._external_stream_for(
-                cupy,
-                torch_stream,
-                launch.device_index,
-            )
-            compiled.function(
-                launch.kernel_grid,
-                launch.kernel_block,
-                launch.kernel_args,
-                shared_mem=launch.shared_memory,
-                stream=stream,
-            )
+        prepared = self.prepare_batch(
+            (group,),
+            threads_per_block=threads_per_block,
+        )
+        self.decode_batch(prepared)
         return output
 
 
@@ -743,48 +602,3 @@ def default_decoder() -> CuPyBF16Decoder:
     """Return the process-wide lazy decoder used by NeuralZip runtimes."""
 
     return _DEFAULT_DECODER
-
-
-def decode_bf16(
-    lut,
-    encoded_exponents,
-    sign_mantissa,
-    packed_gaps,
-    output_positions,
-    output,
-    *,
-    max_bits,
-    threads_per_block=_DEFAULT_THREADS_PER_BLOCK,
-):
-    """Decode using the 512-thread layout emitted by the GPU exporter."""
-    return _DEFAULT_DECODER.decode(
-        lut,
-        encoded_exponents,
-        sign_mantissa,
-        packed_gaps,
-        output_positions,
-        output,
-        max_bits=max_bits,
-        threads_per_block=threads_per_block,
-    )
-
-
-def prepare_bf16_batch(
-    groups: Iterable[BF16DecodeGroup],
-    *,
-    threads_per_block=_DEFAULT_THREADS_PER_BLOCK,
-) -> PreparedBF16Batch:
-    """Prepare immutable descriptors for one batched decode launch."""
-
-    return _DEFAULT_DECODER.prepare_batch(
-        groups,
-        threads_per_block=threads_per_block,
-    )
-
-
-def decode_bf16_batch(
-    prepared: PreparedBF16Batch,
-) -> tuple[torch.Tensor, ...]:
-    """Decode a previously prepared batch in one CUDA launch."""
-
-    return _DEFAULT_DECODER.decode_batch(prepared)

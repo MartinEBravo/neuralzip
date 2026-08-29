@@ -1,4 +1,4 @@
-"""Shared numerical metrics used by compression and experiment pipelines."""
+"""Numerical metrics used by NeuralZip clustering."""
 
 import numpy as np
 
@@ -34,30 +34,3 @@ def jensen_shannon_distance(left, right):
         right[right_mask] * np.log2(right[right_mask] / middle[right_mask])
     )
     return float(np.sqrt(max(float(divergence), 0.0)))
-
-
-def shannon_entropy_from_counts(counts):
-    """Return zero-order base-2 entropy for non-negative symbol counts."""
-
-    counts = np.asarray(counts, dtype=np.float64)
-    total = float(counts.sum())
-    if total == 0.0:
-        return 0.0
-    probabilities = counts[counts > 0] / total
-    return float(-(probabilities * np.log2(probabilities)).sum())
-
-
-def conditional_entropy_from_counts(transition_counts):
-    """Return first-order entropy from a matrix of transition counts."""
-
-    transition_counts = np.asarray(transition_counts, dtype=np.float64)
-    total = float(transition_counts.sum())
-    if total == 0.0:
-        return 0.0
-    return float(
-        sum(
-            (float(row.sum()) / total) * shannon_entropy_from_counts(row)
-            for row in transition_counts
-            if row.sum() > 0
-        )
-    )

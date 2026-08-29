@@ -1,4 +1,4 @@
-"""Canonical and crash-safe primitives for NeuralZip GPU artifacts."""
+"""Canonical and crash-safe primitives for NeuralZip artifacts."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 from safetensors.torch import save_file
@@ -49,7 +50,7 @@ def canonical_json_loads(source: str, *, document: str) -> object:
         )
     except GPUPretrainedError:
         raise
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
+    except (TypeError, ValueError) as error:
         raise GPUPretrainedError(f"Unable to parse {document}.") from error
 
 
@@ -106,33 +107,44 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fsync_directory(path: Path) -> None:
+def _fsync_directory(path: Path, *, strict: bool) -> None:
     try:
         descriptor = os.open(path, os.O_RDONLY)
     except OSError:  # pragma: no cover - platform/filesystem dependent.
+        if strict:
+            raise
         return
     try:
         os.fsync(descriptor)
     except OSError:  # pragma: no cover - platform/filesystem dependent.
-        pass
+        if strict:
+            raise
     finally:
         os.close(descriptor)
 
 
-def atomic_text(path: Path, source: str) -> None:
+@contextmanager
+def atomic_path(path: Path, *, strict_directory: bool = False) -> Iterator[Path]:
+    """Yield a temporary sibling, then durably replace ``path`` on success."""
+
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}."
     )
+    os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(source)
-            handle.flush()
+        yield temporary
+        with temporary.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _fsync_directory(path.parent, strict=strict_directory)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def atomic_text(path: Path, source: str) -> None:
+    with atomic_path(path) as temporary:
+        temporary.write_text(source, encoding="ascii", newline="\n")
 
 
 def atomic_safetensors(
@@ -141,16 +153,5 @@ def atomic_safetensors(
     *,
     metadata: Mapping[str, str],
 ) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}."
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
+    with atomic_path(path) as temporary:
         save_file(dict(tensors), str(temporary), metadata=dict(metadata))
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)

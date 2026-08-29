@@ -20,10 +20,6 @@ class Huff0CodeTable:
     max_bits: int
 
 
-def _bytes(value):
-    return value if isinstance(value, (bytes, bytearray, memoryview)) else bytes(value)
-
-
 def _immutable_bytes(value):
     """Pin native decoder input against concurrent caller mutation."""
     return value if isinstance(value, bytes) else bytes(value)
@@ -48,7 +44,7 @@ def _normalize_mixed_stream_modes(stream_modes):
             (
                 kind,
                 codebook.handle,
-                _bytes(mode.get("vocab", b"")),
+                _immutable_bytes(mode.get("vocab", b"")),
                 int(mode.get("ngram_n", 1)),
             )
         )
@@ -86,24 +82,42 @@ def compress_mixed_streams_many(
 
 
 def decompress_mixed_streams_many(tensor_specs, *, threads=0):
-    """Decode sharing-only ``(element_size, bit_reorder, numel, groups)`` specs."""
+    """Decode ``(element_size, bit_reorder, numel, groups)`` specs."""
+
+    def native_chunk(chunk):
+        if len(chunk) == 4:
+            mode, payload, symbol_count, decodebook = chunk
+            vocab, ngram_n, escape_bytes, tail = b"", 1, b"", b""
+        elif len(chunk) == 8:
+            (
+                mode,
+                payload,
+                symbol_count,
+                decodebook,
+                vocab,
+                ngram_n,
+                escape_bytes,
+                tail,
+            ) = chunk
+        else:
+            raise ValueError("Decode chunks must contain 4 or 8 fields.")
+        return (
+            str(mode),
+            _immutable_bytes(payload),
+            int(symbol_count),
+            decodebook,
+            _immutable_bytes(vocab),
+            int(ngram_n),
+            _immutable_bytes(escape_bytes),
+            _immutable_bytes(tail),
+        )
+
     native_specs = tuple(
         (
             int(element_size),
             bool(bit_reorder),
             int(numel),
-            tuple(
-                tuple(
-                    (
-                        str(mode),
-                        _immutable_bytes(payload),
-                        int(symbol_count),
-                        decodebook,
-                    )
-                    for mode, payload, symbol_count, decodebook in group
-                )
-                for group in groups
-            ),
+            tuple(tuple(native_chunk(chunk) for chunk in group) for group in groups),
         )
         for element_size, bit_reorder, numel, groups in tensor_specs
     )
@@ -140,30 +154,3 @@ def export_code_table(codebook, *, max_bits=12):
         _immutable_bytes(codebook), max_bits=int(max_bits)
     )
     return Huff0CodeTable(tuple(lengths), tuple(values), int(actual_max_bits))
-
-
-def decompress_with_decodebook(payload, symbol_count, decodebook):
-    return _huff0_cpp.decompress_with_decodebook(
-        _immutable_bytes(payload), decodebook, int(symbol_count)
-    )
-
-
-def decompress_ngram_with_decodebook(
-    payload,
-    symbol_count,
-    decodebook,
-    vocab,
-    *,
-    n,
-    escape_bytes,
-    tail,
-):
-    return _huff0_cpp.decompress_ngram_with_decodebook(
-        _immutable_bytes(payload),
-        decodebook,
-        int(symbol_count),
-        _immutable_bytes(vocab),
-        int(n),
-        _immutable_bytes(escape_bytes),
-        _immutable_bytes(tail),
-    )

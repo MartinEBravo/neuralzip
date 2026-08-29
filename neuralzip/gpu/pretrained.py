@@ -10,7 +10,7 @@ import os
 import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -19,7 +19,7 @@ import torch
 from safetensors import safe_open
 from torch import nn
 
-from . import _persistence
+from .. import _persistence
 from .export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
 from .inference import (
     BF16WeightGroup,
@@ -96,37 +96,10 @@ def _parse_manifest(path: Path) -> dict[str, object]:
     return value
 
 
-def _require_string_list(value: object, *, context: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item for item in value
-    ):
-        raise GPUPretrainedError(f"{context} must be an array of non-empty strings.")
-    result = tuple(value)
-    if len(result) != len(set(result)):
-        raise GPUPretrainedError(f"{context} must not contain duplicates.")
-    return result
-
-
 def _require_list(value: object, *, context: str) -> list[object]:
     if not isinstance(value, list):
         raise GPUPretrainedError(f"{context} must be a JSON array.")
     return value
-
-
-def _int_tuple(
-    value: object,
-    *,
-    context: str,
-    length: int | None = None,
-    maximum: int | None = None,
-) -> tuple[int, ...]:
-    source = _require_list(value, context=context)
-    if length is not None and len(source) != length:
-        raise GPUPretrainedError(f"{context} must contain {length} integers.")
-    return tuple(
-        _require_int(item, context=f"{context} entry", maximum=maximum)
-        for item in source
-    )
 
 
 def _checkpoint_directory(value: str | os.PathLike[str], *, create: bool) -> Path:
@@ -732,18 +705,8 @@ def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
         previous_id = codebook_id
         try:
             codebooks[codebook_id] = GPUCodebook.from_codes(
-                _int_tuple(
-                    record["lengths"],
-                    context=f"codebook {codebook_id} lengths",
-                    length=256,
-                    maximum=12,
-                ),
-                _int_tuple(
-                    record["values"],
-                    context=f"codebook {codebook_id} values",
-                    length=256,
-                    maximum=(1 << 12) - 1,
-                ),
+                record["lengths"],
+                record["values"],
             )
         except (TypeError, ValueError) as error:
             raise GPUPretrainedError(f"Codebook {codebook_id} is invalid.") from error
@@ -789,16 +752,9 @@ def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
                 raise GPUPretrainedError(
                     f"{binding_context} is outside its transformer block."
                 )
-            shape = _int_tuple(
-                binding["shape"], context=f"{binding_context} shape", length=2
-            )
-            requires_grad = binding["requires_grad"]
-            if not isinstance(requires_grad, bool):
-                raise GPUPretrainedError(
-                    f"{binding_context} requires_grad must be a boolean."
-                )
-            numel = shape[0] * shape[1]
             try:
+                shape = tuple(binding["shape"])
+                numel = shape[0] * shape[1]
                 bindings.append(
                     LinearWeightBinding(
                         block_name=block_name,
@@ -808,13 +764,11 @@ def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
                         numel=numel,
                         workspace_offset=workspace_offset + group_offset,
                         group_offset=group_offset,
-                        requires_grad=requires_grad,
-                        module_kind=_require_string(
-                            binding["kind"], context=f"{binding_context} kind"
-                        ),
+                        requires_grad=binding["requires_grad"],
+                        module_kind=binding["kind"],
                     )
                 )
-            except (TypeError, ValueError) as error:
+            except (IndexError, TypeError, ValueError) as error:
                 raise GPUPretrainedError(f"{binding_context} is invalid.") from error
             group_offset += numel
 
@@ -874,7 +828,7 @@ def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
         raise GPUPretrainedError("Every stored codebook must be used.")
     resident_names = tuple(
         _require_name(name, context="resident weight name")
-        for name in _require_string_list(
+        for name in _require_list(
             structure["resident_weight_names"], context="resident_weight_names"
         )
     )
@@ -891,6 +845,14 @@ def _load_gpu_export(path: Path, value: object) -> NeuralZipModelExport:
         )
     except (TypeError, ValueError) as error:
         raise GPUPretrainedError("The GPU export structure is invalid.") from error
+
+
+def _empty_weights():
+    try:
+        from accelerate import init_empty_weights
+    except ImportError:
+        return nullcontext()
+    return init_empty_weights(include_buffers=False)
 
 
 def _auto_model(
@@ -919,11 +881,7 @@ def _auto_model(
         trust_remote_code=trust_remote_code,
     )
     try:
-        try:
-            from accelerate import init_empty_weights
-        except ImportError:
-            return auto_class.from_config(config, trust_remote_code=trust_remote_code)
-        with init_empty_weights(include_buffers=False):
+        with _empty_weights():
             return auto_class.from_config(config, trust_remote_code=trust_remote_code)
     except Exception as error:
         raise GPUPretrainedError(
@@ -951,11 +909,7 @@ def _diffusers_model(directory: Path, model_class_name: str) -> nn.Module:
         )
     try:
         config = model_class.load_config(directory)
-        try:
-            from accelerate import init_empty_weights
-        except ImportError:
-            return model_class.from_config(config)
-        with init_empty_weights(include_buffers=False):
+        with _empty_weights():
             return model_class.from_config(config)
     except Exception as error:
         raise GPUPretrainedError(
@@ -993,14 +947,13 @@ def _validated_compressed_weights(
 
 
 def _tensor_slot(model: nn.Module, tensor_name: str) -> tuple[nn.Module, str]:
-    segments = tensor_name.split(".")
-    module = model
-    for segment in segments[:-1]:
-        child = getattr(module, segment, None)
-        if not isinstance(child, nn.Module):
-            raise GPUPretrainedError(f"The model has no tensor path {tensor_name!r}.")
-        module = child
-    return module, segments[-1]
+    parent, _, leaf = tensor_name.rpartition(".")
+    try:
+        return model.get_submodule(parent), leaf
+    except AttributeError as error:
+        raise GPUPretrainedError(
+            f"The model has no tensor path {tensor_name!r}."
+        ) from error
 
 
 def _link_resident_alias(

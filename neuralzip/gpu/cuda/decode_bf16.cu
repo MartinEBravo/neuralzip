@@ -239,7 +239,6 @@ __device__ __forceinline__ void decode_bf16_block(
 
         output_idx += 1U;
         long_buffer <<= nbits;
-        free_bits = static_cast<uint8_t>(free_bits + nbits);
     }
     __syncthreads();
 

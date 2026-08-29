@@ -147,20 +147,12 @@ def unpack_restart_gaps(
             f"packed_gaps has {len(packed)} bytes; expected {expected_bytes}."
         )
 
-    values = []
-    bit_offset = 0
-    for _ in range(count):
-        value = 0
-        for _bit in range(GAP_BITS):
-            byte = packed[bit_offset // 8]
-            value = (value << 1) | ((byte >> (7 - bit_offset % 8)) & 1)
-            bit_offset += 1
-        values.append(value)
-
-    for offset in range(bit_offset, len(packed) * 8):
-        if (packed[offset // 8] >> (7 - offset % 8)) & 1:
-            raise ValueError("Unused packed-gap padding bits must be zero.")
-    return tuple(values)
+    if count % 2 and packed[-1] & 0x0F:
+        raise ValueError("Unused packed-gap padding bits must be zero.")
+    return tuple(
+        (packed[index // 2] >> (4 if index % 2 == 0 else 0)) & 0x0F
+        for index in range(count)
+    )
 
 
 @dataclass(frozen=True)

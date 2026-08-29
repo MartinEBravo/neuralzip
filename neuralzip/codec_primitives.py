@@ -69,57 +69,40 @@ def _byte_group_dtype_config(dtype):
     return config
 
 
-def _reorder_float32(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u4")).copy()
-    sign = (values >> np.uint32(8)) & np.uint32(0x00800000)
-    exponent = (values << np.uint32(1)) & np.uint32(0xFF000000)
-    mantissa = values & np.uint32(0x007FFFFF)
-    return (exponent | sign | mantissa).astype(np.dtype("<u4"), copy=False).tobytes()
-
-
-def _restore_float32(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u4")).copy()
-    sign = (values << np.uint32(8)) & np.uint32(0x80000000)
-    exponent = (values >> np.uint32(1)) & np.uint32(0x7F800000)
-    mantissa = values & np.uint32(0x007FFFFF)
-    return (sign | exponent | mantissa).astype(np.dtype("<u4"), copy=False).tobytes()
-
-
-def _reorder_bfloat16(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u2")).copy()
-    sign = (values >> np.uint16(8)) & np.uint16(0x0080)
-    exponent = (values << np.uint16(1)) & np.uint16(0xFF00)
-    mantissa = values & np.uint16(0x007F)
-    return (exponent | sign | mantissa).astype(np.dtype("<u2"), copy=False).tobytes()
-
-
-def _restore_bfloat16(raw_bytes):
-    values = np.frombuffer(raw_bytes, dtype=np.dtype("<u2")).copy()
-    sign = (values << np.uint16(8)) & np.uint16(0x8000)
-    exponent = (values >> np.uint16(1)) & np.uint16(0x7F80)
-    mantissa = values & np.uint16(0x007F)
-    return (sign | exponent | mantissa).astype(np.dtype("<u2"), copy=False).tobytes()
+def _transform_exponent_layout(raw_bytes, dtype, *, restore):
+    storage_dtype, mantissa_bits, exponent_mask = _FLOAT_EXPONENT_LAYOUTS[dtype]
+    unsigned = storage_dtype.type
+    exponent_bits = int(exponent_mask).bit_length()
+    values = np.frombuffer(raw_bytes, dtype=storage_dtype).copy()
+    mantissa = values & unsigned((1 << mantissa_bits) - 1)
+    if restore:
+        sign = (values << unsigned(exponent_bits)) & unsigned(
+            1 << (mantissa_bits + exponent_bits)
+        )
+        exponent = (values >> unsigned(1)) & unsigned(exponent_mask << mantissa_bits)
+    else:
+        sign = (values >> unsigned(exponent_bits)) & unsigned(1 << mantissa_bits)
+        exponent = (values << unsigned(1)) & unsigned(
+            exponent_mask << (mantissa_bits + 1)
+        )
+    return (sign | exponent | mantissa).astype(storage_dtype, copy=False).tobytes()
 
 
 def _byte_group_reordered_bytes(tensor, config):
     raw_bytes = _tensor_raw_bytes(tensor)
-    if not config["bit_reorder"]:
-        return raw_bytes
-    if tensor.dtype == torch.float32:
-        return _reorder_float32(raw_bytes)
-    if tensor.dtype == torch.bfloat16:
-        return _reorder_bfloat16(raw_bytes)
-    return raw_bytes
+    return (
+        _transform_exponent_layout(raw_bytes, tensor.dtype, restore=False)
+        if config["bit_reorder"]
+        else raw_bytes
+    )
 
 
 def _byte_group_restored_bytes(raw_bytes, dtype, config):
-    if not config["bit_reorder"]:
-        return raw_bytes
-    if dtype == torch.float32:
-        return _restore_float32(raw_bytes)
-    if dtype == torch.bfloat16:
-        return _restore_bfloat16(raw_bytes)
-    return raw_bytes
+    return (
+        _transform_exponent_layout(raw_bytes, dtype, restore=True)
+        if config["bit_reorder"]
+        else raw_bytes
+    )
 
 
 def exponent_distribution(tensor):

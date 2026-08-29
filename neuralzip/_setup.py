@@ -5,13 +5,11 @@ Native Huff0 handles are process-local, so the persisted representation keeps
 only canonical codebook headers and rebuilds independent handles on demand.
 """
 
-import os
 import pickle
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import huff0
+from . import _persistence, huff0
 from .neuralzip_codec import NeuralZipCodec
 from .operations import SetupReport
 
@@ -206,15 +204,6 @@ def materialize_setup(value_or_path, *, threads=None):
     return value
 
 
-def _fsync_directory(path):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def save_setup(value, path):
     """Atomically and durably persist a current ``NeuralZipSetup`` value."""
 
@@ -222,23 +211,9 @@ def save_setup(value, path):
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            pickle.dump(setup, handle, protocol=5)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        temporary = None
-        _fsync_directory(path.parent)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    with (
+        _persistence.atomic_path(path, strict_directory=True) as temporary,
+        temporary.open("wb") as handle,
+    ):
+        pickle.dump(setup, handle, protocol=5)
     return path

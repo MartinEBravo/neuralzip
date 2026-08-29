@@ -60,13 +60,7 @@ def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
 
 
 def _byte_group_dtype_config(dtype):
-    config = BYTE_GROUP_DTYPE_CONFIG.get(dtype)
-    if config is None:
-        raise TypeError(
-            "NeuralZip supports torch.float32, torch.bfloat16, and torch.float16 "
-            f"tensors; got {dtype}."
-        )
-    return config
+    return BYTE_GROUP_DTYPE_CONFIG[dtype]
 
 
 def _transform_exponent_layout(raw_bytes, dtype, *, restore):
@@ -108,12 +102,7 @@ def _byte_group_restored_bytes(raw_bytes, dtype, config):
 def exponent_distribution(tensor):
     """Return the normalized exponent histogram of a floating tensor."""
 
-    if not torch.is_tensor(tensor) or not tensor.is_floating_point():
-        raise TypeError("exponent_distribution expects a floating-point tensor.")
-    layout = _FLOAT_EXPONENT_LAYOUTS.get(tensor.dtype)
-    if layout is None:
-        raise TypeError(f"Unsupported floating dtype: {tensor.dtype}.")
-    storage_dtype, mantissa_bits, exponent_mask = layout
+    storage_dtype, mantissa_bits, exponent_mask = _FLOAT_EXPONENT_LAYOUTS[tensor.dtype]
     bits = np.frombuffer(_tensor_raw_bytes(tensor), dtype=storage_dtype)
     exponent = (bits >> mantissa_bits) & exponent_mask
     counts = np.bincount(exponent, minlength=256).astype(np.float64)
@@ -145,13 +134,6 @@ _KIND_PRIORITY = {
 }
 
 
-def _finite_nonnegative(value, label):
-    number = float(value)
-    if not math.isfinite(number) or number < 0:
-        raise ValueError(f"{label} must be finite and non-negative.")
-    return number
-
-
 def _kind(mode):
     return str(mode.get("kind", ""))
 
@@ -165,20 +147,11 @@ def select_fastest_within_ratio(
 ):
     """Select the fastest mode within a size tolerance of the smallest."""
 
-    tolerance = _finite_nonnegative(ratio_tolerance, "ratio_tolerance")
-    modes = tuple(candidates)
-    if not modes:
-        raise ValueError("candidates must not be empty.")
-
-    scored = []
-    for mode in modes:
-        byte_count = _finite_nonnegative(
-            estimated_bytes(mode), f"estimated bytes for {_kind(mode)!r}"
-        )
-        seconds = _finite_nonnegative(
-            estimated_seconds(mode), f"estimated seconds for {_kind(mode)!r}"
-        )
-        scored.append((mode, byte_count, seconds))
+    tolerance = float(ratio_tolerance)
+    scored = [
+        (mode, float(estimated_bytes(mode)), float(estimated_seconds(mode)))
+        for mode in candidates
+    ]
 
     best_bytes = min(
         scored,
@@ -203,13 +176,10 @@ def select_fastest_within_ratio(
 def select_packed_time_budget(evaluations, *, packed_time_budget_ratio):
     """Choose packed opportunities within the global setup-time budget."""
 
-    budget_ratio = _finite_nonnegative(
-        packed_time_budget_ratio, "packed_time_budget_ratio"
-    )
+    budget_ratio = float(packed_time_budget_ratio)
     rows = tuple(evaluations)
     budget_seconds = budget_ratio * sum(
-        _finite_nonnegative(row.get("base_seconds", 0.0), "base_seconds")
-        for row in rows
+        float(row.get("base_seconds", 0.0)) for row in rows
     )
 
     opportunities = []
@@ -217,13 +187,8 @@ def select_packed_time_budget(evaluations, *, packed_time_budget_ratio):
         opportunity = row.get("opportunity")
         if opportunity is None:
             continue
-        saved_bytes = _finite_nonnegative(
-            opportunity.get("saved_bytes", 0.0), "packed saved_bytes"
-        )
-        raw_extra_seconds = float(opportunity.get("extra_seconds", 0.0))
-        if not math.isfinite(raw_extra_seconds):
-            raise ValueError("packed extra_seconds must be finite.")
-        extra_seconds = max(0.0, raw_extra_seconds)
+        saved_bytes = float(opportunity.get("saved_bytes", 0.0))
+        extra_seconds = max(0.0, float(opportunity.get("extra_seconds", 0.0)))
         if saved_bytes <= 0:
             continue
         savings_per_second = (

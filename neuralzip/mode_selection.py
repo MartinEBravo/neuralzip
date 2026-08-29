@@ -17,7 +17,6 @@ from typing import Any
 DEFAULT_KIND_PRIORITY = (
     "shared_huff0",
     "packed_huff0",
-    "local_huff0",
     "raw",
 )
 
@@ -47,8 +46,8 @@ def select_fastest_within_ratio(
     eligible candidate wins.  Remaining ties use byte count and then
     a fixed mode priority so the result is stable across input ordering.
 
-    This policy lets a shared representation replace
-    ``local_huff0`` when it is faster and its ratio regression is acceptable.
+    This policy lets a faster shared representation trade a bounded amount of
+    compression ratio for lower post-setup latency.
     """
 
     tolerance = _finite_nonnegative(ratio_tolerance, "ratio_tolerance")

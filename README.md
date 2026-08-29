@@ -22,8 +22,21 @@ cd nzip
 python -m pip install -e .
 ```
 
-Python 3.10 or newer and a C/C++ compiler are required. Installation builds the
-bundled Huff0 extension from the vendored Zstd sources.
+Python 3.10 or newer and a C/C++ compiler are required when installing from
+source. The native extension compiles the Huff0 slice from a pinned official
+[Zstd revision](https://github.com/facebook/zstd/commit/5233c58e6ca0b1c4c6b353ad79649191ed195bdc).
+Source builds download that revision, verify the archive's SHA-256, and extract
+only the required files into the temporary build directory. Built wheels
+contain the compiled code and do not download or dynamically link Zstd at
+runtime.
+
+For an offline source build, download the pinned archive once and point the
+build at it; the same SHA-256 check still applies:
+
+```bash
+NEURALZIP_ZSTD_ARCHIVE=/path/to/zstd-5233c58.tar.gz \
+  python -m pip install .
+```
 
 Install the GPU runtime when compressed inference is needed:
 

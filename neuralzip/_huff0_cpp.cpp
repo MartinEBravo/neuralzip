@@ -42,13 +42,9 @@ private:
 constexpr std::size_t kMaxBlockSize = HUF_BLOCKSIZE_MAX;
 constexpr unsigned kMaxSymbolValue = HUF_SYMBOLVALUE_MAX;
 constexpr unsigned kTableLog = HUF_TABLELOG_DEFAULT;
-// HUF_buildTree() uses 1 << 30 and 1 << 31 as queue sentinels. Keep the
-// complete histogram strictly below the first sentinel before passing its
-// unsigned counters to Huff0.
+constexpr unsigned kMaxTableLog = HUF_TABLELOG_ABSOLUTEMAX;
 constexpr std::uint64_t kMaxHistogramTotal =
     (static_cast<std::uint64_t>(1) << 30U) - 1U;
-
-constexpr bool kDynamicBmi2Compiled = DYNAMIC_BMI2 != 0;
 
 bool detect_runtime_bmi2() noexcept {
 #if DYNAMIC_BMI2
@@ -65,16 +61,12 @@ const int kFlags = HUF_flags_disableAsm |
 struct Huff0Codebook {
     std::vector<HUF_CElt> ctable;
     std::vector<std::uint8_t> serialized;
+    bool covers_all_symbols = false;
 };
 
 struct Huff0Decodebook {
     std::vector<HUF_DTable> dtable_x1;
     std::vector<HUF_DTable> dtable_x2;
-};
-
-struct LocalBlockResult {
-    std::vector<std::uint8_t> payload;
-    std::string error;
 };
 
 struct NGramBlockResult {
@@ -85,12 +77,10 @@ struct NGramBlockResult {
     Py_ssize_t hits = 0;
     Py_ssize_t misses = 0;
     bool encoded = false;
-    std::string error;
 };
 
 enum class MixedMode {
     Raw,
-    LocalHuff0,
     SharedHuff0,
     PackedHuff0,
 };
@@ -259,48 +249,6 @@ PyObject* ngram_result_to_tuple(const NGramBlockResult& result) {
     return output;
 }
 
-LocalBlockResult compress_local_block(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    Py_ssize_t min_saving_bytes) {
-    LocalBlockResult result;
-    if (data_len <= 0 || static_cast<std::size_t>(data_len) > kMaxBlockSize) {
-        return result;
-    }
-    try {
-        result.payload.resize(HUF_compressBound(static_cast<std::size_t>(data_len)));
-        std::vector<std::uint64_t> workspace(HUF_WORKSPACE_SIZE_U64);
-        std::vector<HUF_CElt> ctable(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
-        HUF_repeat repeat = HUF_repeat_none;
-        size_t size = HUF_compress4X_repeat(
-            result.payload.data(),
-            result.payload.size(),
-            data,
-            static_cast<std::size_t>(data_len),
-            kMaxSymbolValue,
-            kTableLog,
-            workspace.data(),
-            workspace.size() * sizeof(std::uint64_t),
-            ctable.data(),
-            &repeat,
-            kFlags);
-        check_huf(size);
-        // HUF_compress() uses a one-byte result as an RLE sentinel.  Keep that
-        // block raw because HUF_decompress() expects a regular Huff0 frame.
-        if (size <= 1
-            || size + static_cast<std::size_t>(min_saving_bytes)
-                >= static_cast<std::size_t>(data_len)) {
-            result.payload.clear();
-            return result;
-        }
-        result.payload.resize(size);
-    } catch (const std::exception& error) {
-        result.payload.clear();
-        result.error = error.what();
-    }
-    return result;
-}
-
 inline std::uint8_t byte_group_stream_byte(
     const std::uint8_t* raw,
     int element_size,
@@ -467,34 +415,6 @@ void release_vector(std::vector<std::uint8_t>& data) {
     std::vector<std::uint8_t>().swap(data);
 }
 
-void apply_mixed_local_or_raw(
-    MixedBlockResult& result,
-    Py_ssize_t min_saving_bytes,
-    double compression_threshold) {
-    if (result.raw.size() > kMaxBlockSize) {
-        result.error = "Huff0 chunk exceeds its block-size limit.";
-        return;
-    }
-    LocalBlockResult compressed = compress_local_block(
-        result.raw.data(),
-        static_cast<Py_ssize_t>(result.raw.size()),
-        min_saving_bytes);
-    if (!compressed.error.empty()) {
-        result.error = compressed.error;
-        return;
-    }
-    if (
-        !compressed.payload.empty()
-        && static_cast<double>(compressed.payload.size())
-            < static_cast<double>(result.raw.size()) * compression_threshold) {
-        result.mode = MixedMode::LocalHuff0;
-        result.payload = std::move(compressed.payload);
-        release_vector(result.raw);
-        return;
-    }
-    result.mode = MixedMode::Raw;
-}
-
 std::vector<std::uint8_t> decompress_local_block(
     const std::uint8_t* payload,
     Py_ssize_t payload_len,
@@ -565,15 +485,12 @@ std::array<unsigned, 256> count_symbols(const std::uint8_t* data, Py_ssize_t dat
     return counts;
 }
 
-bool has_enough_symbols(const std::array<unsigned, 256>& counts) {
-    int nonzero = 0;
+unsigned nonzero_symbol_count(const std::array<unsigned, 256>& counts) {
+    unsigned nonzero = 0;
     for (unsigned count : counts) {
-        nonzero += count > 0 ? 1 : 0;
-        if (nonzero >= 2) {
-            return true;
-        }
+        nonzero += count > 0 ? 1U : 0U;
     }
-    return false;
+    return nonzero;
 }
 
 unsigned max_observed_symbol(const std::array<unsigned, 256>& counts) {
@@ -588,16 +505,21 @@ unsigned max_observed_symbol(const std::array<unsigned, 256>& counts) {
 std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
     const std::array<unsigned, 256>& counts,
     unsigned max_bits) {
-    if (!has_enough_symbols(counts)) {
+    const unsigned symbol_count = nonzero_symbol_count(counts);
+    if (symbol_count < 2) {
         throw std::runtime_error("Huff0 requires at least two symbols.");
     }
-    unsigned const max_symbol_value = max_observed_symbol(counts);
+    if (symbol_count > (1U << max_bits)) {
+        throw std::runtime_error(
+            "Huff0 max_bits cannot represent every observed symbol.");
+    }
+    const unsigned max_symbol_value = max_observed_symbol(counts);
 
     auto codebook = std::make_unique<Huff0Codebook>();
     codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
-
+    codebook->covers_all_symbols = symbol_count == counts.size();
     std::vector<unsigned> build_workspace(HUF_CTABLE_WORKSPACE_SIZE_U32);
-    size_t table_log = HUF_buildCTable_wksp(
+    const size_t table_log = HUF_buildCTable_wksp(
         codebook->ctable.data(),
         counts.data(),
         max_symbol_value,
@@ -608,7 +530,7 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
 
     codebook->serialized.resize(HUF_CTABLEBOUND);
     std::vector<std::uint64_t> write_workspace(HUF_WORKSPACE_SIZE_U64);
-    size_t header_size = HUF_writeCTable_wksp(
+    const size_t header_size = HUF_writeCTable_wksp(
         codebook->serialized.data(),
         codebook->serialized.size(),
         codebook->ctable.data(),
@@ -618,7 +540,6 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
         write_workspace.size() * sizeof(std::uint64_t));
     check_huf(header_size);
     codebook->serialized.resize(header_size);
-
     return codebook;
 }
 
@@ -657,13 +578,15 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_header(
         throw std::runtime_error(
             "Huff0 did not consume the full codebook header.");
     }
+    codebook->covers_all_symbols =
+        max_symbol_value == kMaxSymbolValue && has_zero_weights == 0;
     codebook->serialized.assign(header, header + header_len);
     return codebook;
 }
 
 struct ExportedCodeTable {
-    std::array<std::uint8_t, HUF_SYMBOLVALUE_MAX + 1> code_lengths{};
-    std::array<std::uint16_t, HUF_SYMBOLVALUE_MAX + 1> code_values{};
+    std::array<std::uint8_t, kMaxSymbolValue + 1> code_lengths{};
+    std::array<std::uint16_t, kMaxSymbolValue + 1> code_values{};
     unsigned max_bits = 0;
 };
 
@@ -700,15 +623,10 @@ ExportedCodeTable export_code_table_from_header(
             "Huff0 codebook exceeds the requested max_bits limit.");
     }
 
-    // HUF_CElt is a size_t whose low byte stores nbBits. HUF_setValue() in
-    // upstream Huff0 stores the logical (right-aligned) code in the top
-    // nbBits of the word. Extracting those high bits reproduces the exact
-    // canonical code assigned by HUF_readCTable(), independent of endianness.
     constexpr unsigned ctable_word_bits = sizeof(HUF_CElt) * 8U;
     ExportedCodeTable output;
     for (unsigned symbol = 0; symbol <= kMaxSymbolValue; ++symbol) {
-        const unsigned length = HUF_getNbBitsFromCTable(
-            ctable.data(), symbol);
+        const unsigned length = HUF_getNbBitsFromCTable(ctable.data(), symbol);
         if (length > max_bits || length > HUF_TABLELOG_ABSOLUTEMAX) {
             throw std::runtime_error(
                 "Huff0 symbol code exceeds the supported bit limit.");
@@ -718,7 +636,6 @@ ExportedCodeTable export_code_table_from_header(
         if (length == 0) {
             continue;
         }
-
         const HUF_CElt entry = ctable[static_cast<std::size_t>(symbol) + 1U];
         const HUF_CElt value = entry >> (ctable_word_bits - length);
         if (value >= (static_cast<HUF_CElt>(1U) << length)) {
@@ -974,46 +891,35 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
     return result;
 }
 
-std::vector<std::uint8_t> encode_with_ctable(
+std::vector<std::uint8_t> encode_huff0_block(
     const std::uint8_t* data,
     Py_ssize_t data_len,
-    const HUF_CElt* ctable,
+    const Huff0Codebook& codebook,
     std::size_t max_output_bytes,
     bool four_streams = false) {
     if (data_len <= 0 || static_cast<std::size_t>(data_len) > kMaxBlockSize) {
         return {};
     }
-    // Huff0's 4X encoder can require workspace slack in the destination even
-    // when the final compressed payload is smaller than max_output_bytes.
-    // Restricting the destination up front therefore creates false rejections
-    // (and can turn an otherwise valid local frame into a raw fallback).  Give
-    // the codec its documented bound, then apply the caller's exact limit to
-    // the returned payload size below.
-    std::size_t capacity = HUF_compressBound(static_cast<std::size_t>(data_len));
+    if (!codebook.covers_all_symbols) {
+        for (Py_ssize_t index = 0; index < data_len; ++index) {
+            if (HUF_getNbBitsFromCTable(codebook.ctable.data(), data[index]) == 0) {
+                return {};
+            }
+        }
+    }
+    const std::size_t capacity = HUF_compressBound(
+        static_cast<std::size_t>(data_len));
     if (capacity == 0) {
         return {};
     }
-
     std::vector<std::uint8_t> output(capacity);
-    // HUF_compress4X_usingCTable() is the immutable, prevalidated-table
-    // equivalent of HUF_compress4X_repeat(..., HUF_repeat_valid,
-    // HUF_flags_preferRepeat).  Use it directly so a single CTable can be
-    // shared safely by parallel encoding jobs without mutable repeat state.
-    size_t size = four_streams
+    const size_t size = four_streams
         ? HUF_compress4X_usingCTable(
-              output.data(),
-              output.size(),
-              data,
-              static_cast<std::size_t>(data_len),
-              ctable,
-              kFlags)
+              output.data(), output.size(), data,
+              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags)
         : HUF_compress1X_usingCTable(
-              output.data(),
-              output.size(),
-              data,
-              static_cast<std::size_t>(data_len),
-              ctable,
-              kFlags);
+              output.data(), output.size(), data,
+              static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags);
     if (HUF_isError(size)) {
         if (max_output_bytes != std::numeric_limits<std::size_t>::max()) {
             return {};
@@ -1040,7 +946,7 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(const std::uint8_t*
     decodebook->dtable_x2[0] = static_cast<HUF_DTable>(
         HUF_TABLELOG_MAX * 0x01000001U);
     std::vector<unsigned> workspace(HUF_DECOMPRESS_WORKSPACE_SIZE_U32);
-    size_t read_size_x1 = HUF_readDTableX1_wksp(
+    const size_t read_size_x1 = HUF_readDTableX1_wksp(
         decodebook->dtable_x1.data(),
         header,
         static_cast<std::size_t>(header_len),
@@ -1049,9 +955,10 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(const std::uint8_t*
         kFlags);
     check_huf(read_size_x1);
     if (read_size_x1 != static_cast<std::size_t>(header_len)) {
-        throw std::runtime_error("Huff0 X1 did not consume the full codebook header.");
+        throw std::runtime_error(
+            "Huff0 X1 did not consume the full codebook header.");
     }
-    size_t read_size_x2 = HUF_readDTableX2_wksp(
+    const size_t read_size_x2 = HUF_readDTableX2_wksp(
         decodebook->dtable_x2.data(),
         header,
         static_cast<std::size_t>(header_len),
@@ -1060,7 +967,8 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(const std::uint8_t*
         kFlags);
     check_huf(read_size_x2);
     if (read_size_x2 != static_cast<std::size_t>(header_len)) {
-        throw std::runtime_error("Huff0 X2 did not consume the full codebook header.");
+        throw std::runtime_error(
+            "Huff0 X2 did not consume the full codebook header.");
     }
     return decodebook;
 }
@@ -1069,13 +977,12 @@ const HUF_DTable* select_decode_dtable(
     const Huff0Decodebook& decodebook,
     std::size_t symbol_count,
     std::size_t payload_len) {
-    if (HUF_selectDecoder(symbol_count, payload_len) != 0) {
-        return decodebook.dtable_x2.data();
-    }
-    return decodebook.dtable_x1.data();
+    return HUF_selectDecoder(symbol_count, payload_len) != 0
+        ? decodebook.dtable_x2.data()
+        : decodebook.dtable_x1.data();
 }
 
-std::vector<std::uint8_t> decode_with_dtable(
+std::vector<std::uint8_t> decode_huff0_block(
     const std::uint8_t* payload,
     Py_ssize_t payload_len,
     Py_ssize_t symbol_count,
@@ -1095,21 +1002,13 @@ std::vector<std::uint8_t> decode_with_dtable(
         decodebook,
         static_cast<std::size_t>(symbol_count),
         static_cast<std::size_t>(payload_len));
-    size_t decoded = four_streams
+    const size_t decoded = four_streams
         ? HUF_decompress4X_usingDTable(
-              output.data(),
-              output.size(),
-              payload,
-              static_cast<std::size_t>(payload_len),
-              dtable,
-              kFlags)
+              output.data(), output.size(), payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags)
         : HUF_decompress1X_usingDTable(
-              output.data(),
-              output.size(),
-              payload,
-              static_cast<std::size_t>(payload_len),
-              dtable,
-              kFlags);
+              output.data(), output.size(), payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags);
     check_huf(decoded);
     if (decoded != static_cast<std::size_t>(symbol_count)) {
         throw std::runtime_error("Huff0 decoded size mismatch.");
@@ -1117,7 +1016,7 @@ std::vector<std::uint8_t> decode_with_dtable(
     return output;
 }
 
-void decode_with_dtable_into(
+void decode_huff0_block_into(
     const std::uint8_t* payload,
     Py_ssize_t payload_len,
     std::uint8_t* output,
@@ -1131,24 +1030,14 @@ void decode_with_dtable_into(
         return;
     }
     const HUF_DTable* dtable = select_decode_dtable(
-        decodebook,
-        symbol_count,
-        static_cast<std::size_t>(payload_len));
-    size_t decoded = four_streams
+        decodebook, symbol_count, static_cast<std::size_t>(payload_len));
+    const size_t decoded = four_streams
         ? HUF_decompress4X_usingDTable(
-              output,
-              symbol_count,
-              payload,
-              static_cast<std::size_t>(payload_len),
-              dtable,
-              kFlags)
+              output, symbol_count, payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags)
         : HUF_decompress1X_usingDTable(
-              output,
-              symbol_count,
-              payload,
-              static_cast<std::size_t>(payload_len),
-              dtable,
-              kFlags);
+              output, symbol_count, payload,
+              static_cast<std::size_t>(payload_len), dtable, kFlags);
     check_huf(decoded);
     if (decoded != symbol_count) {
         throw std::runtime_error("Huff0 decoded size mismatch.");
@@ -1431,7 +1320,7 @@ NGramTokenization tokenize_byte_group_stream_ngrams(
 
 NGramBlockResult encode_tokenized_ngram_block(
     NGramTokenization tokens,
-    const HUF_CElt* ctable,
+    const Huff0Codebook& codebook,
     Py_ssize_t min_saving_bytes,
     std::size_t max_output_bytes,
     bool four_streams = false) {
@@ -1440,10 +1329,10 @@ NGramBlockResult encode_tokenized_ngram_block(
         return result;
     }
 
-    result.payload = encode_with_ctable(
+    result.payload = encode_huff0_block(
         tokens.tokens.data(),
         static_cast<Py_ssize_t>(tokens.tokens.size()),
-        ctable,
+        codebook,
         max_output_bytes,
         four_streams);
     if (result.payload.empty()
@@ -1467,14 +1356,14 @@ NGramBlockResult encode_ngram_block(
     Py_ssize_t data_len,
     int n,
     const std::vector<std::uint64_t>& vocab,
-    const HUF_CElt* ctable,
+    const Huff0Codebook& codebook,
     Py_ssize_t min_saving_bytes,
     std::size_t max_output_bytes,
     bool four_streams = false,
     const NGramVocabLookup* lookup = nullptr) {
     return encode_tokenized_ngram_block(
         tokenize_ngrams(data, data_len, n, vocab, lookup),
-        ctable,
+        codebook,
         min_saving_bytes,
         max_output_bytes,
         four_streams);
@@ -1484,8 +1373,6 @@ const char* mixed_mode_name(MixedMode mode) {
     switch (mode) {
         case MixedMode::Raw:
             return "raw";
-        case MixedMode::LocalHuff0:
-            return "local_huff0";
         case MixedMode::SharedHuff0:
             return "shared_huff0";
         case MixedMode::PackedHuff0:
@@ -1504,12 +1391,6 @@ void process_mixed_block(
     if (spec.mode == MixedMode::Raw) {
         return;
     }
-    if (spec.mode == MixedMode::LocalHuff0) {
-        apply_mixed_local_or_raw(
-            result, min_saving_bytes, compression_threshold);
-        return;
-    }
-
     if (spec.codebook == nullptr) {
         throw std::runtime_error("Mixed shared/packed mode is missing a codebook.");
     }
@@ -1519,10 +1400,10 @@ void process_mixed_block(
             static_cast<double>(result.raw.size()) * compression_threshold)
             - kSharedMetadataBytes;
         if (budget > 0) {
-            std::vector<std::uint8_t> payload = encode_with_ctable(
+            std::vector<std::uint8_t> payload = encode_huff0_block(
                 result.raw.data(),
                 static_cast<Py_ssize_t>(result.raw.size()),
-                spec.codebook->ctable.data(),
+                *spec.codebook,
                 static_cast<std::size_t>(budget),
                 spec.frame_4x);
             if (
@@ -1555,7 +1436,7 @@ void process_mixed_block(
         static_cast<Py_ssize_t>(result.raw.size()),
         spec.ngram_n,
         spec.vocab,
-        spec.codebook->ctable.data(),
+        *spec.codebook,
         min_saving_bytes,
         static_cast<std::size_t>(budget),
         spec.frame_4x,
@@ -1616,7 +1497,7 @@ void process_mixed_packed_block(
             static_cast<Py_ssize_t>(length),
             spec.ngram_n,
             spec.vocab_lookup),
-        spec.codebook->ctable.data(),
+        *spec.codebook,
         min_saving_bytes,
         static_cast<std::size_t>(budget),
         spec.frame_4x);
@@ -1707,7 +1588,8 @@ bool parse_mixed_stream_specs(
     PyObject* mode_source,
     int element_size,
     std::size_t base_chunk_size,
-    std::vector<MixedStreamSpec>& specs) {
+    std::vector<MixedStreamSpec>& specs,
+    PyObject*& mode_owner) {
     // Take an immutable snapshot so every mode tuple and codebook capsule
     // remains alive while worker threads run without the GIL, even if a raw
     // extension caller supplied a mutable outer sequence.
@@ -1751,9 +1633,6 @@ bool parse_mixed_stream_specs(
             if (std::strcmp(kind, "raw") == 0) {
                 spec.mode = MixedMode::Raw;
                 spec.ngram_n = 1;
-            } else if (std::strcmp(kind, "local_huff0") == 0) {
-                spec.mode = MixedMode::LocalHuff0;
-                spec.ngram_n = 1;
             } else if (std::strcmp(kind, "shared_huff0") == 0) {
                 spec.mode = MixedMode::SharedHuff0;
                 spec.codebook = codebook_from_capsule(capsule);
@@ -1789,9 +1668,7 @@ bool parse_mixed_stream_specs(
 
             if (spec.mode == MixedMode::Raw) {
                 spec.chunk_size = base_chunk_size;
-            } else if (
-                spec.mode == MixedMode::LocalHuff0
-                || spec.mode == MixedMode::SharedHuff0) {
+            } else if (spec.mode == MixedMode::SharedHuff0) {
                 spec.chunk_size = std::min(base_chunk_size, kMaxBlockSize);
             } else {
                 std::size_t n = static_cast<std::size_t>(spec.ngram_n);
@@ -1809,7 +1686,7 @@ bool parse_mixed_stream_specs(
         return false;
     }
 
-    Py_DECREF(mode_sequence);
+    mode_owner = mode_sequence;
     return true;
 }
 
@@ -1933,10 +1810,10 @@ bool validate_codebook_options(Py_ssize_t prior_count, Py_ssize_t max_bits) {
         PyErr_SetString(PyExc_ValueError, "prior_count must fit in unsigned.");
         return false;
     }
-    if (max_bits < 1 || max_bits > HUF_TABLELOG_ABSOLUTEMAX) {
+    if (max_bits < 1 || max_bits > static_cast<Py_ssize_t>(kMaxTableLog)) {
         PyErr_SetString(
             PyExc_ValueError,
-            "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
+            "max_bits must be in [1, 12].");
         return false;
     }
     return true;
@@ -2151,7 +2028,7 @@ PyObject* py_build_decodebook(PyObject*, PyObject* args) {
 PyObject* py_export_code_table(
     PyObject*, PyObject* args, PyObject* kwargs) {
     Py_buffer header_view;
-    Py_ssize_t max_bits = HUF_TABLELOG_ABSOLUTEMAX;
+    Py_ssize_t max_bits = 12;
     static const char* keyword_names[] = {
         "codebook", "max_bits", nullptr};
     if (!PyArg_ParseTupleAndKeywords(
@@ -2165,12 +2042,11 @@ PyObject* py_export_code_table(
     }
     if (
         max_bits <= 0
-        || max_bits > static_cast<Py_ssize_t>(HUF_TABLELOG_ABSOLUTEMAX)) {
+        || max_bits > 12) {
         PyBuffer_Release(&header_view);
         PyErr_Format(
             PyExc_ValueError,
-            "max_bits must be in [1, %u].",
-            HUF_TABLELOG_ABSOLUTEMAX);
+            "max_bits must be in [1, 12].");
         return nullptr;
     }
 
@@ -2434,10 +2310,10 @@ PyObject* py_encode_with_codebook_impl(
                 ? std::numeric_limits<std::size_t>::max()
                 : static_cast<std::size_t>(max_output_bytes);
         std::vector<std::uint8_t> encoded =
-            encode_with_ctable(
+            encode_huff0_block(
                 data,
                 data_view.len,
-                codebook->ctable.data(),
+                *codebook,
                 max_bytes,
                 four_streams);
 
@@ -2477,175 +2353,6 @@ PyObject* py_encode_with_codebook(PyObject*, PyObject* args, PyObject* kwargs) {
 
 PyObject* py_encode_with_codebook_4x(PyObject*, PyObject* args, PyObject* kwargs) {
     return py_encode_with_codebook_impl(args, kwargs, true);
-}
-
-PyObject* py_encode_many_with_codebook_impl(
-    PyObject* args, PyObject* kwargs, bool four_streams) {
-    PyObject* source = nullptr;
-    PyObject* capsule = nullptr;
-    Py_ssize_t min_saving_bytes = 0;
-    double compression_threshold = 0.95;
-    Py_ssize_t metadata_bytes = 0;
-    int requested_threads = 0;
-    static const char* keyword_names[] = {
-        "chunks",
-        "codebook",
-        "min_saving_bytes",
-        "compression_threshold",
-        "metadata_bytes",
-        "threads",
-        nullptr,
-    };
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "OO|ndni",
-            const_cast<char**>(keyword_names),
-            &source,
-            &capsule,
-            &min_saving_bytes,
-            &compression_threshold,
-            &metadata_bytes,
-            &requested_threads)) {
-        return nullptr;
-    }
-    if (
-        min_saving_bytes < 0
-        || metadata_bytes < 0
-        || requested_threads < 0
-        || !(compression_threshold > 0.0 && compression_threshold <= 1.0)) {
-        PyErr_SetString(PyExc_ValueError, "Invalid batch Huff0 encoding limits.");
-        return nullptr;
-    }
-
-    Huff0Codebook* codebook = nullptr;
-    try {
-        codebook = codebook_from_capsule(capsule);
-    } catch (const std::exception& error) {
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
-    PyObject* sequence = PySequence_Fast(source, "chunks must be a sequence");
-    if (!sequence) {
-        return nullptr;
-    }
-    Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
-    std::vector<Py_buffer> views(static_cast<std::size_t>(count));
-    Py_ssize_t acquired = 0;
-    for (; acquired < count; ++acquired) {
-        PyObject* item = PySequence_Fast_GET_ITEM(sequence, acquired);
-        if (PyObject_GetBuffer(
-                item,
-                &views[static_cast<std::size_t>(acquired)],
-                PyBUF_CONTIG_RO) < 0) {
-            break;
-        }
-        if (views[static_cast<std::size_t>(acquired)].len
-            > static_cast<Py_ssize_t>(kMaxBlockSize)) {
-            PyErr_SetString(PyExc_ValueError, "Huff0 chunk exceeds its block-size limit.");
-            ++acquired;
-            break;
-        }
-    }
-    if (PyErr_Occurred() || acquired != count) {
-        for (Py_ssize_t index = 0; index < acquired; ++index) {
-            PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-        }
-        Py_DECREF(sequence);
-        return nullptr;
-    }
-
-    std::vector<LocalBlockResult> results(static_cast<std::size_t>(count));
-    std::size_t total_input_bytes = 0;
-    for (const auto& view : views) {
-        total_input_bytes += static_cast<std::size_t>(view.len);
-    }
-    PyThreadState* saved = PyEval_SaveThread();
-    std::string thread_error = run_parallel_jobs(
-        static_cast<std::size_t>(count),
-        total_input_bytes,
-        requested_threads,
-        [&](std::size_t index) {
-            const Py_buffer& view = views[index];
-            LocalBlockResult& result = results[index];
-            try {
-                Py_ssize_t budget = static_cast<Py_ssize_t>(
-                    static_cast<double>(view.len) * compression_threshold)
-                    - metadata_bytes;
-                if (budget <= 0) {
-                    return;
-                }
-                result.payload = encode_with_ctable(
-                    static_cast<const std::uint8_t*>(view.buf),
-                    view.len,
-                    codebook->ctable.data(),
-                    static_cast<std::size_t>(budget),
-                    four_streams);
-                if (
-                    !result.payload.empty()
-                    && (
-                        result.payload.size()
-                                + static_cast<std::size_t>(min_saving_bytes)
-                            >= static_cast<std::size_t>(view.len)
-                        || static_cast<double>(metadata_bytes)
-                                + static_cast<double>(result.payload.size())
-                            >= static_cast<double>(view.len)
-                                * compression_threshold)) {
-                    result.payload.clear();
-                }
-            } catch (const std::exception& error) {
-                result.error = error.what();
-            } catch (...) {
-                result.error = "Unknown shared Huff0 encoding failure.";
-            }
-        });
-    PyEval_RestoreThread(saved);
-
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-    }
-    Py_DECREF(sequence);
-    if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return nullptr;
-    }
-    for (const auto& result : results) {
-        if (!result.error.empty()) {
-            PyErr_SetString(PyExc_ValueError, result.error.c_str());
-            return nullptr;
-        }
-    }
-
-    PyObject* output = PyList_New(count);
-    if (!output) {
-        return nullptr;
-    }
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        const auto& payload = results[static_cast<std::size_t>(index)].payload;
-        PyObject* item = nullptr;
-        if (payload.empty()) {
-            item = Py_None;
-            Py_INCREF(item);
-        } else {
-            item = bytes_from_vector(payload);
-        }
-        if (!item) {
-            Py_DECREF(output);
-            return nullptr;
-        }
-        PyList_SET_ITEM(output, index, item);
-    }
-    return output;
-}
-
-PyObject* py_encode_many_with_codebook(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_many_with_codebook_impl(args, kwargs, false);
-}
-
-PyObject* py_encode_many_with_codebook_4x(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_many_with_codebook_impl(args, kwargs, true);
 }
 
 PyObject* py_encode_ngram_with_codebook_impl(
@@ -2707,7 +2414,7 @@ PyObject* py_encode_ngram_with_codebook_impl(
             data_view.len,
             static_cast<int>(n),
             vocab,
-            codebook->ctable.data(),
+            *codebook,
             min_saving_bytes,
             max_bytes,
             four_streams,
@@ -2743,215 +2450,6 @@ PyObject* py_encode_ngram_with_codebook_4x(
     return py_encode_ngram_with_codebook_impl(args, kwargs, true);
 }
 
-PyObject* py_encode_many_ngram_with_codebook_impl(
-    PyObject* args, PyObject* kwargs, bool four_streams) {
-    PyObject* source = nullptr;
-    PyObject* capsule = nullptr;
-    Py_buffer vocab_view;
-    Py_ssize_t n = 0;
-    Py_ssize_t min_saving_bytes = 0;
-    double compression_threshold = 0.95;
-    Py_ssize_t metadata_bytes = 0;
-    int requested_threads = 0;
-    static const char* keyword_names[] = {
-        "chunks",
-        "codebook",
-        "vocab",
-        "n",
-        "min_saving_bytes",
-        "compression_threshold",
-        "metadata_bytes",
-        "threads",
-        nullptr,
-    };
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "OOy*n|ndni",
-            const_cast<char**>(keyword_names),
-            &source,
-            &capsule,
-            &vocab_view,
-            &n,
-            &min_saving_bytes,
-            &compression_threshold,
-            &metadata_bytes,
-            &requested_threads)) {
-        return nullptr;
-    }
-    if (
-        n < 1
-        || n > 8
-        || min_saving_bytes < 0
-        || metadata_bytes < 0
-        || requested_threads < 0
-        || !(compression_threshold > 0.0 && compression_threshold <= 1.0)) {
-        PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, "Invalid batch packed Huff0 encoding limits.");
-        return nullptr;
-    }
-
-    Huff0Codebook* codebook = nullptr;
-    std::vector<std::uint64_t> vocab;
-    NGramVocabLookup vocab_lookup;
-    try {
-        codebook = codebook_from_capsule(capsule);
-        vocab = vocab_from_view(vocab_view, static_cast<int>(n));
-        vocab_lookup = build_ngram_vocab_lookup(vocab);
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&vocab_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
-    PyBuffer_Release(&vocab_view);
-
-    PyObject* sequence = PySequence_Fast(source, "chunks must be a sequence");
-    if (!sequence) {
-        return nullptr;
-    }
-    Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
-    std::vector<Py_buffer> views;
-    try {
-        views.resize(static_cast<std::size_t>(count));
-    } catch (const std::bad_alloc&) {
-        Py_DECREF(sequence);
-        PyErr_NoMemory();
-        return nullptr;
-    }
-    Py_ssize_t acquired = 0;
-    for (; acquired < count; ++acquired) {
-        PyObject* item = PySequence_Fast_GET_ITEM(sequence, acquired);
-        if (PyObject_GetBuffer(
-                item,
-                &views[static_cast<std::size_t>(acquired)],
-                PyBUF_CONTIG_RO) < 0) {
-            break;
-        }
-    }
-    if (PyErr_Occurred() || acquired != count) {
-        for (Py_ssize_t index = 0; index < acquired; ++index) {
-            PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-        }
-        Py_DECREF(sequence);
-        return nullptr;
-    }
-
-    std::vector<NGramBlockResult> results;
-    try {
-        results.resize(static_cast<std::size_t>(count));
-    } catch (const std::bad_alloc&) {
-        for (Py_ssize_t index = 0; index < count; ++index) {
-            PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-        }
-        Py_DECREF(sequence);
-        PyErr_NoMemory();
-        return nullptr;
-    }
-    std::size_t total_input_bytes = 0;
-    for (const auto& view : views) {
-        std::size_t size = static_cast<std::size_t>(view.len);
-        if (size > std::numeric_limits<std::size_t>::max() - total_input_bytes) {
-            total_input_bytes = std::numeric_limits<std::size_t>::max();
-            break;
-        }
-        total_input_bytes += size;
-    }
-
-    PyThreadState* saved = PyEval_SaveThread();
-    std::string thread_error = run_parallel_jobs(
-        static_cast<std::size_t>(count),
-        total_input_bytes,
-        requested_threads,
-        [&](std::size_t index) {
-            const Py_buffer& view = views[index];
-            NGramBlockResult& result = results[index];
-            try {
-                Py_ssize_t max_payload_bytes = std::max<Py_ssize_t>(
-                    0,
-                    static_cast<Py_ssize_t>(
-                        static_cast<double>(view.len) * compression_threshold)
-                        - metadata_bytes);
-                result = encode_ngram_block(
-                    static_cast<const std::uint8_t*>(view.buf),
-                    view.len,
-                    static_cast<int>(n),
-                    vocab,
-                    codebook->ctable.data(),
-                    min_saving_bytes,
-                    static_cast<std::size_t>(max_payload_bytes),
-                    four_streams,
-                    &vocab_lookup);
-                if (!result.encoded) {
-                    return;
-                }
-
-                double compressed_bytes = static_cast<double>(metadata_bytes)
-                    + static_cast<double>(result.payload.size())
-                    + static_cast<double>(result.escapes.size())
-                    + static_cast<double>(result.tail.size());
-                if (compressed_bytes
-                    >= static_cast<double>(view.len) * compression_threshold) {
-                    result.encoded = false;
-                }
-            } catch (const std::exception& error) {
-                result.error = error.what();
-            } catch (...) {
-                result.error = "Unknown packed Huff0 encoding failure.";
-            }
-        });
-    PyEval_RestoreThread(saved);
-
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-    }
-    Py_DECREF(sequence);
-    if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return nullptr;
-    }
-    for (const auto& result : results) {
-        if (!result.error.empty()) {
-            PyErr_SetString(PyExc_ValueError, result.error.c_str());
-            return nullptr;
-        }
-    }
-
-    PyObject* output = PyList_New(count);
-    if (!output) {
-        return nullptr;
-    }
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        const auto& result = results[static_cast<std::size_t>(index)];
-        PyObject* item = nullptr;
-        if (!result.encoded) {
-            item = Py_None;
-            Py_INCREF(item);
-        } else {
-            item = ngram_result_to_tuple(result);
-        }
-        if (!item) {
-            Py_DECREF(output);
-            return nullptr;
-        }
-        PyList_SET_ITEM(output, index, item);
-    }
-    return output;
-}
-
-PyObject* py_encode_many_ngram_with_codebook(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_many_ngram_with_codebook_impl(args, kwargs, false);
-}
-
-PyObject* py_encode_many_ngram_with_codebook_4x(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    return py_encode_many_ngram_with_codebook_impl(args, kwargs, true);
-}
-
 PyObject* py_decompress_with_decodebook_impl(PyObject* args, bool four_streams) {
     Py_buffer payload_view;
     PyObject* capsule = nullptr;
@@ -2964,7 +2462,7 @@ PyObject* py_decompress_with_decodebook_impl(PyObject* args, bool four_streams) 
         Huff0Decodebook* decodebook = decodebook_from_capsule(capsule);
         const auto* payload = static_cast<const std::uint8_t*>(payload_view.buf);
         std::vector<std::uint8_t> decoded =
-            decode_with_dtable(
+            decode_huff0_block(
                 payload,
                 payload_view.len,
                 symbol_count,
@@ -3024,7 +2522,7 @@ PyObject* py_decompress_ngram_with_decodebook_impl(
     try {
         Huff0Decodebook* decodebook = decodebook_from_capsule(capsule);
         const auto* payload = static_cast<const std::uint8_t*>(payload_view.buf);
-        std::vector<std::uint8_t> tokens = decode_with_dtable(
+        std::vector<std::uint8_t> tokens = decode_huff0_block(
             payload,
             payload_view.len,
             symbol_count,
@@ -3060,118 +2558,6 @@ PyObject* py_decompress_ngram_with_decodebook(PyObject*, PyObject* args) {
 
 PyObject* py_decompress_ngram_with_decodebook_4x(PyObject*, PyObject* args) {
     return py_decompress_ngram_with_decodebook_impl(args, true);
-}
-
-PyObject* py_compress_many(PyObject*, PyObject* args, PyObject* kwargs) {
-    PyObject* source = nullptr;
-    Py_ssize_t min_saving_bytes = 0;
-    int requested_threads = 0;
-    static const char* keyword_names[] = {
-        "chunks", "min_saving_bytes", "threads", nullptr};
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "O|ni",
-            const_cast<char**>(keyword_names),
-            &source,
-            &min_saving_bytes,
-            &requested_threads)) {
-        return nullptr;
-    }
-    if (min_saving_bytes < 0 || requested_threads < 0) {
-        PyErr_SetString(
-            PyExc_ValueError,
-            "min_saving_bytes and threads must be non-negative.");
-        return nullptr;
-    }
-
-    PyObject* sequence = PySequence_Fast(source, "chunks must be a sequence");
-    if (!sequence) {
-        return nullptr;
-    }
-    Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
-    std::vector<Py_buffer> views(static_cast<std::size_t>(count));
-    Py_ssize_t acquired = 0;
-    for (; acquired < count; ++acquired) {
-        PyObject* item = PySequence_Fast_GET_ITEM(sequence, acquired);
-        if (PyObject_GetBuffer(
-                item,
-                &views[static_cast<std::size_t>(acquired)],
-                PyBUF_CONTIG_RO) < 0) {
-            break;
-        }
-        if (views[static_cast<std::size_t>(acquired)].len
-            > static_cast<Py_ssize_t>(kMaxBlockSize)) {
-            PyErr_SetString(PyExc_ValueError, "Huff0 chunk exceeds its block-size limit.");
-            ++acquired;
-            break;
-        }
-    }
-    if (PyErr_Occurred() || acquired != count) {
-        for (Py_ssize_t index = 0; index < acquired; ++index) {
-            PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-        }
-        Py_DECREF(sequence);
-        return nullptr;
-    }
-
-    std::vector<LocalBlockResult> results(static_cast<std::size_t>(count));
-    std::string thread_error;
-    if (count > 0) {
-        std::size_t total_input_bytes = 0;
-        for (const auto& view : views) {
-            total_input_bytes += static_cast<std::size_t>(view.len);
-        }
-        PyThreadState* saved = PyEval_SaveThread();
-        thread_error = run_parallel_jobs(
-            static_cast<std::size_t>(count),
-            total_input_bytes,
-            requested_threads,
-            [&](std::size_t index) {
-                const Py_buffer& view = views[index];
-                results[index] = compress_local_block(
-                    static_cast<const std::uint8_t*>(view.buf),
-                    view.len,
-                    min_saving_bytes);
-            });
-        PyEval_RestoreThread(saved);
-    }
-
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        PyBuffer_Release(&views[static_cast<std::size_t>(index)]);
-    }
-    Py_DECREF(sequence);
-    if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return nullptr;
-    }
-    for (const auto& result : results) {
-        if (!result.error.empty()) {
-            PyErr_SetString(PyExc_ValueError, result.error.c_str());
-            return nullptr;
-        }
-    }
-
-    PyObject* output = PyList_New(count);
-    if (!output) {
-        return nullptr;
-    }
-    for (Py_ssize_t index = 0; index < count; ++index) {
-        const auto& result = results[static_cast<std::size_t>(index)];
-        PyObject* item = nullptr;
-        if (result.payload.empty()) {
-            item = Py_None;
-            Py_INCREF(item);
-        } else {
-            item = bytes_from_vector(result.payload);
-        }
-        if (!item) {
-            Py_DECREF(output);
-            return nullptr;
-        }
-        PyList_SET_ITEM(output, index, item);
-    }
-    return output;
 }
 
 PyObject* py_compress_mixed_streams_many(
@@ -3221,6 +2607,7 @@ PyObject* py_compress_mixed_streams_many(
         Py_buffer raw_view{};
         int element_size = 0;
         bool bit_reorder = false;
+        PyObject* mode_owner = nullptr;
         std::vector<MixedStreamSpec> specs;
         std::vector<std::size_t> group_sizes;
         std::size_t result_offset = 0;
@@ -3247,6 +2634,8 @@ PyObject* py_compress_mixed_streams_many(
             if (request.raw_view.obj != nullptr) {
                 PyBuffer_Release(&request.raw_view);
             }
+            Py_XDECREF(request.mode_owner);
+            request.mode_owner = nullptr;
         }
     };
     auto cleanup_and_error = [&](const char* message) -> PyObject* {
@@ -3304,7 +2693,8 @@ PyObject* py_compress_mixed_streams_many(
                 mode_source,
                 element_size,
                 static_cast<std::size_t>(requested_chunk_size),
-                request.specs)) {
+                request.specs,
+                request.mode_owner)) {
             return cleanup_and_error(nullptr);
         }
 
@@ -3819,7 +3209,7 @@ PyObject* py_decompress_mixed_streams_many(
                             case MixedStreamDecodeMode::SharedHuff0: {
                                 std::uint8_t* destination = scratch.data()
                                     + scratch_offset;
-                                decode_with_dtable_into(
+                                decode_huff0_block_into(
                                     payload,
                                     chunk.payload_view.len,
                                     destination,
@@ -3877,7 +3267,7 @@ PyObject* py_decompress_mixed_streams_many(
                             chunk.symbol_count);
                         break;
                     case MixedStreamDecodeMode::SharedHuff0:
-                        decode_with_dtable_into(
+                        decode_huff0_block_into(
                             payload,
                             chunk.payload_view.len,
                             destination,
@@ -3984,26 +3374,7 @@ PyObject* py_decompress_block(PyObject*, PyObject* args) {
     }
 }
 
-PyObject* py_backend_info(PyObject*, PyObject*) {
-    return Py_BuildValue(
-        "{s:O,s:O,s:O,s:O}",
-        "dynamic_bmi2_compiled",
-        kDynamicBmi2Compiled ? Py_True : Py_False,
-        "runtime_cpu_bmi2",
-        kRuntimeBmi2 ? Py_True : Py_False,
-        "active_bmi2",
-        (kFlags & HUF_flags_bmi2) != 0 ? Py_True : Py_False,
-        "asm_disabled",
-#ifdef ZSTD_DISABLE_ASM
-        Py_True
-#else
-        Py_False
-#endif
-    );
-}
-
 static PyMethodDef methods[] = {
-    {"backend_info", py_backend_info, METH_NOARGS, "Report native Huff0 CPU dispatch information."},
     {"max_block_size", py_max_block_size, METH_NOARGS, "Return Huff0 maximum block size."},
     {"build_codebook", reinterpret_cast<PyCFunction>(py_build_codebook), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook."},
     {"build_codebook_from_counts", reinterpret_cast<PyCFunction>(py_build_codebook_from_counts), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook from a complete 256-bin histogram."},
@@ -4013,17 +3384,12 @@ static PyMethodDef methods[] = {
     {"encode_gpu_bfloat16", reinterpret_cast<PyCFunction>(py_encode_gpu_bfloat16), METH_VARARGS | METH_KEYWORDS, "Encode little-endian BF16 bytes into the NeuralZip GPU layout."},
     {"encode_with_codebook", reinterpret_cast<PyCFunction>(py_encode_with_codebook), METH_VARARGS | METH_KEYWORDS, "Encode using a Huff0 codebook."},
     {"encode_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Encode four Huff0 streams using a precomputed codebook."},
-    {"encode_many_with_codebook", reinterpret_cast<PyCFunction>(py_encode_many_with_codebook), METH_VARARGS | METH_KEYWORDS, "Encode independent blocks with one Huff0 codebook in parallel."},
-    {"encode_many_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_many_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Encode independent four-stream blocks with one precomputed Huff0 codebook in parallel."},
     {"encode_ngram_with_codebook", reinterpret_cast<PyCFunction>(py_encode_ngram_with_codebook), METH_VARARGS | METH_KEYWORDS, "Tokenize n-grams and encode token ids using a Huff0 codebook."},
     {"encode_ngram_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_ngram_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Tokenize n-grams and encode token ids as four Huff0 streams using a precomputed codebook."},
-    {"encode_many_ngram_with_codebook", reinterpret_cast<PyCFunction>(py_encode_many_ngram_with_codebook), METH_VARARGS | METH_KEYWORDS, "Tokenize and encode independent n-gram blocks in parallel."},
-    {"encode_many_ngram_with_codebook_4x", reinterpret_cast<PyCFunction>(py_encode_many_ngram_with_codebook_4x), METH_VARARGS | METH_KEYWORDS, "Tokenize and encode independent n-gram blocks as four Huff0 streams in parallel."},
     {"decompress_with_decodebook", py_decompress_with_decodebook, METH_VARARGS, "Decompress using a Huff0 decodebook."},
     {"decompress_with_decodebook_4x", py_decompress_with_decodebook_4x, METH_VARARGS, "Decompress four Huff0 streams using a precomputed decodebook."},
     {"decompress_ngram_with_decodebook", py_decompress_ngram_with_decodebook, METH_VARARGS, "Decode Huff0 token ids and restore packed n-grams."},
     {"decompress_ngram_with_decodebook_4x", py_decompress_ngram_with_decodebook_4x, METH_VARARGS, "Decode four Huff0 token streams and restore packed n-grams."},
-    {"compress_many", reinterpret_cast<PyCFunction>(py_compress_many), METH_VARARGS | METH_KEYWORDS, "Compress independent blocks with Huff0 in parallel."},
     {"compress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_compress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed-stream Huff0 native job queue."},
     {"decompress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_decompress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Decode many mixed-stream tensors with one native job queue."},
     {"decompress_block", py_decompress_block, METH_VARARGS, "Decompress one self-contained Huff0 block."},
@@ -4033,7 +3399,7 @@ static PyMethodDef methods[] = {
 static PyModuleDef module = {
     PyModuleDef_HEAD_INIT,
     "_huff0_cpp",
-    "Direct Huff0 wrapper backed by vendored Zstandard HUF APIs.",
+    "NeuralZip stream bridge backed by upstream Zstd Huff0.",
     -1,
     methods,
 };

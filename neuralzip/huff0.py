@@ -35,8 +35,6 @@ class Huff0NGramPayload:
     symbol_count: int
     escape_bytes: bytes
     tail: bytes
-    hits: int
-    misses: int
 
 
 def _bytes(value):
@@ -57,12 +55,7 @@ def _payload(result):
 
 
 def _ngram_payload(result):
-    if result is None:
-        return None
-    encoded, symbol_count, escape_bytes, tail, hits, misses = result
-    return Huff0NGramPayload(
-        encoded, symbol_count, escape_bytes, tail, int(hits), int(misses)
-    )
+    return None if result is None else Huff0NGramPayload(*result)
 
 
 def max_block_size():
@@ -82,7 +75,7 @@ def _normalize_mixed_stream_modes(element_size, stream_modes):
         if kind not in supported:
             raise ValueError(f"Unsupported mixed Huff0 stream mode: {kind!r}.")
         if kind == "raw":
-            native_modes.append((kind, None, b"", 1, bool(mode.get("frame_4x", False))))
+            native_modes.append((kind, None, b"", 1))
             continue
 
         codebook = mode.get("codebook")
@@ -103,7 +96,6 @@ def _normalize_mixed_stream_modes(element_size, stream_modes):
                 codebook.handle,
                 vocab,
                 ngram_n,
-                bool(mode.get("frame_4x", False)),
             )
         )
     return tuple(native_modes)
@@ -147,19 +139,17 @@ def compress_mixed_streams_many(
     )
 
 
-_DECODE_MODES = frozenset({"raw", "zero", "local_huff0", "shared_huff0"})
+_DECODE_MODES = frozenset({"raw", "shared_huff0"})
 
 
 def _normalize_decode_chunk(chunk):
-    if len(chunk) != 5:
+    if len(chunk) != 4:
         raise ValueError(
             "Each decode chunk must contain mode, payload, symbol_count, "
-            "decodebook, and frame_4x."
+            "and decodebook."
         )
-    mode, payload, symbol_count, decodebook, frame_4x = chunk
+    mode, payload, symbol_count, decodebook = chunk
     mode = str(mode)
-    if mode == "packed_huff0":
-        raise ValueError("decompress_mixed_streams_many does not support packed_huff0.")
     if mode not in _DECODE_MODES:
         raise ValueError(f"Unsupported decode chunk mode: {mode!r}.")
     if isinstance(decodebook, Huff0Decodebook):
@@ -169,7 +159,6 @@ def _normalize_decode_chunk(chunk):
         _immutable_bytes(payload),
         int(symbol_count),
         decodebook,
-        bool(frame_4x),
     )
 
 
@@ -258,34 +247,17 @@ def encode_with_codebook(
     *,
     min_saving_bytes=0,
     max_output_bytes=None,
-    _frame_4x=False,
 ):
+    """Encode with a precomputed codebook using Huff0's four-stream frame."""
+
     max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
     result = _huff0_cpp.encode_with_codebook(
         _bytes(data),
         codebook.handle,
         int(min_saving_bytes),
         max_bytes,
-        bool(_frame_4x),
     )
     return _payload(result)
-
-
-def encode_with_codebook_4x(
-    data,
-    codebook,
-    *,
-    min_saving_bytes=0,
-    max_output_bytes=None,
-):
-    """Encode with a precomputed codebook using Huff0's four-stream frame."""
-    return encode_with_codebook(
-        data,
-        codebook,
-        min_saving_bytes=min_saving_bytes,
-        max_output_bytes=max_output_bytes,
-        _frame_4x=True,
-    )
 
 
 def encode_ngram_with_codebook(
@@ -296,8 +268,9 @@ def encode_ngram_with_codebook(
     n,
     min_saving_bytes=0,
     max_output_bytes=None,
-    _frame_4x=False,
 ):
+    """Tokenize n-grams and encode their IDs as a four-stream Huff0 frame."""
+
     max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
     result = _huff0_cpp.encode_ngram_with_codebook(
         _bytes(data),
@@ -306,48 +279,18 @@ def encode_ngram_with_codebook(
         int(n),
         int(min_saving_bytes),
         max_bytes,
-        bool(_frame_4x),
     )
     return _ngram_payload(result)
 
 
-def encode_ngram_with_codebook_4x(
-    data,
-    codebook,
-    vocab,
-    *,
-    n,
-    min_saving_bytes=0,
-    max_output_bytes=None,
-):
-    """Tokenize n-grams and encode token ids as one Huff0 four-stream frame."""
-    return encode_ngram_with_codebook(
-        data,
-        codebook,
-        vocab,
-        n=n,
-        min_saving_bytes=min_saving_bytes,
-        max_output_bytes=max_output_bytes,
-        _frame_4x=True,
-    )
+def decompress_with_decodebook(payload, decodebook):
+    """Decode a four-stream payload with a precomputed decodebook."""
 
-
-def decompress_block(payload, symbol_count):
-    return _huff0_cpp.decompress_block(_immutable_bytes(payload), int(symbol_count))
-
-
-def decompress_with_decodebook(payload, decodebook, *, _frame_4x=False):
     return _huff0_cpp.decompress_with_decodebook(
         _immutable_bytes(payload.payload),
         decodebook.handle,
         payload.symbol_count,
-        bool(_frame_4x),
     )
-
-
-def decompress_with_decodebook_4x(payload, decodebook):
-    """Decode a payload produced by ``encode_with_codebook_4x``."""
-    return decompress_with_decodebook(payload, decodebook, _frame_4x=True)
 
 
 def decompress_ngram_with_decodebook(
@@ -356,8 +299,9 @@ def decompress_ngram_with_decodebook(
     vocab,
     *,
     n,
-    _frame_4x=False,
 ):
+    """Decode a four-stream token payload and restore its packed n-grams."""
+
     return _huff0_cpp.decompress_ngram_with_decodebook(
         _immutable_bytes(payload.payload),
         decodebook.handle,
@@ -366,16 +310,4 @@ def decompress_ngram_with_decodebook(
         int(n),
         _immutable_bytes(payload.escape_bytes),
         _immutable_bytes(payload.tail),
-        bool(_frame_4x),
-    )
-
-
-def decompress_ngram_with_decodebook_4x(payload, decodebook, vocab, *, n):
-    """Decode four Huff0 token streams and restore their packed n-grams."""
-    return decompress_ngram_with_decodebook(
-        payload,
-        decodebook,
-        vocab,
-        n=n,
-        _frame_4x=True,
     )

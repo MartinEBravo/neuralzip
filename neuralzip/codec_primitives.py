@@ -14,20 +14,14 @@ DTYPE_BY_NAME = {
 BYTE_GROUP_DTYPE_CONFIG = {
     torch.float32: {
         "element_size": 4,
-        "num_buffers": 4,
-        "byte_reorder": 220,
         "bit_reorder": 1,
     },
     torch.bfloat16: {
         "element_size": 2,
-        "num_buffers": 2,
-        "byte_reorder": 10,
         "bit_reorder": 1,
     },
     torch.float16: {
         "element_size": 2,
-        "num_buffers": 2,
-        "byte_reorder": 10,
         "bit_reorder": 0,
     },
 }
@@ -36,7 +30,6 @@ _FLOAT_EXPONENT_LAYOUTS = {
     torch.float16: (np.dtype("<u2"), 10, 0x1F),
     torch.bfloat16: (np.dtype("<u2"), 7, 0xFF),
     torch.float32: (np.dtype("<u4"), 23, 0xFF),
-    torch.float64: (np.dtype("<u8"), 52, 0x7FF),
 }
 
 
@@ -253,9 +246,7 @@ def select_packed_time_budget(evaluations, *, packed_time_budget_ratio):
         savings_per_second = (
             math.inf if extra_seconds == 0 else saved_bytes / extra_seconds
         )
-        opportunities.append(
-            (row.get("key"), extra_seconds, savings_per_second)
-        )
+        opportunities.append((row.get("key"), extra_seconds, savings_per_second))
 
     opportunities.sort(key=lambda item: (-item[2], repr(item[0])))
     selected_keys = set()
@@ -321,10 +312,10 @@ def tokenize_ngrams(data, n, vocab):
     packed, tail = _pack_ngram_symbols(data, n)
     vocab_values = np.frombuffer(bytes(vocab), dtype=_symbol_dtype(n))
     if packed.size == 0:
-        return b"", b"", tail, 0, 0
+        return b"", b"", tail
     if vocab_values.size == 0:
         complete = bytes(data)[: packed.size * n]
-        return bytes([ESCAPE_SYMBOL]) * packed.size, complete, tail, 0, int(packed.size)
+        return bytes([ESCAPE_SYMBOL]) * packed.size, complete, tail
 
     positions = np.searchsorted(vocab_values, packed)
     safe_positions = np.minimum(positions, vocab_values.size - 1)
@@ -335,17 +326,4 @@ def tokenize_ngrams(data, n, vocab):
         -1, n
     )
     escapes = source[~hits].reshape(-1).tobytes() if np.any(~hits) else b""
-    hit_count = int(np.count_nonzero(hits))
-    return tokens.tobytes(), escapes, tail, hit_count, int(packed.size - hit_count)
-
-
-def restore_2d_stream(stream, shape, layout):
-    """Restore the transpose layout used by historical payloads."""
-
-    if layout == "original":
-        return bytes(stream)
-    if layout != "transpose2d" or len(shape) != 2:
-        raise ValueError(f"Unsupported exponent layout {layout!r} for shape {shape!r}.")
-    rows, columns = (int(value) for value in shape)
-    values = np.frombuffer(bytes(stream), dtype=np.uint8).reshape(columns, rows)
-    return values.T.copy().reshape(-1).tobytes()
+    return tokens.tobytes(), escapes, tail

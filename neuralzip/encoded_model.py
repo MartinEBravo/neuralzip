@@ -74,7 +74,6 @@ class EncodedModel:
     model_class: type[torch.nn.Module] | None = field(default=None, repr=False)
     config_class: type | None = field(default=None, repr=False)
     config: dict | None = field(default=None, repr=False)
-    training: bool | None = None
     module_training: tuple[tuple[str, bool], ...] = ()
 
     def __post_init__(self):
@@ -271,10 +270,7 @@ def _source_metadata(source, names):
                 (name, canonical) for name, _ in group if name != canonical
             )
 
-    try:
-        named_modules = source.named_modules(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        named_modules = source.named_modules()
+    named_modules = source.named_modules(remove_duplicate=False)
     module_training = tuple(
         (str(name), bool(module.training)) for name, module in named_modules
     )
@@ -292,7 +288,6 @@ def _source_metadata(source, names):
             "model_class": type(source),
             "config_class": type(source.config),
             "config": copy.deepcopy(to_dict()),
-            "training": bool(source.training),
             "module_training": module_training,
             "tensor_kinds": tuple(tensor_kinds),
             "auxiliary_state": tuple(auxiliary),
@@ -301,7 +296,6 @@ def _source_metadata(source, names):
     return {
         "source_kind": "module",
         "model_class": type(source),
-        "training": bool(source.training),
         "module_training": module_training,
         "tensor_kinds": tuple(tensor_kinds),
         "auxiliary_state": tuple(auxiliary),
@@ -369,17 +363,11 @@ def _decode_payloads(encoded, decoder):
 
 
 def _all_named_parameters(module):
-    try:
-        return tuple(module.named_parameters(remove_duplicate=False))
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        return tuple(module.named_parameters())
+    return tuple(module.named_parameters(remove_duplicate=False))
 
 
 def _all_named_buffers(module):
-    try:
-        return tuple(module.named_buffers(remove_duplicate=False))
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        return tuple(module.named_buffers())
+    return tuple(module.named_buffers(remove_duplicate=False))
 
 
 def _set_state_tensor(module, name, tensor):
@@ -507,10 +495,7 @@ def _reconstruct(
             f"{type(destination).__name__}."
         )
 
-    training_states = encoded.module_training
-    if not training_states and encoded.training is not None:
-        training_states = (("", encoded.training),)
-    training_targets = _module_training_targets(destination, training_states)
+    training_targets = _module_training_targets(destination, encoded.module_training)
 
     state = dict(tensors)
     kinds = dict(zip(encoded.names, encoded.tensor_kinds, strict=True))

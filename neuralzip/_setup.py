@@ -5,7 +5,6 @@ Native Huff0 handles are process-local, so the persisted representation keeps
 only canonical codebook headers and rebuilds independent handles on demand.
 """
 
-import io
 import os
 import pickle
 import tempfile
@@ -17,9 +16,8 @@ from .neuralzip_codec import NeuralZipCodec
 from .operations import SetupReport
 
 SETUP_MARKER = "frozen-huff0-codebook-v2"
-LEGACY_SETUP_MARKER = "frozen-huff0-codebook-v1"
 POST_SETUP_MODES = frozenset({"raw", "shared_huff0", "packed_huff0"})
-_SETUP_FORMAT_VERSION = 1
+_SETUP_FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,14 +163,10 @@ def _restore_live_codebooks(codec):
         marker = mode.get("codebook")
         if not isinstance(marker, tuple):
             continue
-        if len(marker) == 2 and marker[0] == SETUP_MARKER:
-            _, expected_header = marker
-            codebook = huff0.build_codebook_from_header(expected_header)
-        elif len(marker) == 4 and marker[0] == LEGACY_SETUP_MARKER:
-            _, tokens, prior_count, expected_header = marker
-            codebook = huff0.build_codebook(tokens, prior_count=int(prior_count))
-        else:
+        if len(marker) != 2 or marker[0] != SETUP_MARKER:
             raise ValueError("Unsupported frozen Huff0 codebook marker.")
+        _, expected_header = marker
+        codebook = huff0.build_codebook_from_header(expected_header)
         if codebook.codebook != expected_header:
             raise RuntimeError("Rebuilt Huff0 codebook differs from the frozen setup.")
 
@@ -188,34 +182,6 @@ def _restore_live_codebooks(codec):
     codec.load_codebooks(codec.export_codebooks())
 
 
-def _validate_legacy_layout(codec):
-    legacy_layout = getattr(codec, "exponent_layout", "original")
-    if legacy_layout != "original":
-        raise ValueError(
-            "Legacy NeuralZip setups with transposed exponent streams cannot "
-            "be used by the native-only encoder. Refit the setup with the "
-            "original tensor layout."
-        )
-    codec.__dict__.pop("exponent_layout", None)
-
-
-class _LegacyPlanEnvelope:
-    """Unpickling target for historical pickles containing the old wrapper."""
-
-
-class _SetupUnpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        if module == "neuralzip.plan" and name == "NeuralZipPlan":
-            return _LegacyPlanEnvelope
-        if module == "neuralzip.codec_protocol" and name == "SetupReport":
-            return SetupReport
-        return super().find_class(module, name)
-
-
-def _trusted_load(stream):
-    return _SetupUnpickler(stream).load()
-
-
 def setup_from_codec(codec, setup_report=None):
     """Capture a prepared codec as an immutable, shareable setup value."""
 
@@ -228,27 +194,11 @@ def setup_from_codec(codec, setup_report=None):
     return NeuralZipSetup(state, setup_report=setup_report)
 
 
-def _legacy_value_to_setup(value):
-    if isinstance(value, NeuralZipSetup):
-        NeuralZipSetup.__post_init__(value)
-        return value
-
-    report = None
-    if isinstance(value, _LegacyPlanEnvelope):
-        report = getattr(value, "setup_report", None)
-        value = value.codec
-    if not isinstance(value, NeuralZipCodec):
-        raise TypeError(f"Unsupported NeuralZip setup payload: {type(value)!r}.")
-    _validate_legacy_layout(value)
-    return setup_from_codec(value, setup_report=report)
-
-
 def load_setup(value_or_path):
     """Normalize a setup value or trusted pickle path to ``NeuralZipSetup``.
 
     Pickle can execute arbitrary code. ``value_or_path`` must therefore refer
-    only to a file produced by NeuralZip or another fully trusted source.
-    Historical raw-codec and ``NeuralZipPlan`` pickle layouts are accepted.
+    only to a current-format file produced by a fully trusted NeuralZip process.
     """
 
     if isinstance(value_or_path, NeuralZipSetup):
@@ -256,24 +206,20 @@ def load_setup(value_or_path):
         return value_or_path
     path = Path(value_or_path)
     with path.open("rb") as handle:
-        return _legacy_value_to_setup(_trusted_load(handle))
+        setup = pickle.load(handle)
+    if not isinstance(setup, NeuralZipSetup):
+        raise TypeError(f"Unsupported NeuralZip setup payload: {type(setup)!r}.")
+    NeuralZipSetup.__post_init__(setup)
+    return setup
 
 
 def materialize_setup(value_or_path, *, threads=None):
     """Build one independent live codec from a setup value or trusted path."""
 
     setup = load_setup(value_or_path)
-    value = _trusted_load(io.BytesIO(setup._codec_state))
+    value = pickle.loads(setup._codec_state)
     if not isinstance(value, NeuralZipCodec):
         raise TypeError(f"Unsupported NeuralZip setup state: {type(value)!r}.")
-    _validate_legacy_layout(value)
-
-    # Be defensive about setup values created by older versions: target-local
-    # transfer decisions must not survive materialization even if they appeared
-    # in the historical pickle.
-    value._transfer_mode_by_tensor_stream = {}
-    value._transfer_cluster_by_name = {}
-    value._transfer_active = False
     validate_setup(value)
     _restore_live_codebooks(value)
     if threads is not None:
@@ -293,15 +239,10 @@ def _fsync_directory(path):
         os.close(descriptor)
 
 
-def save_setup(value_or_codec, path, setup_report=None):
-    """Atomically and durably persist a setup value or prepared codec."""
+def save_setup(value, path):
+    """Atomically and durably persist a current ``NeuralZipSetup`` value."""
 
-    if isinstance(value_or_codec, NeuralZipCodec):
-        setup = setup_from_codec(value_or_codec, setup_report=setup_report)
-    else:
-        if setup_report is not None:
-            raise TypeError("setup_report is only accepted when saving a codec.")
-        setup = load_setup(value_or_codec)
+    setup = load_setup(value)
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,6 @@ from .codec_primitives import (
     dtype_name,
     exponent_distribution,
     jensen_shannon_distance,
-    restore_2d_stream,
     select_fastest_within_ratio,
     select_packed_time_budget,
     tokenize_ngrams,
@@ -42,6 +41,17 @@ def _layer_signature(name):
     return ".".join(re.sub(r"\d+", "#", part) for part in str(name).split("."))
 
 
+def _packed_token_count(symbol_count, tail_payload, ngram_n):
+    symbol_count = int(symbol_count)
+    ngram_n = int(ngram_n)
+    if symbol_count < 0 or not 2 <= ngram_n <= 8:
+        raise ValueError("Packed Huff0 symbol count and tail are inconsistent.")
+    token_count, tail_bytes = divmod(symbol_count, ngram_n)
+    if tail_bytes != len(tail_payload):
+        raise ValueError("Packed Huff0 symbol count and tail are inconsistent.")
+    return token_count
+
+
 class NeuralZipCodec:
     """JS-clustered Huffman with deterministic packed-exponent selection."""
 
@@ -59,7 +69,6 @@ class NeuralZipCodec:
         max_codebook_sample_bytes=8 << 20,
         ngram_values=(2, 3, 4),
         top_k=254,
-        exponent_layout=None,
         packed_source_budget_ratio=0.30,
         packed_time_budget_ratio=1.0,
         speed_ratio_tolerance=0.03,
@@ -106,11 +115,6 @@ class NeuralZipCodec:
             raise ValueError("ngram_values must contain only values in [2, 8].")
         if not 1 <= self.top_k <= 254:
             raise ValueError("top_k must be in [1, 254].")
-        if exponent_layout not in {None, "original"}:
-            raise ValueError(
-                "Production encoding only supports the original tensor layout; "
-                "transpose2d remains available through the ablation helpers."
-            )
         if not 0 <= self.packed_source_budget_ratio <= 1:
             raise ValueError("packed_source_budget_ratio must be in [0, 1].")
         if self.packed_time_budget_ratio < 0:
@@ -150,8 +154,6 @@ class NeuralZipCodec:
         self._decode_codebooks = {}
         for codebook in codebooks or ():
             codebook_id = int(codebook.codebook_id)
-            if codebook.codec != "huff0":
-                raise ValueError(f"Unsupported codebook codec {codebook.codec!r}.")
             self._decode_codebooks[codebook_id] = huff0.build_decodebook(
                 codebook.codebook
             )
@@ -260,12 +262,7 @@ class NeuralZipCodec:
                 int(len(chunk) * self.compression_threshold)
                 - SHARED_CHUNK_METADATA_BYTES,
             )
-            encoder = (
-                huff0.encode_with_codebook_4x
-                if mode.get("frame_4x", False)
-                else huff0.encode_with_codebook
-            )
-            encoded = encoder(
+            encoded = huff0.encode_with_codebook(
                 chunk,
                 mode["codebook"],
                 min_saving_bytes=self.min_saving_bytes,
@@ -285,12 +282,7 @@ class NeuralZipCodec:
                 int(len(chunk) * self.compression_threshold)
                 - PACKED_CHUNK_METADATA_BYTES,
             )
-            encoder = (
-                huff0.encode_ngram_with_codebook_4x
-                if mode.get("frame_4x", False)
-                else huff0.encode_ngram_with_codebook
-            )
-            encoded = encoder(
+            encoded = huff0.encode_ngram_with_codebook(
                 chunk,
                 mode["codebook"],
                 mode["vocab"],
@@ -305,12 +297,8 @@ class NeuralZipCodec:
                 symbol_count=len(chunk),
                 payload=encoded.payload,
                 codebook_id=mode.get("codebook_id"),
-                token_count=encoded.symbol_count,
                 escape_payload=encoded.escape_bytes,
                 tail_payload=encoded.tail,
-                ngram_n=int(mode["ngram_n"]),
-                ngram_hits=encoded.hits,
-                ngram_escapes=encoded.misses,
             )
         else:
             raise ValueError(f"Cannot encode mode {mode['kind']!r}.")
@@ -440,7 +428,7 @@ class NeuralZipCodec:
             vocab = topk_vocab(sample, ngram_n, self.top_k)
             if not vocab:
                 return None
-            tokens, _, _, _, _ = tokenize_ngrams(
+            tokens, _, _ = tokenize_ngrams(
                 sample,
                 ngram_n,
                 vocab,
@@ -467,25 +455,16 @@ class NeuralZipCodec:
             "ngram_n": int(ngram_n),
             "vocab": vocab,
             "codebook": codebook,
-            # New codebooks use a four-stream Huff0 payload shape. The archive
-            # mode records this explicitly so legacy one-stream archives remain
-            # decodable.
-            "frame_4x": True,
         }
 
     def _candidate_payload(self, key, mode, codebook_id=-1):
-        cluster_id, dtype, stream_id = key
-        codec = "huff0"
+        _, dtype, stream_id = key
         codebook = mode["codebook"].codebook
         return CodebookPayload(
             codebook_id=int(codebook_id),
-            cluster_id=cluster_id,
             stream_id=stream_id,
             dtype=dtype,
-            codec=codec,
-            mode=(
-                f"{mode['kind']}_4x" if mode.get("frame_4x", False) else mode["kind"]
-            ),
+            mode=mode["kind"],
             codebook=codebook,
             ngram_n=int(mode.get("ngram_n", 1)),
             vocab=bytes(mode.get("vocab", b"")),
@@ -518,9 +497,7 @@ class NeuralZipCodec:
             )
         )
         symbol_bytes = (symbol_bits + 7) // 8
-        frame_overhead = (10 if mode.get("frame_4x", False) else 1) * int(
-            shared_chunk_count
-        )
+        frame_overhead = 10 * int(shared_chunk_count)
         shared_chunks = (
             symbol_bytes
             + frame_overhead
@@ -732,7 +709,7 @@ class NeuralZipCodec:
 
             original = tensor.detach().cpu().contiguous()
             config = _byte_group_dtype_config(original.dtype)
-            for stream_id in range(int(config["num_buffers"])):
+            for stream_id in range(int(config["element_size"])):
                 key = self._codebook_key(name, original, stream_id)
                 # The source cluster decision already compared compressed size
                 # and direct-encoding time under the configured tolerance.
@@ -809,7 +786,7 @@ class NeuralZipCodec:
                 continue
 
             config = _byte_group_dtype_config(tensor.dtype)
-            stream_ids = tuple(range(int(config["num_buffers"])))
+            stream_ids = tuple(range(int(config["element_size"])))
             source_name = str(name)
             exact_keys = tuple(
                 self._transfer_plan_key(name, tensor, stream_id)
@@ -931,7 +908,7 @@ class NeuralZipCodec:
             config = _byte_group_dtype_config(original.dtype)
             reordered = _byte_group_reordered_bytes(original, config)
             element_size = int(config["element_size"])
-            for stream_id in range(int(config["num_buffers"])):
+            for stream_id in range(int(config["element_size"])):
                 is_exponent = self._is_exponent_stream(config, stream_id)
                 stream = reordered[stream_id::element_size]
                 key = self._codebook_key(name, original, stream_id)
@@ -1128,7 +1105,7 @@ class NeuralZipCodec:
             # Copy a GPU/non-contiguous tensor only after the preceding
             # window has released its native scratch buffers.
             original = tensor.detach().cpu().contiguous()
-            stream_count = int(config["num_buffers"])
+            stream_count = int(config["element_size"])
             tensor_modes = tuple(
                 self._mode_for_tensor_stream(name, original, stream_id)
                 for stream_id in range(stream_count)
@@ -1155,7 +1132,7 @@ class NeuralZipCodec:
     ):
         """Assemble the stable archive objects returned by the native engine."""
         element_size = int(config["element_size"])
-        stream_count = int(config["num_buffers"])
+        stream_count = element_size
         if len(native_groups) != stream_count:
             raise RuntimeError("Mixed-stream encoder returned an invalid stream count.")
 
@@ -1165,8 +1142,8 @@ class NeuralZipCodec:
             "packed_huff0": {"packed_huff0", "raw"},
         }
         groups = []
-        for stream_id, (planned_mode, native_chunks) in enumerate(
-            zip(tensor_modes, native_groups, strict=True)
+        for planned_mode, native_chunks in zip(
+            tensor_modes, native_groups, strict=True
         ):
             planned_kind = str(planned_mode.get("kind"))
             if planned_kind not in allowed_finals:
@@ -1182,8 +1159,6 @@ class NeuralZipCodec:
                     escapes,
                     tail,
                     ngram_n,
-                    hits,
-                    misses,
                 ) = native_chunk
                 final_kind = str(final_kind)
                 symbol_count = int(symbol_count)
@@ -1203,18 +1178,33 @@ class NeuralZipCodec:
                         )
                     )
                 elif final_kind == "packed_huff0":
+                    codebook_id = planned_mode.get("codebook_id")
+                    codebook = self._codebook_payload_by_id.get(codebook_id)
+                    if codebook is None:
+                        raise RuntimeError(
+                            f"Packed Huff0 mode references missing codebook {codebook_id}."
+                        )
+                    if int(ngram_n) != int(codebook.ngram_n):
+                        raise RuntimeError(
+                            "Mixed-stream encoder returned an n-gram width that "
+                            "disagrees with its codebook."
+                        )
+                    expected_tokens = _packed_token_count(
+                        symbol_count, tail, codebook.ngram_n
+                    )
+                    if int(token_count) != expected_tokens:
+                        raise RuntimeError(
+                            "Mixed-stream encoder returned an invalid packed token "
+                            "count."
+                        )
                     chunks.append(
                         StreamChunk(
                             mode=final_kind,
                             symbol_count=symbol_count,
                             payload=payload,
-                            codebook_id=planned_mode.get("codebook_id"),
-                            token_count=int(token_count),
+                            codebook_id=codebook_id,
                             escape_payload=escapes,
                             tail_payload=tail,
-                            ngram_n=int(ngram_n),
-                            ngram_hits=int(hits),
-                            ngram_escapes=int(misses),
                         )
                     )
                 else:
@@ -1229,12 +1219,8 @@ class NeuralZipCodec:
                 raise RuntimeError(
                     "Mixed-stream symbol count does not match the tensor."
                 )
-            is_exponent = self._is_exponent_stream(config, stream_id)
-            stream_kind = "exponent" if is_exponent else "byte_group"
             groups.append(
                 ByteGroupPayload(
-                    stream_kind=stream_kind,
-                    symbol_count=symbols,
                     chunks=tuple(chunks),
                 )
             )
@@ -1245,13 +1231,8 @@ class NeuralZipCodec:
             dtype=dtype_name(tensor.dtype),
             element_size=element_size,
             numel=int(tensor.numel()),
-            strategy="neuralzip",
             groups=tuple(groups),
-            byte_reorder=int(config["byte_reorder"]),
             bit_reorder=int(config["bit_reorder"]),
-            num_buffers=stream_count,
-            cluster_id=self.cluster_id(name),
-            exponent_layout="original",
         )
 
     def _decompress_cluster_stream(self, group):
@@ -1259,29 +1240,17 @@ class NeuralZipCodec:
         for chunk in group.chunks:
             if chunk.mode == "raw":
                 decoded = chunk.payload
-            elif chunk.mode == "zero":
-                decoded = b"\x00" * chunk.symbol_count
-            elif chunk.mode == "local_huff0":
-                decoded = huff0.decompress_block(chunk.payload, chunk.symbol_count)
             elif chunk.mode in {"shared_huff0", "packed_huff0"}:
                 codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
                 decodebook = self._decode_codebooks.get(chunk.codebook_id)
                 if codebook is None or decodebook is None:
                     raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
                 if chunk.mode == "shared_huff0":
-                    if codebook.mode not in {
-                        "shared_huff0",
-                        "shared_huff0_4x",
-                    }:
+                    if codebook.mode != "shared_huff0":
                         raise ValueError(
                             "Shared Huff0 chunk references a non-shared codebook."
                         )
-                    decoder = (
-                        huff0.decompress_with_decodebook_4x
-                        if codebook.mode == "shared_huff0_4x"
-                        else huff0.decompress_with_decodebook
-                    )
-                    decoded = decoder(
+                    decoded = huff0.decompress_with_decodebook(
                         huff0.Huff0Payload(
                             payload=chunk.payload,
                             symbol_count=chunk.symbol_count,
@@ -1289,38 +1258,25 @@ class NeuralZipCodec:
                         decodebook,
                     )
                 else:
-                    if chunk.token_count is None:
-                        raise ValueError(
-                            "Packed Huff0 chunk is missing its token count."
-                        )
-                    if codebook.mode not in {
-                        "packed_huff0",
-                        "packed_huff0_4x",
-                    }:
+                    if codebook.mode != "packed_huff0":
                         raise ValueError(
                             "Packed Huff0 chunk references a non-packed codebook."
                         )
-                    if int(codebook.ngram_n) != int(chunk.ngram_n):
-                        raise ValueError(
-                            "Packed Huff0 chunk and codebook disagree on n."
-                        )
-                    decoder = (
-                        huff0.decompress_ngram_with_decodebook_4x
-                        if codebook.mode == "packed_huff0_4x"
-                        else huff0.decompress_ngram_with_decodebook
+                    token_count = _packed_token_count(
+                        chunk.symbol_count,
+                        chunk.tail_payload,
+                        codebook.ngram_n,
                     )
-                    decoded = decoder(
+                    decoded = huff0.decompress_ngram_with_decodebook(
                         huff0.Huff0NGramPayload(
                             payload=chunk.payload,
-                            symbol_count=int(chunk.token_count),
+                            symbol_count=token_count,
                             escape_bytes=chunk.escape_payload,
                             tail=chunk.tail_payload,
-                            hits=chunk.ngram_hits,
-                            misses=chunk.ngram_escapes,
                         ),
                         decodebook,
                         codebook.vocab,
-                        n=chunk.ngram_n,
+                        n=codebook.ngram_n,
                     )
             else:
                 raise ValueError(f"Unsupported stream chunk mode {chunk.mode!r}.")
@@ -1329,21 +1285,13 @@ class NeuralZipCodec:
                     f"Chunk decoded to {len(decoded)} bytes; expected {chunk.symbol_count}."
                 )
             output.extend(decoded)
-        if len(output) != group.symbol_count:
-            raise ValueError(
-                f"Stream decoded to {len(output)} bytes; expected {group.symbol_count}."
-            )
         return bytes(output)
 
     @staticmethod
     def _native_decode_eligible(compressed):
         """Return whether the first-stage native decoder supports a payload."""
 
-        if compressed.strategy != "neuralzip":
-            return False
-        if getattr(compressed, "exponent_layout", "original") != "original":
-            return False
-        supported = {"raw", "zero", "local_huff0", "shared_huff0"}
+        supported = {"raw", "shared_huff0"}
         return all(
             chunk.mode in supported
             for group in compressed.groups
@@ -1358,14 +1306,17 @@ class NeuralZipCodec:
         config = _byte_group_dtype_config(dtype)
         if compressed.element_size != int(config["element_size"]):
             raise ValueError("Payload element size does not match its dtype.")
-        if len(compressed.groups) != int(config["num_buffers"]):
+        if compressed.bit_reorder != int(config["bit_reorder"]):
+            raise ValueError("Payload bit reorder does not match its dtype.")
+        if len(compressed.groups) != int(config["element_size"]):
             raise ValueError("Payload byte-group count does not match its dtype.")
         if int(compressed.numel) < 0:
             raise ValueError("Payload element count must be non-negative.")
         for stream_id, group in enumerate(compressed.groups):
-            if int(group.symbol_count) != int(compressed.numel):
+            symbols = sum(int(chunk.symbol_count) for chunk in group.chunks)
+            if symbols != int(compressed.numel):
                 raise ValueError(
-                    f"Byte group {stream_id} has {group.symbol_count} symbols; "
+                    f"Byte group {stream_id} describes {symbols} symbols; "
                     f"expected {compressed.numel}."
                 )
         return dtype, config
@@ -1380,28 +1331,22 @@ class NeuralZipCodec:
             for chunk in group.chunks:
                 mode = str(chunk.mode)
                 decodebook_handle = None
-                frame_4x = False
                 if mode == "shared_huff0":
                     codebook = self._codebook_payload_by_id.get(chunk.codebook_id)
                     decodebook = self._decode_codebooks.get(chunk.codebook_id)
                     if codebook is None or decodebook is None:
                         raise ValueError(f"Missing Huff0 codebook {chunk.codebook_id}.")
-                    if codebook.mode not in {
-                        "shared_huff0",
-                        "shared_huff0_4x",
-                    }:
+                    if codebook.mode != "shared_huff0":
                         raise ValueError(
                             "Shared Huff0 chunk references a non-shared codebook."
                         )
                     decodebook_handle = decodebook.handle
-                    frame_4x = codebook.mode == "shared_huff0_4x"
                 native_chunks.append(
                     (
                         mode,
                         chunk.payload,
                         int(chunk.symbol_count),
                         decodebook_handle,
-                        bool(frame_4x),
                     )
                 )
             native_groups.append(tuple(native_chunks))
@@ -1474,24 +1419,13 @@ class NeuralZipCodec:
         return self._decompress_tensor_python(compressed)
 
     def _decompress_tensor_python(self, compressed):
-        """Compatibility decoder for packed modes and legacy layouts."""
-
-        if compressed.dtype not in DTYPE_BY_NAME:
-            raise ValueError(f"Unsupported dtype in payload: {compressed.dtype!r}")
-        if compressed.strategy != "neuralzip":
-            raise ValueError(f"Unsupported payload strategy: {compressed.strategy!r}")
+        """Decode current packed-mode payloads outside the sharing-only ABI."""
 
         dtype, config = self._validate_decompression_payload(compressed)
 
         raw = bytearray(compressed.raw_bytes)
         for stream_id, group in enumerate(compressed.groups):
             stream = self._decompress_cluster_stream(group)
-            if self._is_exponent_stream(config, stream_id):
-                stream = restore_2d_stream(
-                    stream,
-                    compressed.shape,
-                    compressed.exponent_layout,
-                )
             expected = int(compressed.numel)
             if len(stream) != expected:
                 raise ValueError(

@@ -80,10 +80,7 @@ def _model_tensors(model):
             seen.add(id(tensor))
 
     persistent = set(source.state_dict())
-    try:
-        buffers = source.named_buffers(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        buffers = source.named_buffers()
+    buffers = source.named_buffers(remove_duplicate=False)
     for name, tensor in buffers:
         if name in persistent and tensor.is_floating_point() and id(tensor) not in seen:
             tensors.append((str(name), tensor))
@@ -140,7 +137,6 @@ def _load_pretrained_model(
 def _fit_options(options):
     selected = dict(options)
     selected.setdefault("ngram_values", ())
-    selected.setdefault("exponent_layout", "original")
     return selected
 
 
@@ -285,7 +281,6 @@ class NeuralZip:
         device=None,
         device_map=None,
         max_memory=None,
-        offload_folder=None,
         execution_device=None,
         adapter=None,
         include_embeddings=False,
@@ -319,12 +314,9 @@ class NeuralZip:
                     "must be empty."
                 )
             if options.get("enable_shared_codebooks", True) is not True:
-                raise ValueError(
-                    "GPU inference requires enable_shared_codebooks=True."
-                )
+                raise ValueError("GPU inference requires enable_shared_codebooks=True.")
             options["ngram_values"] = ()
             options["enable_shared_codebooks"] = True
-            options.setdefault("exponent_layout", "original")
             options["threads"] = int(threads)
             selected = cls.fit(model, **options)
 
@@ -337,7 +329,6 @@ class NeuralZip:
             device=device,
             device_map=device_map,
             max_memory=max_memory,
-            offload_folder=offload_folder,
             execution_device=execution_device,
             adapter=adapter,
             include_embeddings=include_embeddings,

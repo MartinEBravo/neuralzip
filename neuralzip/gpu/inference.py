@@ -31,7 +31,6 @@ from .export import (
     DEFAULT_THREADS_PER_BLOCK,
     GPUCodebook,
     GPUEncodedBF16,
-    encode_bfloat16,
     encode_bfloat16_native,
 )
 
@@ -368,19 +367,12 @@ def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
 
 
 def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF16:
-    native = encode_bfloat16_native(
+    return encode_bfloat16_native(
         raw_bf16,
         codebook_header,
         bytes_per_thread=DEFAULT_BYTES_PER_THREAD,
         threads_per_block=DEFAULT_THREADS_PER_BLOCK,
     )
-    if native is None:
-        table = huff0.export_code_table(codebook_header)
-        return encode_bfloat16(
-            raw_bf16,
-            GPUCodebook.from_codes(table.code_lengths, table.code_values),
-        )
-    return native
 
 
 def _parameter_occurrences(model: nn.Module) -> dict[int, int]:

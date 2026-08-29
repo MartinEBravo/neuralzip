@@ -1,5 +1,5 @@
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
 
 #include <algorithm>
 #include <array>
@@ -21,22 +21,64 @@ extern "C" {
 
 namespace {
 
-class OwnedPyRef {
+namespace nb = nanobind;
+
+class ReadOnlyBuffer {
 public:
-    explicit OwnedPyRef(PyObject* value = nullptr) : value_(value) {}
-    ~OwnedPyRef() {
-        Py_XDECREF(value_);
+    ReadOnlyBuffer() = default;
+
+    explicit ReadOnlyBuffer(nb::handle source) {
+        acquire(source);
     }
 
-    OwnedPyRef(const OwnedPyRef&) = delete;
-    OwnedPyRef& operator=(const OwnedPyRef&) = delete;
+    ~ReadOnlyBuffer() {
+        release();
+    }
 
-    PyObject* get() const {
-        return value_;
+    ReadOnlyBuffer(const ReadOnlyBuffer&) = delete;
+    ReadOnlyBuffer& operator=(const ReadOnlyBuffer&) = delete;
+
+    ReadOnlyBuffer(ReadOnlyBuffer&& other) noexcept : view_(other.view_) {
+        other.view_ = {};
+    }
+
+    ReadOnlyBuffer& operator=(ReadOnlyBuffer&& other) noexcept {
+        if (this != &other) {
+            release();
+            view_ = other.view_;
+            other.view_ = {};
+        }
+        return *this;
+    }
+
+    void acquire(nb::handle source) {
+        release();
+        if (PyObject_GetBuffer(source.ptr(), &view_, PyBUF_CONTIG_RO) < 0) {
+            throw nb::python_error();
+        }
+    }
+
+    const std::uint8_t* data() const {
+        return static_cast<const std::uint8_t*>(view_.buf);
+    }
+
+    Py_ssize_t size() const {
+        return view_.len;
+    }
+
+    bool readonly() const {
+        return view_.readonly != 0;
     }
 
 private:
-    PyObject* value_;
+    void release() noexcept {
+        if (view_.obj != nullptr) {
+            PyBuffer_Release(&view_);
+            view_ = {};
+        }
+    }
+
+    Py_buffer view_{};
 };
 
 constexpr std::size_t kMaxBlockSize = HUF_BLOCKSIZE_MAX;
@@ -96,6 +138,7 @@ struct NGramVocabLookup {
 struct MixedStreamSpec {
     MixedMode mode = MixedMode::Raw;
     Huff0Codebook* codebook = nullptr;
+    nb::object codebook_owner;
     std::vector<std::uint64_t> vocab;
     NGramVocabLookup vocab_lookup;
     int ngram_n = 1;
@@ -126,8 +169,8 @@ enum class MixedStreamDecodeMode {
 
 struct MixedStreamDecodeChunk {
     MixedStreamDecodeMode mode = MixedStreamDecodeMode::Raw;
-    Py_buffer payload_view{};
-    PyObject* decodebook_capsule = nullptr;
+    ReadOnlyBuffer payload;
+    nb::object decodebook_owner;
     Huff0Decodebook* decodebook = nullptr;
     std::size_t tensor_index = 0;
     int stream = 0;
@@ -142,7 +185,7 @@ struct MixedStreamDecodeTensor {
     bool bit_reorder = false;
     std::size_t numel = 0;
     std::vector<std::vector<std::uint8_t>> lanes;
-    PyObject* output = nullptr;
+    nb::object output;
     std::uint8_t* output_data = nullptr;
 };
 
@@ -217,36 +260,18 @@ void check_huf(size_t code) {
     }
 }
 
-PyObject* bytes_from_vector(const std::vector<std::uint8_t>& data) {
-    const char* pointer = data.empty() ? "" : reinterpret_cast<const char*>(data.data());
-    return PyBytes_FromStringAndSize(pointer, static_cast<Py_ssize_t>(data.size()));
+nb::bytes bytes_from_vector(const std::vector<std::uint8_t>& data) {
+    return nb::bytes(data.data(), data.size());
 }
 
-PyObject* ngram_result_to_tuple(const NGramBlockResult& result) {
-    PyObject* payload = bytes_from_vector(result.payload);
-    PyObject* symbol_count = PyLong_FromSsize_t(result.symbol_count);
-    PyObject* escapes = bytes_from_vector(result.escapes);
-    PyObject* tail = bytes_from_vector(result.tail);
-    PyObject* hits = PyLong_FromSsize_t(result.hits);
-    PyObject* misses = PyLong_FromSsize_t(result.misses);
-    if (!payload || !symbol_count || !escapes || !tail || !hits || !misses) {
-        Py_XDECREF(payload);
-        Py_XDECREF(symbol_count);
-        Py_XDECREF(escapes);
-        Py_XDECREF(tail);
-        Py_XDECREF(hits);
-        Py_XDECREF(misses);
-        return nullptr;
-    }
-    PyObject* output = PyTuple_Pack(
-        6, payload, symbol_count, escapes, tail, hits, misses);
-    Py_DECREF(payload);
-    Py_DECREF(symbol_count);
-    Py_DECREF(escapes);
-    Py_DECREF(tail);
-    Py_DECREF(hits);
-    Py_DECREF(misses);
-    return output;
+nb::tuple ngram_result_to_tuple(const NGramBlockResult& result) {
+    return nb::make_tuple(
+        bytes_from_vector(result.payload),
+        result.symbol_count,
+        bytes_from_vector(result.escapes),
+        bytes_from_vector(result.tail),
+        result.hits,
+        result.misses);
 }
 
 inline std::uint8_t byte_group_stream_byte(
@@ -1096,18 +1121,20 @@ std::uint64_t pack_ngram_symbol(const std::uint8_t* data, int n) {
     return symbol;
 }
 
-std::vector<std::uint64_t> vocab_from_view(const Py_buffer& vocab_view, int n) {
+std::vector<std::uint64_t> vocab_from_bytes(
+    const std::uint8_t* data,
+    std::size_t size,
+    int n) {
     if (n < 1 || n > 8) {
         throw std::runtime_error("ngram vocab requires n in [1, 8].");
     }
     const Py_ssize_t symbol_bytes = n <= 4 ? 4 : 8;
-    if (vocab_view.len % symbol_bytes != 0) {
+    if (size % static_cast<std::size_t>(symbol_bytes) != 0) {
         throw std::runtime_error(
             "ngram vocab must contain fixed-width little-endian integer values.");
     }
-    const auto* data = static_cast<const std::uint8_t*>(vocab_view.buf);
     std::vector<std::uint64_t> vocab(
-        static_cast<std::size_t>(vocab_view.len / symbol_bytes));
+        size / static_cast<std::size_t>(symbol_bytes));
     for (std::size_t index = 0; index < vocab.size(); ++index) {
         std::uint64_t value = 0;
         for (Py_ssize_t offset = 0; offset < symbol_bytes; ++offset) {
@@ -1571,819 +1598,463 @@ void process_mixed_stream_block(
         result, spec, min_saving_bytes, compression_threshold);
 }
 
-void destroy_codebook_capsule(PyObject* capsule) {
-    void* pointer = PyCapsule_GetPointer(capsule, "neuralzip.Huff0Codebook");
+void delete_codebook(void* pointer) noexcept {
     delete static_cast<Huff0Codebook*>(pointer);
 }
 
-Huff0Codebook* codebook_from_capsule(PyObject* capsule) {
-    void* pointer = PyCapsule_GetPointer(capsule, "neuralzip.Huff0Codebook");
-    if (pointer == nullptr) {
-        throw std::runtime_error("Invalid Huff0 codebook capsule.");
-    }
-    return static_cast<Huff0Codebook*>(pointer);
+void delete_decodebook(void* pointer) noexcept {
+    delete static_cast<Huff0Decodebook*>(pointer);
 }
 
-bool parse_mixed_stream_specs(
-    PyObject* mode_source,
-    int element_size,
-    std::size_t base_chunk_size,
-    std::vector<MixedStreamSpec>& specs,
-    PyObject*& mode_owner) {
-    // Take an immutable snapshot so every mode tuple and codebook capsule
-    // remains alive while worker threads run without the GIL, even if a raw
-    // extension caller supplied a mutable outer sequence.
-    PyObject* mode_sequence = PySequence_Tuple(mode_source);
-    if (!mode_sequence) {
-        return false;
-    }
-    if (PySequence_Fast_GET_SIZE(mode_sequence) != element_size) {
-        Py_DECREF(mode_sequence);
-        PyErr_SetString(
-            PyExc_ValueError,
-            "stream_modes must contain exactly one mode per byte stream.");
-        return false;
-    }
+bool truthy(nb::handle source) {
+    return static_cast<bool>(nb::bool_(source));
+}
 
+Huff0Codebook* codebook_from_capsule(nb::handle source) {
+    if (!nb::isinstance<nb::capsule>(source)) {
+        throw nb::value_error("Invalid Huff0 codebook capsule.");
+    }
+    nb::capsule capsule = nb::borrow<nb::capsule>(source);
+    return static_cast<Huff0Codebook*>(
+        capsule.data("neuralzip.Huff0Codebook"));
+}
+
+Huff0Decodebook* decodebook_from_capsule(nb::handle source) {
+    if (!nb::isinstance<nb::capsule>(source)) {
+        throw nb::value_error("Invalid Huff0 decodebook capsule.");
+    }
+    nb::capsule capsule = nb::borrow<nb::capsule>(source);
+    return static_cast<Huff0Decodebook*>(
+        capsule.data("neuralzip.Huff0Decodebook"));
+}
+
+template <typename Function>
+decltype(auto) with_value_errors(Function&& function) {
     try {
-        specs.clear();
-        specs.resize(static_cast<std::size_t>(element_size));
-        for (int stream = 0; stream < element_size; ++stream) {
-            PyObject* item = PySequence_Fast_GET_ITEM(mode_sequence, stream);
-            const char* kind = nullptr;
-            PyObject* capsule = nullptr;
-            PyObject* vocab_source = nullptr;
-            int ngram_n = 1;
-            int frame_4x = 0;
-            if (!PyArg_ParseTuple(
-                    item,
-                    "sOOip",
-                    &kind,
-                    &capsule,
-                    &vocab_source,
-                    &ngram_n,
-                    &frame_4x)) {
-                Py_DECREF(mode_sequence);
-                return false;
-            }
-
-            MixedStreamSpec& spec = specs[static_cast<std::size_t>(stream)];
-            spec.ngram_n = ngram_n;
-            spec.frame_4x = frame_4x != 0;
-            if (std::strcmp(kind, "raw") == 0) {
-                spec.mode = MixedMode::Raw;
-                spec.ngram_n = 1;
-            } else if (std::strcmp(kind, "shared_huff0") == 0) {
-                spec.mode = MixedMode::SharedHuff0;
-                spec.codebook = codebook_from_capsule(capsule);
-                spec.ngram_n = 1;
-            } else if (std::strcmp(kind, "packed_huff0") == 0) {
-                if (ngram_n < 2 || ngram_n > 8) {
-                    throw std::runtime_error(
-                        "packed_huff0 requires ngram_n in [2, 8].");
-                }
-                spec.mode = MixedMode::PackedHuff0;
-                spec.codebook = codebook_from_capsule(capsule);
-                Py_buffer vocab_view{};
-                if (PyObject_GetBuffer(
-                        vocab_source, &vocab_view, PyBUF_CONTIG_RO) < 0) {
-                    Py_DECREF(mode_sequence);
-                    return false;
-                }
-                try {
-                    spec.vocab = vocab_from_view(vocab_view, ngram_n);
-                    PyBuffer_Release(&vocab_view);
-                } catch (...) {
-                    PyBuffer_Release(&vocab_view);
-                    throw;
-                }
-                if (spec.vocab.empty()) {
-                    throw std::runtime_error(
-                        "packed_huff0 vocabulary is empty.");
-                }
-                spec.vocab_lookup = build_ngram_vocab_lookup(spec.vocab);
-            } else {
-                throw std::runtime_error("Unsupported mixed Huff0 stream mode.");
-            }
-
-            if (spec.mode == MixedMode::Raw) {
-                spec.chunk_size = base_chunk_size;
-            } else if (spec.mode == MixedMode::SharedHuff0) {
-                spec.chunk_size = std::min(base_chunk_size, kMaxBlockSize);
-            } else {
-                std::size_t n = static_cast<std::size_t>(spec.ngram_n);
-                std::size_t limit = std::min(base_chunk_size, kMaxBlockSize * n);
-                spec.chunk_size = std::max(n, (limit / n) * n);
-            }
-        }
+        return function();
     } catch (const std::bad_alloc&) {
-        Py_DECREF(mode_sequence);
-        PyErr_NoMemory();
-        return false;
+        throw;
+    } catch (const std::overflow_error&) {
+        throw;
+    } catch (const nb::python_error&) {
+        throw;
+    } catch (const nb::builtin_exception&) {
+        throw;
     } catch (const std::exception& error) {
-        Py_DECREF(mode_sequence);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return false;
+        throw nb::value_error(error.what());
     }
-
-    mode_owner = mode_sequence;
-    return true;
 }
 
-PyObject* mixed_groups_to_python(
+std::vector<MixedStreamSpec> parse_mixed_stream_specs(
+    nb::handle mode_source,
+    int element_size,
+    std::size_t base_chunk_size) {
+    nb::tuple mode_sequence(mode_source);
+    if (mode_sequence.size() != static_cast<std::size_t>(element_size)) {
+        throw nb::value_error(
+            "stream_modes must contain exactly one mode per byte stream.");
+    }
+
+    std::vector<MixedStreamSpec> specs(
+        static_cast<std::size_t>(element_size));
+    for (int stream = 0; stream < element_size; ++stream) {
+        nb::tuple item(nb::handle(mode_sequence[stream].ptr()));
+        if (item.size() != 5) {
+            throw nb::type_error(
+                "Each stream mode must contain kind, codebook, vocabulary, "
+                "ngram_n, and frame_4x.");
+        }
+
+        std::string kind = nb::cast<std::string>(
+            nb::handle(item[0].ptr()));
+        nb::handle codebook_source(item[1].ptr());
+        nb::handle vocab_source(item[2].ptr());
+        const int ngram_n = nb::cast<int>(nb::handle(item[3].ptr()));
+        const bool frame_4x = truthy(nb::handle(item[4].ptr()));
+
+        MixedStreamSpec& spec = specs[static_cast<std::size_t>(stream)];
+        spec.ngram_n = ngram_n;
+        spec.frame_4x = frame_4x;
+        if (kind == "raw") {
+            spec.mode = MixedMode::Raw;
+            spec.ngram_n = 1;
+        } else if (kind == "shared_huff0") {
+            spec.mode = MixedMode::SharedHuff0;
+            spec.codebook_owner = nb::borrow<nb::object>(codebook_source);
+            spec.codebook = codebook_from_capsule(codebook_source);
+            spec.ngram_n = 1;
+        } else if (kind == "packed_huff0") {
+            if (ngram_n < 2 || ngram_n > 8) {
+                throw nb::value_error(
+                    "packed_huff0 requires ngram_n in [2, 8].");
+            }
+            spec.mode = MixedMode::PackedHuff0;
+            spec.codebook_owner = nb::borrow<nb::object>(codebook_source);
+            spec.codebook = codebook_from_capsule(codebook_source);
+            ReadOnlyBuffer vocab(vocab_source);
+            spec.vocab = with_value_errors([&]() {
+                return vocab_from_bytes(
+                    vocab.data(),
+                    vocab.size(),
+                    ngram_n);
+            });
+            if (spec.vocab.empty()) {
+                throw nb::value_error(
+                    "packed_huff0 vocabulary is empty.");
+            }
+            spec.vocab_lookup = build_ngram_vocab_lookup(spec.vocab);
+        } else {
+            throw nb::value_error("Unsupported mixed Huff0 stream mode.");
+        }
+
+        if (spec.mode == MixedMode::Raw) {
+            spec.chunk_size = base_chunk_size;
+        } else if (spec.mode == MixedMode::SharedHuff0) {
+            spec.chunk_size = std::min(base_chunk_size, kMaxBlockSize);
+        } else {
+            const std::size_t n = static_cast<std::size_t>(spec.ngram_n);
+            const std::size_t limit = std::min(
+                base_chunk_size, kMaxBlockSize * n);
+            spec.chunk_size = std::max(n, (limit / n) * n);
+        }
+    }
+    return specs;
+}
+
+nb::list mixed_groups_to_python(
     int element_size,
     const std::vector<std::size_t>& group_sizes,
     const std::vector<MixedBlockResult>& results,
     std::size_t result_offset) {
-    PyObject* groups = PyList_New(element_size);
-    if (!groups) {
-        return nullptr;
-    }
+    nb::list groups;
     std::size_t result_index = result_offset;
     for (int stream = 0; stream < element_size; ++stream) {
-        Py_ssize_t group_size = static_cast<Py_ssize_t>(
-            group_sizes[static_cast<std::size_t>(stream)]);
-        PyObject* chunks = PyList_New(group_size);
-        if (!chunks) {
-            Py_DECREF(groups);
-            return nullptr;
-        }
-        for (Py_ssize_t index = 0; index < group_size; ++index, ++result_index) {
+        nb::list chunks;
+        const std::size_t group_size =
+            group_sizes[static_cast<std::size_t>(stream)];
+        for (std::size_t index = 0; index < group_size;
+             ++index, ++result_index) {
             if (result_index >= results.size()) {
-                Py_DECREF(chunks);
-                Py_DECREF(groups);
-                PyErr_SetString(
-                    PyExc_RuntimeError,
+                throw std::runtime_error(
                     "Mixed-stream result index exceeds the native result set.");
-                return nullptr;
             }
             const MixedBlockResult& result = results[result_index];
             const auto& body = result.mode == MixedMode::Raw
                 ? result.raw
                 : result.payload;
-            PyObject* tuple = PyTuple_New(9);
-            PyObject* mode = PyUnicode_FromString(mixed_mode_name(result.mode));
-            PyObject* payload = bytes_from_vector(body);
-            PyObject* count = PyLong_FromSsize_t(result.symbol_count);
-            PyObject* token_count = nullptr;
-            if (result.mode == MixedMode::PackedHuff0) {
-                token_count = PyLong_FromSsize_t(result.token_count);
-            } else {
-                token_count = Py_None;
-                Py_INCREF(token_count);
-            }
-            PyObject* escapes = bytes_from_vector(result.escapes);
-            PyObject* tail = bytes_from_vector(result.tail);
-            PyObject* ngram_n = PyLong_FromLong(result.ngram_n);
-            PyObject* hits = PyLong_FromSsize_t(result.hits);
-            PyObject* misses = PyLong_FromSsize_t(result.misses);
-            if (
-                !tuple || !mode || !payload || !count || !token_count
-                || !escapes || !tail || !ngram_n || !hits || !misses) {
-                Py_XDECREF(tuple);
-                Py_XDECREF(mode);
-                Py_XDECREF(payload);
-                Py_XDECREF(count);
-                Py_XDECREF(token_count);
-                Py_XDECREF(escapes);
-                Py_XDECREF(tail);
-                Py_XDECREF(ngram_n);
-                Py_XDECREF(hits);
-                Py_XDECREF(misses);
-                Py_DECREF(chunks);
-                Py_DECREF(groups);
-                return nullptr;
-            }
-            PyTuple_SET_ITEM(tuple, 0, mode);
-            PyTuple_SET_ITEM(tuple, 1, payload);
-            PyTuple_SET_ITEM(tuple, 2, count);
-            PyTuple_SET_ITEM(tuple, 3, token_count);
-            PyTuple_SET_ITEM(tuple, 4, escapes);
-            PyTuple_SET_ITEM(tuple, 5, tail);
-            PyTuple_SET_ITEM(tuple, 6, ngram_n);
-            PyTuple_SET_ITEM(tuple, 7, hits);
-            PyTuple_SET_ITEM(tuple, 8, misses);
-            PyList_SET_ITEM(chunks, index, tuple);
+            nb::object token_count = result.mode == MixedMode::PackedHuff0
+                ? nb::cast(result.token_count)
+                : nb::none();
+            chunks.append(nb::make_tuple(
+                mixed_mode_name(result.mode),
+                bytes_from_vector(body),
+                result.symbol_count,
+                std::move(token_count),
+                bytes_from_vector(result.escapes),
+                bytes_from_vector(result.tail),
+                result.ngram_n,
+                result.hits,
+                result.misses));
         }
-        PyList_SET_ITEM(groups, stream, chunks);
+        groups.append(std::move(chunks));
     }
     return groups;
 }
 
-void destroy_decodebook_capsule(PyObject* capsule) {
-    void* pointer = PyCapsule_GetPointer(capsule, "neuralzip.Huff0Decodebook");
-    delete static_cast<Huff0Decodebook*>(pointer);
-}
-
-Huff0Decodebook* decodebook_from_capsule(PyObject* capsule) {
-    void* pointer = PyCapsule_GetPointer(capsule, "neuralzip.Huff0Decodebook");
-    if (pointer == nullptr) {
-        throw std::runtime_error("Invalid Huff0 decodebook capsule.");
-    }
-    return static_cast<Huff0Decodebook*>(pointer);
-}
-
-PyObject* codebook_to_python(std::unique_ptr<Huff0Codebook> codebook) {
+nb::tuple codebook_to_python(std::unique_ptr<Huff0Codebook> codebook) {
     Huff0Codebook* native = codebook.get();
-    PyObject* capsule = PyCapsule_New(
-        native,
-        "neuralzip.Huff0Codebook",
-        destroy_codebook_capsule);
-    if (!capsule) {
-        return nullptr;
-    }
+    nb::capsule handle(
+        native, "neuralzip.Huff0Codebook", delete_codebook);
     codebook.release();
-    PyObject* header = bytes_from_vector(native->serialized);
-    if (!header) {
-        Py_DECREF(capsule);
-        return nullptr;
-    }
-    PyObject* result = PyTuple_Pack(2, capsule, header);
-    Py_DECREF(capsule);
-    Py_DECREF(header);
-    return result;
+    return nb::make_tuple(
+        std::move(handle), bytes_from_vector(native->serialized));
 }
 
-bool validate_codebook_options(Py_ssize_t prior_count, Py_ssize_t max_bits) {
+void validate_codebook_options(
+    Py_ssize_t prior_count,
+    Py_ssize_t max_bits) {
     if (prior_count < 0 || prior_count > static_cast<Py_ssize_t>(
             std::numeric_limits<unsigned>::max())) {
-        PyErr_SetString(PyExc_ValueError, "prior_count must fit in unsigned.");
-        return false;
+        throw nb::value_error("prior_count must fit in unsigned.");
     }
-    if (max_bits < 1 || max_bits > static_cast<Py_ssize_t>(kMaxTableLog)) {
-        PyErr_SetString(
-            PyExc_ValueError,
-            "max_bits must be in [1, 12].");
-        return false;
+    if (max_bits < 1
+        || max_bits > static_cast<Py_ssize_t>(kMaxTableLog)) {
+        throw nb::value_error("max_bits must be in [1, 12].");
     }
-    return true;
 }
 
-bool parse_symbol_counts(
-    PyObject* source,
-    unsigned prior_count,
-    std::array<unsigned, 256>& output) {
-    OwnedPyRef sequence(PySequence_Fast(
-        source, "symbol_counts must be a sequence of 256 integers."));
-    if (!sequence.get()) {
-        return false;
-    }
-    if (PySequence_Fast_GET_SIZE(sequence.get()) != 256) {
-        PyErr_SetString(
-            PyExc_ValueError,
+std::array<unsigned, 256> parse_symbol_counts(
+    nb::handle source,
+    unsigned prior_count) {
+    nb::tuple sequence(source);
+    if (sequence.size() != 256) {
+        throw nb::value_error(
             "symbol_counts must contain exactly 256 entries.");
-        return false;
     }
 
     std::array<std::uint64_t, 256> counts{};
     std::uint64_t total = 0;
-    for (Py_ssize_t index = 0; index < 256; ++index) {
-        PyObject* item = PySequence_Fast_GET_ITEM(sequence.get(), index);
-        const unsigned long long count = PyLong_AsUnsignedLongLong(item);
+    for (std::size_t index = 0; index < counts.size(); ++index) {
+        const auto count = PyLong_AsUnsignedLongLong(
+            sequence[index].ptr());
         if (PyErr_Occurred()) {
-            return false;
+            throw nb::python_error();
         }
         if (total > std::numeric_limits<std::uint64_t>::max() - count) {
-            PyErr_SetString(PyExc_OverflowError, "Huff0 symbol count overflow.");
-            return false;
+            throw std::overflow_error("Huff0 symbol count overflow.");
         }
-        counts[static_cast<std::size_t>(index)] = count;
+        counts[index] = count;
         total += count;
     }
 
     const std::uint64_t prior_total =
         static_cast<std::uint64_t>(prior_count) * counts.size();
     if (prior_total >= kMaxHistogramTotal) {
-        PyErr_SetString(
-            PyExc_ValueError,
+        throw nb::value_error(
             "prior_count is too large for a 256-symbol Huff0 table.");
-        return false;
     }
-    const std::uint64_t available =
-        kMaxHistogramTotal - prior_total;
+    const std::uint64_t available = kMaxHistogramTotal - prior_total;
 
     unsigned shift = 0;
     if (total > available) {
         for (shift = 1; shift < 64; ++shift) {
             std::uint64_t scaled_total = 0;
             for (const std::uint64_t count : counts) {
-                if (count == 0) {
-                    continue;
+                if (count != 0) {
+                    scaled_total += std::max<std::uint64_t>(
+                        1, count >> shift);
                 }
-                scaled_total += std::max<std::uint64_t>(1, count >> shift);
             }
             if (scaled_total <= available) {
                 break;
             }
         }
         if (shift == 64) {
-            PyErr_SetString(PyExc_OverflowError, "Huff0 symbol count overflow.");
-            return false;
+            throw std::overflow_error("Huff0 symbol count overflow.");
         }
     }
 
+    std::array<unsigned, 256> output{};
     for (std::size_t index = 0; index < counts.size(); ++index) {
         const std::uint64_t count = counts[index];
         const std::uint64_t scaled =
             count == 0 ? 0 : std::max<std::uint64_t>(1, count >> shift);
         output[index] = static_cast<unsigned>(scaled + prior_count);
     }
-    return true;
+    return output;
 }
 
-PyObject* py_max_block_size(PyObject*, PyObject*) {
-    return PyLong_FromSize_t(kMaxBlockSize);
+std::size_t max_block_size() {
+    return kMaxBlockSize;
 }
 
-PyObject* py_build_codebook(PyObject*, PyObject* args, PyObject* kwargs) {
-    Py_buffer data_view;
-    Py_ssize_t prior_count = 0;
-    Py_ssize_t max_bits = kTableLog;
-    static const char* keyword_names[] = {
-        "data", "prior_count", "max_bits", nullptr};
-
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "y*|nn",
-            const_cast<char**>(keyword_names),
-            &data_view,
-            &prior_count,
-            &max_bits)) {
-        return nullptr;
-    }
-    if (!validate_codebook_options(prior_count, max_bits)) {
-        PyBuffer_Release(&data_view);
-        return nullptr;
-    }
-
-    try {
-        const auto* data = static_cast<const std::uint8_t*>(data_view.buf);
-        auto codebook = make_codebook(
-            data,
-            data_view.len,
+nb::tuple build_codebook(
+    nb::handle data_source,
+    Py_ssize_t prior_count,
+    Py_ssize_t max_bits) {
+    validate_codebook_options(prior_count, max_bits);
+    ReadOnlyBuffer data(data_source);
+    return with_value_errors([&]() {
+        return codebook_to_python(make_codebook(
+            data.data(),
+            data.size(),
             static_cast<unsigned>(prior_count),
-            static_cast<unsigned>(max_bits));
-        PyBuffer_Release(&data_view);
-        return codebook_to_python(std::move(codebook));
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&data_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&data_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+            static_cast<unsigned>(max_bits)));
+    });
 }
 
-PyObject* py_build_codebook_from_counts(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    PyObject* count_source = nullptr;
-    Py_ssize_t prior_count = 0;
-    Py_ssize_t max_bits = kTableLog;
-    static const char* keyword_names[] = {
-        "symbol_counts", "prior_count", "max_bits", nullptr};
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "O|nn",
-            const_cast<char**>(keyword_names),
-            &count_source,
-            &prior_count,
-            &max_bits)) {
-        return nullptr;
-    }
-    if (!validate_codebook_options(prior_count, max_bits)) {
-        return nullptr;
-    }
-
-    std::array<unsigned, 256> counts{};
-    if (!parse_symbol_counts(
-            count_source, static_cast<unsigned>(prior_count), counts)) {
-        return nullptr;
-    }
-    try {
+nb::tuple build_codebook_from_counts(
+    nb::handle count_source,
+    Py_ssize_t prior_count,
+    Py_ssize_t max_bits) {
+    validate_codebook_options(prior_count, max_bits);
+    std::array<unsigned, 256> counts = parse_symbol_counts(
+        count_source, static_cast<unsigned>(prior_count));
+    return with_value_errors([&]() {
         return codebook_to_python(make_codebook_from_counts(
             counts, static_cast<unsigned>(max_bits)));
-    } catch (const std::bad_alloc&) {
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+    });
 }
 
-PyObject* py_build_codebook_from_header(PyObject*, PyObject* args) {
-    Py_buffer header_view;
-    if (!PyArg_ParseTuple(args, "y*", &header_view)) {
-        return nullptr;
-    }
-    try {
-        const auto* header = static_cast<const std::uint8_t*>(header_view.buf);
-        auto codebook = make_codebook_from_header(header, header_view.len);
-        PyBuffer_Release(&header_view);
-        return codebook_to_python(std::move(codebook));
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&header_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&header_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+nb::tuple build_codebook_from_header(nb::handle header_source) {
+    ReadOnlyBuffer header(header_source);
+    return with_value_errors([&]() {
+        return codebook_to_python(make_codebook_from_header(
+            header.data(),
+            header.size()));
+    });
 }
 
-PyObject* py_build_decodebook(PyObject*, PyObject* args) {
-    Py_buffer header_view;
-    if (!PyArg_ParseTuple(args, "y*", &header_view)) {
-        return nullptr;
-    }
-    try {
-        const auto* header = static_cast<const std::uint8_t*>(header_view.buf);
-        auto decodebook = make_decodebook_from_header(header, header_view.len);
-        PyObject* capsule = PyCapsule_New(
-            decodebook.get(),
-            "neuralzip.Huff0Decodebook",
-            destroy_decodebook_capsule);
-        PyBuffer_Release(&header_view);
-        if (!capsule) {
-            return nullptr;
-        }
+nb::capsule build_decodebook(nb::handle header_source) {
+    ReadOnlyBuffer header(header_source);
+    return with_value_errors([&]() {
+        auto decodebook = make_decodebook_from_header(
+            header.data(),
+            header.size());
+        Huff0Decodebook* native = decodebook.get();
+        nb::capsule handle(
+            native, "neuralzip.Huff0Decodebook", delete_decodebook);
         decodebook.release();
-        return capsule;
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&header_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&header_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+        return handle;
+    });
 }
 
-PyObject* py_export_code_table(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    Py_buffer header_view;
-    Py_ssize_t max_bits = 12;
-    static const char* keyword_names[] = {
-        "codebook", "max_bits", nullptr};
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "y*|n",
-            const_cast<char**>(keyword_names),
-            &header_view,
-            &max_bits)) {
-        return nullptr;
+nb::tuple export_code_table(
+    nb::handle header_source,
+    Py_ssize_t max_bits) {
+    if (max_bits <= 0 || max_bits > 12) {
+        throw nb::value_error("max_bits must be in [1, 12].");
     }
-    if (
-        max_bits <= 0
-        || max_bits > 12) {
-        PyBuffer_Release(&header_view);
-        PyErr_Format(
-            PyExc_ValueError,
-            "max_bits must be in [1, 12].");
-        return nullptr;
-    }
-
-    try {
-        const auto* header = static_cast<const std::uint8_t*>(header_view.buf);
+    ReadOnlyBuffer header(header_source);
+    return with_value_errors([&]() {
         const ExportedCodeTable table = export_code_table_from_header(
-            header, header_view.len, static_cast<unsigned>(max_bits));
-        PyBuffer_Release(&header_view);
-
-        PyObject* lengths = PyBytes_FromStringAndSize(
-            reinterpret_cast<const char*>(table.code_lengths.data()),
-            static_cast<Py_ssize_t>(table.code_lengths.size()));
-        PyObject* values = PyTuple_New(
-            static_cast<Py_ssize_t>(table.code_values.size()));
-        PyObject* actual_max_bits = PyLong_FromUnsignedLong(table.max_bits);
-        if (!lengths || !values || !actual_max_bits) {
-            Py_XDECREF(lengths);
-            Py_XDECREF(values);
-            Py_XDECREF(actual_max_bits);
-            return nullptr;
+            header.data(),
+            header.size(),
+            static_cast<unsigned>(max_bits));
+        nb::list values;
+        for (const auto value : table.code_values) {
+            values.append(value);
         }
-        for (std::size_t index = 0; index < table.code_values.size(); ++index) {
-            PyObject* value = PyLong_FromUnsignedLong(table.code_values[index]);
-            if (!value) {
-                Py_DECREF(lengths);
-                Py_DECREF(values);
-                Py_DECREF(actual_max_bits);
-                return nullptr;
-            }
-            PyTuple_SET_ITEM(values, static_cast<Py_ssize_t>(index), value);
-        }
-
-        PyObject* result = PyTuple_Pack(
-            3, lengths, values, actual_max_bits);
-        Py_DECREF(lengths);
-        Py_DECREF(values);
-        Py_DECREF(actual_max_bits);
-        return result;
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&header_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&header_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+        return nb::make_tuple(
+            nb::bytes(table.code_lengths.data(), table.code_lengths.size()),
+            nb::tuple(values),
+            table.max_bits);
+    });
 }
 
-PyObject* py_encode_gpu_bfloat16(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    Py_buffer raw_view{};
-    Py_buffer header_view{};
-    Py_ssize_t bytes_per_thread = 8;
-    Py_ssize_t threads_per_block = 512;
-    static const char* keyword_names[] = {
-        "raw_bf16",
-        "codebook",
-        "bytes_per_thread",
-        "threads_per_block",
-        nullptr,
-    };
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "y*y*|nn",
-            const_cast<char**>(keyword_names),
-            &raw_view,
-            &header_view,
-            &bytes_per_thread,
-            &threads_per_block)) {
-        return nullptr;
-    }
-
-    auto release_buffers = [&]() {
-        PyBuffer_Release(&raw_view);
-        PyBuffer_Release(&header_view);
-    };
+nb::tuple encode_gpu_bfloat16(
+    nb::handle raw_source,
+    nb::handle header_source,
+    Py_ssize_t bytes_per_thread,
+    Py_ssize_t threads_per_block) {
     if (bytes_per_thread <= 0 || threads_per_block <= 0) {
-        release_buffers();
-        PyErr_SetString(
-            PyExc_ValueError,
+        throw nb::value_error(
             "bytes_per_thread and threads_per_block must be positive.");
-        return nullptr;
     }
     if (bytes_per_thread != 8) {
-        release_buffers();
-        PyErr_SetString(
-            PyExc_ValueError,
+        throw nb::value_error(
             "bytes_per_thread must be 8 for this ABI.");
-        return nullptr;
     }
     if (threads_per_block != 512) {
-        release_buffers();
-        PyErr_SetString(
-            PyExc_ValueError,
+        throw nb::value_error(
             "threads_per_block must be 512 for this ABI.");
-        return nullptr;
     }
-    if (
-        static_cast<std::uint64_t>(bytes_per_thread)
+    if (static_cast<std::uint64_t>(bytes_per_thread)
             > std::numeric_limits<std::uint32_t>::max()
         || static_cast<std::uint64_t>(threads_per_block)
             > std::numeric_limits<std::uint32_t>::max()) {
-        release_buffers();
-        PyErr_SetString(
-            PyExc_OverflowError,
+        throw std::overflow_error(
             "GPU layout dimensions must fit in uint32.");
-        return nullptr;
-    }
-    if ((raw_view.len & 1) != 0) {
-        release_buffers();
-        PyErr_SetString(
-            PyExc_ValueError,
-            "A BF16 byte sequence must have an even length.");
-        return nullptr;
     }
 
-    const std::uint8_t* raw = static_cast<const std::uint8_t*>(raw_view.buf);
-    const std::uint8_t* header =
-        static_cast<const std::uint8_t*>(header_view.buf);
+    ReadOnlyBuffer raw(raw_source);
+    ReadOnlyBuffer header(header_source);
+    if ((raw.size() & 1) != 0) {
+        throw nb::value_error(
+            "A BF16 byte sequence must have an even length.");
+    }
+
+    const std::uint8_t* raw_data = raw.data();
+    const std::uint8_t* header_data = header.data();
     std::vector<std::uint8_t> raw_snapshot;
     std::vector<std::uint8_t> header_snapshot;
-    try {
-        // PyBUF_CONTIG_RO can still expose mutable bytearray/memoryview storage.
-        // Snapshot such inputs before releasing the GIL so another Python thread
-        // cannot mutate bytes while the native encoder is reading them.
-        if (!raw_view.readonly && raw_view.len > 0) {
-            raw_snapshot.assign(raw, raw + raw_view.len);
-            raw = raw_snapshot.data();
-        }
-        if (!header_view.readonly && header_view.len > 0) {
-            header_snapshot.assign(header, header + header_view.len);
-            header = header_snapshot.data();
-        }
-    } catch (const std::bad_alloc&) {
-        release_buffers();
-        PyErr_NoMemory();
-        return nullptr;
+    if (!raw.readonly() && raw.size() > 0) {
+        raw_snapshot.assign(raw.data(), raw.data() + raw.size());
+        raw_data = raw_snapshot.data();
+    }
+    if (!header.readonly() && header.size() > 0) {
+        header_snapshot.assign(
+            header.data(), header.data() + header.size());
+        header_data = header_snapshot.data();
     }
 
-    GPUBFloat16Encoding encoded;
-    std::exception_ptr failure;
-    PyThreadState* saved = PyEval_SaveThread();
-    try {
-        encoded = encode_gpu_bfloat16_layout(
-            raw,
-            static_cast<std::size_t>(raw_view.len),
-            header,
-            header_view.len,
+    GPUBFloat16Encoding encoded = with_value_errors([&]() {
+        nb::gil_scoped_release release;
+        return encode_gpu_bfloat16_layout(
+            raw_data,
+            static_cast<std::size_t>(raw.size()),
+            header_data,
+            header.size(),
             static_cast<std::uint32_t>(bytes_per_thread),
             static_cast<std::uint32_t>(threads_per_block));
-    } catch (...) {
-        failure = std::current_exception();
-    }
-    PyEval_RestoreThread(saved);
-    release_buffers();
+    });
 
-    if (failure) {
-        try {
-            std::rethrow_exception(failure);
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-        } catch (const std::overflow_error& error) {
-            PyErr_SetString(PyExc_OverflowError, error.what());
-        } catch (const std::exception& error) {
-            PyErr_SetString(PyExc_ValueError, error.what());
-        } catch (...) {
-            PyErr_SetString(
-                PyExc_RuntimeError, "Unknown GPU-layout encoding failure.");
-        }
-        return nullptr;
+    nb::list positions;
+    for (const auto position : encoded.output_positions) {
+        positions.append(position);
     }
-
-    PyObject* exponent_bytes = bytes_from_vector(encoded.encoded_exponents);
-    PyObject* sign_mantissa = bytes_from_vector(encoded.sign_mantissa);
-    PyObject* packed_gaps = bytes_from_vector(encoded.packed_gaps);
-    PyObject* positions = PyTuple_New(
-        static_cast<Py_ssize_t>(encoded.output_positions.size()));
-    PyObject* bit_length = PyLong_FromUnsignedLongLong(encoded.bit_length);
-    PyObject* max_bits = PyLong_FromUnsignedLong(encoded.max_bits);
-    if (
-        !exponent_bytes || !sign_mantissa || !packed_gaps || !positions
-        || !bit_length || !max_bits) {
-        Py_XDECREF(exponent_bytes);
-        Py_XDECREF(sign_mantissa);
-        Py_XDECREF(packed_gaps);
-        Py_XDECREF(positions);
-        Py_XDECREF(bit_length);
-        Py_XDECREF(max_bits);
-        return nullptr;
-    }
-    for (std::size_t index = 0; index < encoded.output_positions.size(); ++index) {
-        PyObject* position = PyLong_FromUnsignedLong(
-            encoded.output_positions[index]);
-        if (!position) {
-            Py_DECREF(exponent_bytes);
-            Py_DECREF(sign_mantissa);
-            Py_DECREF(packed_gaps);
-            Py_DECREF(positions);
-            Py_DECREF(bit_length);
-            Py_DECREF(max_bits);
-            return nullptr;
-        }
-        PyTuple_SET_ITEM(positions, static_cast<Py_ssize_t>(index), position);
-    }
-
-    PyObject* result = PyTuple_Pack(
-        6,
-        exponent_bytes,
-        sign_mantissa,
-        packed_gaps,
-        positions,
-        bit_length,
-        max_bits);
-    Py_DECREF(exponent_bytes);
-    Py_DECREF(sign_mantissa);
-    Py_DECREF(packed_gaps);
-    Py_DECREF(positions);
-    Py_DECREF(bit_length);
-    Py_DECREF(max_bits);
-    return result;
+    return nb::make_tuple(
+        bytes_from_vector(encoded.encoded_exponents),
+        bytes_from_vector(encoded.sign_mantissa),
+        bytes_from_vector(encoded.packed_gaps),
+        nb::tuple(positions),
+        encoded.bit_length,
+        encoded.max_bits);
 }
 
-PyObject* py_encode_with_codebook(PyObject*, PyObject* args) {
-    Py_buffer data_view;
-    PyObject* capsule = nullptr;
-    Py_ssize_t min_saving_bytes = 0;
-    Py_ssize_t max_output_bytes = -1;
-    int four_streams = 0;
-    if (!PyArg_ParseTuple(
-            args,
-            "y*Onnp",
-            &data_view,
-            &capsule,
-            &min_saving_bytes,
-            &max_output_bytes,
-            &four_streams)) {
-        return nullptr;
-    }
+nb::object encode_with_codebook(
+    nb::handle data_source,
+    nb::capsule codebook_handle,
+    Py_ssize_t min_saving_bytes,
+    Py_ssize_t max_output_bytes,
+    bool four_streams) {
     if (min_saving_bytes < 0) {
-        PyBuffer_Release(&data_view);
-        PyErr_SetString(PyExc_ValueError, "min_saving_bytes must be non-negative.");
-        return nullptr;
+        throw nb::value_error(
+            "min_saving_bytes must be non-negative.");
     }
-
-    try {
-        Huff0Codebook* codebook = codebook_from_capsule(capsule);
-        const auto* data = static_cast<const std::uint8_t*>(data_view.buf);
-        std::size_t max_bytes =
-            max_output_bytes < 0
-                ? std::numeric_limits<std::size_t>::max()
-                : static_cast<std::size_t>(max_output_bytes);
-        std::vector<std::uint8_t> encoded =
-            encode_huff0_block(
-                data,
-                data_view.len,
-                *codebook,
-                max_bytes,
-                four_streams);
-
-        if (encoded.empty()
-            || encoded.size() + static_cast<std::size_t>(min_saving_bytes)
-                >= static_cast<std::size_t>(data_view.len)) {
-            PyBuffer_Release(&data_view);
-            Py_RETURN_NONE;
-        }
-
-        PyObject* payload = bytes_from_vector(encoded);
-        PyObject* symbol_count = PyLong_FromSsize_t(data_view.len);
-        PyBuffer_Release(&data_view);
-        if (!payload || !symbol_count) {
-            Py_XDECREF(payload);
-            Py_XDECREF(symbol_count);
-            return nullptr;
-        }
-        PyObject* result = PyTuple_Pack(2, payload, symbol_count);
-        Py_DECREF(payload);
-        Py_DECREF(symbol_count);
-        return result;
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&data_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&data_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
+    ReadOnlyBuffer data(data_source);
+    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
+    std::vector<std::uint8_t> encoded = with_value_errors([&]() {
+        const std::size_t max_bytes = max_output_bytes < 0
+            ? std::numeric_limits<std::size_t>::max()
+            : static_cast<std::size_t>(max_output_bytes);
+        return encode_huff0_block(
+            data.data(),
+            data.size(),
+            *codebook,
+            max_bytes,
+            four_streams);
+    });
+    if (encoded.empty()
+        || encoded.size() + static_cast<std::size_t>(min_saving_bytes)
+            >= data.size()) {
+        return nb::none();
     }
+    return nb::make_tuple(
+        bytes_from_vector(encoded),
+        static_cast<Py_ssize_t>(data.size()));
 }
 
-PyObject* py_encode_ngram_with_codebook(PyObject*, PyObject* args) {
-    Py_buffer data_view;
-    PyObject* capsule = nullptr;
-    Py_buffer vocab_view;
-    Py_ssize_t n = 0;
-    Py_ssize_t min_saving_bytes = 0;
-    Py_ssize_t max_output_bytes = -1;
-    int four_streams = 0;
-    if (!PyArg_ParseTuple(
-            args,
-            "y*Oy*nnnp",
-            &data_view,
-            &capsule,
-            &vocab_view,
-            &n,
-            &min_saving_bytes,
-            &max_output_bytes,
-            &four_streams)) {
-        return nullptr;
-    }
+nb::object encode_ngram_with_codebook(
+    nb::handle data_source,
+    nb::capsule codebook_handle,
+    nb::handle vocab_source,
+    Py_ssize_t n,
+    Py_ssize_t min_saving_bytes,
+    Py_ssize_t max_output_bytes,
+    bool four_streams) {
     if (n < 1 || n > 8) {
-        PyBuffer_Release(&data_view);
-        PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, "n must be in [1, 8].");
-        return nullptr;
+        throw nb::value_error("n must be in [1, 8].");
     }
     if (min_saving_bytes < 0) {
-        PyBuffer_Release(&data_view);
-        PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, "min_saving_bytes must be non-negative.");
-        return nullptr;
+        throw nb::value_error(
+            "min_saving_bytes must be non-negative.");
     }
-
-    try {
-        Huff0Codebook* codebook = codebook_from_capsule(capsule);
-        const auto* data = static_cast<const std::uint8_t*>(data_view.buf);
-        std::vector<std::uint64_t> vocab = vocab_from_view(
-            vocab_view, static_cast<int>(n));
+    ReadOnlyBuffer data(data_source);
+    ReadOnlyBuffer vocab_bytes(vocab_source);
+    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
+    NGramBlockResult encoded = with_value_errors([&]() {
+        std::vector<std::uint64_t> vocab = vocab_from_bytes(
+            vocab_bytes.data(),
+            vocab_bytes.size(),
+            static_cast<int>(n));
         NGramVocabLookup vocab_lookup = build_ngram_vocab_lookup(vocab);
-        std::size_t max_bytes =
-            max_output_bytes < 0
-                ? std::numeric_limits<std::size_t>::max()
-                : static_cast<std::size_t>(max_output_bytes);
-        NGramBlockResult encoded = encode_ngram_block(
-            data,
-            data_view.len,
+        const std::size_t max_bytes = max_output_bytes < 0
+            ? std::numeric_limits<std::size_t>::max()
+            : static_cast<std::size_t>(max_output_bytes);
+        return encode_ngram_block(
+            data.data(),
+            data.size(),
             static_cast<int>(n),
             vocab,
             *codebook,
@@ -2391,177 +2062,88 @@ PyObject* py_encode_ngram_with_codebook(PyObject*, PyObject* args) {
             max_bytes,
             four_streams,
             &vocab_lookup);
-        if (!encoded.encoded) {
-            PyBuffer_Release(&data_view);
-            PyBuffer_Release(&vocab_view);
-            Py_RETURN_NONE;
-        }
-        PyBuffer_Release(&data_view);
-        PyBuffer_Release(&vocab_view);
-        return ngram_result_to_tuple(encoded);
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&data_view);
-        PyBuffer_Release(&vocab_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&data_view);
-        PyBuffer_Release(&vocab_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
+    });
+    if (!encoded.encoded) {
+        return nb::none();
     }
+    return ngram_result_to_tuple(encoded);
 }
 
-PyObject* py_decompress_with_decodebook(PyObject*, PyObject* args) {
-    Py_buffer payload_view;
-    PyObject* capsule = nullptr;
-    Py_ssize_t symbol_count;
-    int four_streams = 0;
-    if (!PyArg_ParseTuple(
-            args,
-            "y*Onp",
-            &payload_view,
-            &capsule,
-            &symbol_count,
-            &four_streams)) {
-        return nullptr;
-    }
-
-    try {
-        Huff0Decodebook* decodebook = decodebook_from_capsule(capsule);
-        const auto* payload = static_cast<const std::uint8_t*>(payload_view.buf);
-        std::vector<std::uint8_t> decoded =
-            decode_huff0_block(
-                payload,
-                payload_view.len,
-                symbol_count,
-                *decodebook,
-                four_streams);
-        PyObject* result = bytes_from_vector(decoded);
-        PyBuffer_Release(&payload_view);
-        return result;
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&payload_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&payload_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+nb::bytes decompress_with_decodebook(
+    nb::handle payload_source,
+    nb::capsule decodebook_handle,
+    Py_ssize_t symbol_count,
+    bool four_streams) {
+    ReadOnlyBuffer payload(payload_source);
+    Huff0Decodebook* decodebook =
+        decodebook_from_capsule(decodebook_handle);
+    return with_value_errors([&]() {
+        return bytes_from_vector(decode_huff0_block(
+            payload.data(),
+            payload.size(),
+            symbol_count,
+            *decodebook,
+            four_streams));
+    });
 }
 
-PyObject* py_decompress_ngram_with_decodebook(PyObject*, PyObject* args) {
-    Py_buffer payload_view{};
-    PyObject* capsule = nullptr;
-    Py_ssize_t symbol_count = 0;
-    Py_buffer vocab_view{};
-    Py_ssize_t n = 0;
-    Py_buffer escape_view{};
-    Py_buffer tail_view{};
-    int four_streams = 0;
-    if (!PyArg_ParseTuple(
-            args,
-            "y*Ony*ny*y*p",
-            &payload_view,
-            &capsule,
-            &symbol_count,
-            &vocab_view,
-            &n,
-            &escape_view,
-            &tail_view,
-            &four_streams)) {
-        return nullptr;
-    }
-
-    auto release_buffers = [&]() {
-        PyBuffer_Release(&payload_view);
-        PyBuffer_Release(&vocab_view);
-        PyBuffer_Release(&escape_view);
-        PyBuffer_Release(&tail_view);
-    };
-
-    try {
-        Huff0Decodebook* decodebook = decodebook_from_capsule(capsule);
-        const auto* payload = static_cast<const std::uint8_t*>(payload_view.buf);
+nb::bytes decompress_ngram_with_decodebook(
+    nb::handle payload_source,
+    nb::capsule decodebook_handle,
+    Py_ssize_t symbol_count,
+    nb::handle vocab_source,
+    Py_ssize_t n,
+    nb::handle escape_source,
+    nb::handle tail_source,
+    bool four_streams) {
+    ReadOnlyBuffer payload(payload_source);
+    ReadOnlyBuffer vocab_bytes(vocab_source);
+    ReadOnlyBuffer escapes(escape_source);
+    ReadOnlyBuffer tail(tail_source);
+    Huff0Decodebook* decodebook =
+        decodebook_from_capsule(decodebook_handle);
+    return with_value_errors([&]() {
         std::vector<std::uint8_t> tokens = decode_huff0_block(
-            payload,
-            payload_view.len,
+            payload.data(),
+            payload.size(),
             symbol_count,
             *decodebook,
             four_streams);
-        std::vector<std::uint64_t> vocab = vocab_from_view(
-            vocab_view, static_cast<int>(n));
-        std::vector<std::uint8_t> decoded = restore_ngram_tokens(
+        std::vector<std::uint64_t> vocab = vocab_from_bytes(
+            vocab_bytes.data(),
+            vocab_bytes.size(),
+            static_cast<int>(n));
+        return bytes_from_vector(restore_ngram_tokens(
             tokens,
             static_cast<int>(n),
             vocab,
-            static_cast<const std::uint8_t*>(escape_view.buf),
-            escape_view.len,
-            static_cast<const std::uint8_t*>(tail_view.buf),
-            tail_view.len);
-        PyObject* result = bytes_from_vector(decoded);
-        release_buffers();
-        return result;
-    } catch (const std::bad_alloc&) {
-        release_buffers();
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        release_buffers();
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+            escapes.data(),
+            escapes.size(),
+            tail.data(),
+            tail.size()));
+    });
 }
 
-PyObject* py_compress_mixed_streams_many(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    PyObject* tensor_source = nullptr;
-    Py_ssize_t min_saving_bytes = 0;
-    int requested_threads = 0;
-    double compression_threshold = 0.95;
-    static const char* keyword_names[] = {
-        "tensor_specs",
-        "min_saving_bytes",
-        "threads",
-        "compression_threshold",
-        nullptr,
-    };
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "O|nid",
-            const_cast<char**>(keyword_names),
-            &tensor_source,
-            &min_saving_bytes,
-            &requested_threads,
-            &compression_threshold)) {
-        return nullptr;
-    }
+nb::list compress_mixed_streams_many(
+    nb::handle tensor_source,
+    Py_ssize_t min_saving_bytes,
+    int requested_threads,
+    double compression_threshold) {
     if (min_saving_bytes < 0 || requested_threads < 0) {
-        PyErr_SetString(
-            PyExc_ValueError,
+        throw nb::value_error(
             "min_saving_bytes and threads must be non-negative.");
-        return nullptr;
     }
-    if (!(compression_threshold > 0.0 && compression_threshold <= 1.0)) {
-        PyErr_SetString(
-            PyExc_ValueError,
+    if (!(compression_threshold > 0.0
+          && compression_threshold <= 1.0)) {
+        throw nb::value_error(
             "compression_threshold must be in (0, 1].");
-        return nullptr;
     }
 
-    PyObject* tensor_sequence = PySequence_Fast(
-        tensor_source, "tensor_specs must be a sequence");
-    if (!tensor_sequence) {
-        return nullptr;
-    }
-
+    nb::tuple tensor_sequence(tensor_source);
     struct MixedTensorRequest {
-        Py_buffer raw_view{};
+        ReadOnlyBuffer raw;
         int element_size = 0;
         bool bit_reorder = false;
-        PyObject* mode_owner = nullptr;
         std::vector<MixedStreamSpec> specs;
         std::vector<std::size_t> group_sizes;
         std::size_t result_offset = 0;
@@ -2573,789 +2155,714 @@ PyObject* py_compress_mixed_streams_many(
         std::size_t length;
     };
 
-    Py_ssize_t tensor_count = PySequence_Fast_GET_SIZE(tensor_sequence);
-    std::vector<MixedTensorRequest> requests;
+    std::vector<MixedTensorRequest> requests(tensor_sequence.size());
     std::vector<MixedModelJob> jobs;
-    try {
-        requests.resize(static_cast<std::size_t>(tensor_count));
-    } catch (const std::bad_alloc&) {
-        Py_DECREF(tensor_sequence);
-        PyErr_NoMemory();
-        return nullptr;
-    }
-    auto release_request_buffers = [&]() {
-        for (auto& request : requests) {
-            if (request.raw_view.obj != nullptr) {
-                PyBuffer_Release(&request.raw_view);
-            }
-            Py_XDECREF(request.mode_owner);
-            request.mode_owner = nullptr;
-        }
-    };
-    auto cleanup_and_error = [&](const char* message) -> PyObject* {
-        release_request_buffers();
-        Py_DECREF(tensor_sequence);
-        if (message != nullptr && !PyErr_Occurred()) {
-            PyErr_SetString(PyExc_ValueError, message);
-        }
-        return nullptr;
-    };
-
     std::size_t total_input_bytes = 0;
-    for (Py_ssize_t tensor_index = 0; tensor_index < tensor_count; ++tensor_index) {
-        PyObject* item = PySequence_Fast_GET_ITEM(tensor_sequence, tensor_index);
-        PyObject* raw_source = nullptr;
-        int element_size = 0;
-        int bit_reorder = 0;
-        Py_ssize_t requested_chunk_size = 0;
-        PyObject* mode_source = nullptr;
-        if (!PyArg_ParseTuple(
-                item,
-                "OiinO",
-                &raw_source,
-                &element_size,
-                &bit_reorder,
-                &requested_chunk_size,
-                &mode_source)) {
-            return cleanup_and_error(nullptr);
+    for (std::size_t tensor_index = 0;
+         tensor_index < tensor_sequence.size();
+         ++tensor_index) {
+        nb::tuple item(nb::handle(tensor_sequence[tensor_index].ptr()));
+        if (item.size() != 5) {
+            throw nb::type_error(
+                "Each tensor spec must contain data, element_size, "
+                "bit_reorder, chunk_size, and stream_modes.");
         }
+        nb::handle raw_source(item[0].ptr());
+        const int element_size =
+            nb::cast<int>(nb::handle(item[1].ptr()));
+        const bool bit_reorder = truthy(nb::handle(item[2].ptr()));
+        const Py_ssize_t requested_chunk_size =
+            nb::cast<Py_ssize_t>(nb::handle(item[3].ptr()));
+        nb::handle mode_source(item[4].ptr());
+
         if (element_size != 2 && element_size != 4) {
-            return cleanup_and_error("element_size must be 2 or 4.");
+            throw nb::value_error("element_size must be 2 or 4.");
         }
         if (requested_chunk_size <= 0) {
-            return cleanup_and_error("chunk_size must be positive.");
+            throw nb::value_error("chunk_size must be positive.");
         }
 
-        MixedTensorRequest& request = requests[static_cast<std::size_t>(tensor_index)];
-        if (PyObject_GetBuffer(
-                raw_source, &request.raw_view, PyBUF_CONTIG_RO) < 0) {
-            return cleanup_and_error(nullptr);
-        }
-        if (request.raw_view.len % element_size != 0) {
-            return cleanup_and_error(
+        MixedTensorRequest& request = requests[tensor_index];
+        request.raw.acquire(raw_source);
+        if (request.raw.size() % element_size != 0) {
+            throw nb::value_error(
                 "data length must be divisible by element_size.");
         }
-        std::size_t raw_bytes = static_cast<std::size_t>(request.raw_view.len);
-        if (raw_bytes > std::numeric_limits<std::size_t>::max() - total_input_bytes) {
-            PyErr_SetString(PyExc_OverflowError, "Total mixed input size overflowed.");
-            return cleanup_and_error(nullptr);
+        const std::size_t raw_bytes =
+            static_cast<std::size_t>(request.raw.size());
+        if (raw_bytes
+            > std::numeric_limits<std::size_t>::max()
+                - total_input_bytes) {
+            throw std::overflow_error(
+                "Total mixed input size overflowed.");
         }
         total_input_bytes += raw_bytes;
         request.element_size = element_size;
-        request.bit_reorder = bit_reorder != 0;
-        if (!parse_mixed_stream_specs(
-                mode_source,
-                element_size,
-                static_cast<std::size_t>(requested_chunk_size),
-                request.specs,
-                request.mode_owner)) {
-            return cleanup_and_error(nullptr);
-        }
+        request.bit_reorder = bit_reorder;
+        request.specs = parse_mixed_stream_specs(
+            mode_source,
+            element_size,
+            static_cast<std::size_t>(requested_chunk_size));
+        request.group_sizes.assign(
+            static_cast<std::size_t>(element_size), 0);
+        request.result_offset = jobs.size();
 
-        try {
-            request.group_sizes.assign(
-                static_cast<std::size_t>(element_size), 0);
-            request.result_offset = jobs.size();
-            std::size_t symbol_count = raw_bytes
-                / static_cast<std::size_t>(element_size);
-            for (int stream = 0; stream < element_size; ++stream) {
-                std::size_t step = request.specs[
-                    static_cast<std::size_t>(stream)].chunk_size;
-                for (std::size_t start = 0; start < symbol_count; start += step) {
-                    jobs.push_back(
-                        {
-                            static_cast<std::size_t>(tensor_index),
-                            stream,
-                            start,
-                            std::min(step, symbol_count - start),
-                        });
-                    request.group_sizes[static_cast<std::size_t>(stream)] += 1;
+        const std::size_t symbol_count =
+            raw_bytes / static_cast<std::size_t>(element_size);
+        for (int stream = 0; stream < element_size; ++stream) {
+            const std::size_t step =
+                request.specs[static_cast<std::size_t>(stream)].chunk_size;
+            for (std::size_t start = 0;
+                 start < symbol_count;
+                 start += step) {
+                jobs.push_back({
+                    tensor_index,
+                    stream,
+                    start,
+                    std::min(step, symbol_count - start),
+                });
+                request.group_sizes[
+                    static_cast<std::size_t>(stream)] += 1;
+            }
+        }
+    }
+
+    std::vector<MixedBlockResult> results(jobs.size());
+    std::string thread_error;
+    {
+        nb::gil_scoped_release release;
+        thread_error = run_parallel_jobs(
+            jobs.size(),
+            total_input_bytes,
+            requested_threads,
+            [&](std::size_t job_index) {
+                const MixedModelJob& job = jobs[job_index];
+                const MixedTensorRequest& request =
+                    requests[job.tensor_index];
+                const MixedStreamSpec& spec = request.specs[
+                    static_cast<std::size_t>(job.stream)];
+                MixedBlockResult& result = results[job_index];
+                try {
+                    process_mixed_stream_block(
+                        result,
+                        spec,
+                        request.raw.data(),
+                        request.element_size,
+                        request.bit_reorder,
+                        job.stream,
+                        job.start,
+                        job.length,
+                        min_saving_bytes,
+                        compression_threshold);
+                } catch (const std::exception& error) {
+                    result.error = error.what();
+                } catch (...) {
+                    result.error =
+                        "Unknown model-wide mixed encoding failure.";
                 }
-            }
-        } catch (const std::bad_alloc&) {
-            PyErr_NoMemory();
-            return cleanup_and_error(nullptr);
-        }
+            });
     }
 
-    std::vector<MixedBlockResult> results;
-    try {
-        results.resize(jobs.size());
-    } catch (const std::bad_alloc&) {
-        PyErr_NoMemory();
-        return cleanup_and_error(nullptr);
-    }
-
-    PyThreadState* saved = PyEval_SaveThread();
-    std::string thread_error = run_parallel_jobs(
-        jobs.size(),
-        total_input_bytes,
-        requested_threads,
-        [&](std::size_t job_index) {
-            const MixedModelJob& job = jobs[job_index];
-            const MixedTensorRequest& request = requests[job.tensor_index];
-            const MixedStreamSpec& spec = request.specs[
-                static_cast<std::size_t>(job.stream)];
-            MixedBlockResult& result = results[job_index];
-            try {
-                process_mixed_stream_block(
-                    result,
-                    spec,
-                    static_cast<const std::uint8_t*>(request.raw_view.buf),
-                    request.element_size,
-                    request.bit_reorder,
-                    job.stream,
-                    job.start,
-                    job.length,
-                    min_saving_bytes,
-                    compression_threshold);
-            } catch (const std::exception& error) {
-                result.error = error.what();
-            } catch (...) {
-                result.error = "Unknown model-wide mixed encoding failure.";
-            }
-        });
-    PyEval_RestoreThread(saved);
-
-    release_request_buffers();
-    Py_DECREF(tensor_sequence);
     if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return nullptr;
+        throw std::runtime_error(thread_error);
     }
     for (const auto& result : results) {
         if (!result.error.empty()) {
-            PyErr_SetString(PyExc_ValueError, result.error.c_str());
-            return nullptr;
+            throw nb::value_error(result.error.c_str());
         }
     }
 
-    PyObject* output = PyList_New(tensor_count);
-    if (!output) {
-        return nullptr;
-    }
-    for (Py_ssize_t tensor_index = 0; tensor_index < tensor_count; ++tensor_index) {
-        const MixedTensorRequest& request = requests[
-            static_cast<std::size_t>(tensor_index)];
-        PyObject* groups = mixed_groups_to_python(
+    nb::list output;
+    for (const auto& request : requests) {
+        output.append(mixed_groups_to_python(
             request.element_size,
             request.group_sizes,
             results,
-            request.result_offset);
-        if (!groups) {
-            Py_DECREF(output);
-            return nullptr;
-        }
-        PyList_SET_ITEM(output, tensor_index, groups);
+            request.result_offset));
     }
     return output;
 }
 
-PyObject* py_decompress_mixed_streams_many(
-    PyObject*, PyObject* args, PyObject* kwargs) {
-    PyObject* tensor_source = nullptr;
-    int requested_threads = 0;
-    static const char* keyword_names[] = {
-        "tensor_specs", "threads", nullptr};
-    if (!PyArg_ParseTupleAndKeywords(
-            args,
-            kwargs,
-            "O|i",
-            const_cast<char**>(keyword_names),
-            &tensor_source,
-            &requested_threads)) {
-        return nullptr;
-    }
+nb::list decompress_mixed_streams_many(
+    nb::handle tensor_source,
+    int requested_threads) {
     if (requested_threads < 0) {
-        PyErr_SetString(PyExc_ValueError, "threads must be non-negative.");
-        return nullptr;
+        throw nb::value_error("threads must be non-negative.");
     }
 
-    OwnedPyRef tensor_sequence(
-        PySequence_Fast(tensor_source, "tensor_specs must be a sequence"));
-    if (!tensor_sequence.get()) {
-        return nullptr;
-    }
-
-    const Py_ssize_t tensor_count = PySequence_Fast_GET_SIZE(
-        tensor_sequence.get());
-    std::vector<MixedStreamDecodeTensor> requests;
+    nb::tuple tensor_sequence(tensor_source);
+    const std::size_t tensor_count = tensor_sequence.size();
+    std::vector<MixedStreamDecodeTensor> requests(tensor_count);
     std::vector<MixedStreamDecodeChunk> chunks;
     std::vector<MixedStreamAlignedDecodeJob> aligned_jobs;
     std::vector<std::size_t> fallback_chunk_jobs;
     std::vector<MixedStreamCombineJob> combine_jobs;
-    try {
-        requests.resize(static_cast<std::size_t>(tensor_count));
-    } catch (const std::bad_alloc&) {
-        PyErr_NoMemory();
-        return nullptr;
-    }
-
-    auto release_inputs = [&]() {
-        for (auto& chunk : chunks) {
-            if (chunk.payload_view.obj != nullptr) {
-                PyBuffer_Release(&chunk.payload_view);
-                chunk.payload_view.obj = nullptr;
-            }
-            Py_XDECREF(chunk.decodebook_capsule);
-            chunk.decodebook_capsule = nullptr;
-            chunk.decodebook = nullptr;
-        }
-    };
-    auto release_outputs = [&]() {
-        for (auto& request : requests) {
-            Py_XDECREF(request.output);
-            request.output = nullptr;
-            request.output_data = nullptr;
-        }
-    };
-    auto fail = [&](const char* message) -> PyObject* {
-        release_inputs();
-        release_outputs();
-        if (message != nullptr && !PyErr_Occurred()) {
-            PyErr_SetString(PyExc_ValueError, message);
-        }
-        return nullptr;
-    };
 
     std::size_t total_output_bytes = 0;
-    try {
-        for (Py_ssize_t tensor_index = 0;
-             tensor_index < tensor_count;
-             ++tensor_index) {
-            PyObject* item = PySequence_Fast_GET_ITEM(
-                tensor_sequence.get(), tensor_index);
-            int element_size = 0;
-            int bit_reorder = 0;
-            Py_ssize_t requested_numel = 0;
-            PyObject* groups_source = nullptr;
-            if (!PyArg_ParseTuple(
-                    item,
-                    "ipnO",
-                    &element_size,
-                    &bit_reorder,
-                    &requested_numel,
-                    &groups_source)) {
-                return fail(nullptr);
-            }
-            if (element_size != 2 && element_size != 4) {
-                return fail("element_size must be 2 or 4.");
-            }
-            if (requested_numel < 0) {
-                return fail("numel must be non-negative.");
-            }
+    for (std::size_t tensor_index = 0;
+         tensor_index < tensor_count;
+         ++tensor_index) {
+        nb::tuple item(nb::handle(tensor_sequence[tensor_index].ptr()));
+        if (item.size() != 4) {
+            throw nb::type_error(
+                "Each decode spec must contain element_size, bit_reorder, "
+                "numel, and groups.");
+        }
+        const int element_size =
+            nb::cast<int>(nb::handle(item[0].ptr()));
+        const bool bit_reorder = truthy(nb::handle(item[1].ptr()));
+        const Py_ssize_t requested_numel =
+            nb::cast<Py_ssize_t>(nb::handle(item[2].ptr()));
+        nb::handle groups_source(item[3].ptr());
 
-            const std::size_t numel = static_cast<std::size_t>(
-                requested_numel);
-            const std::size_t width = static_cast<std::size_t>(element_size);
-            if (numel > static_cast<std::size_t>(PY_SSIZE_T_MAX) / width) {
-                PyErr_SetString(
-                    PyExc_OverflowError,
-                    "Decoded tensor byte size exceeds Py_ssize_t.");
-                return fail(nullptr);
-            }
-            const std::size_t raw_bytes = numel * width;
-            if (raw_bytes
-                > std::numeric_limits<std::size_t>::max()
-                    - total_output_bytes) {
-                PyErr_SetString(
-                    PyExc_OverflowError,
-                    "Total decoded tensor size overflowed.");
-                return fail(nullptr);
-            }
-            total_output_bytes += raw_bytes;
+        if (element_size != 2 && element_size != 4) {
+            throw nb::value_error("element_size must be 2 or 4.");
+        }
+        if (requested_numel < 0) {
+            throw nb::value_error("numel must be non-negative.");
+        }
 
-            MixedStreamDecodeTensor& request = requests[
-                static_cast<std::size_t>(tensor_index)];
-            request.element_size = element_size;
-            request.bit_reorder = bit_reorder != 0;
-            request.numel = numel;
-            request.output = PyByteArray_FromStringAndSize(
-                nullptr, static_cast<Py_ssize_t>(raw_bytes));
-            if (!request.output) {
-                return fail(nullptr);
-            }
-            request.output_data = reinterpret_cast<std::uint8_t*>(
-                PyByteArray_AS_STRING(request.output));
+        const std::size_t numel =
+            static_cast<std::size_t>(requested_numel);
+        const std::size_t width =
+            static_cast<std::size_t>(element_size);
+        if (numel > static_cast<std::size_t>(PY_SSIZE_T_MAX) / width) {
+            throw std::overflow_error(
+                "Decoded tensor byte size exceeds Py_ssize_t.");
+        }
+        const std::size_t raw_bytes = numel * width;
+        if (raw_bytes
+            > std::numeric_limits<std::size_t>::max()
+                - total_output_bytes) {
+            throw std::overflow_error(
+                "Total decoded tensor size overflowed.");
+        }
+        total_output_bytes += raw_bytes;
 
-            OwnedPyRef group_sequence(PySequence_Fast(
-                groups_source, "groups must be a sequence"));
-            if (!group_sequence.get()) {
-                return fail(nullptr);
-            }
-            if (PySequence_Fast_GET_SIZE(group_sequence.get()) != element_size) {
-                return fail(
-                    "groups must contain exactly one group per byte stream.");
-            }
+        MixedStreamDecodeTensor& request = requests[tensor_index];
+        request.element_size = element_size;
+        request.bit_reorder = bit_reorder;
+        request.numel = numel;
+        nb::bytearray output(
+            static_cast<const void*>(nullptr), raw_bytes);
+        request.output_data =
+            static_cast<std::uint8_t*>(output.data());
+        request.output = std::move(output);
 
-            std::array<std::vector<std::size_t>, 4> stream_chunk_indices;
-            for (int stream = 0; stream < element_size; ++stream) {
-                PyObject* group_source = PySequence_Fast_GET_ITEM(
-                    group_sequence.get(), stream);
-                OwnedPyRef chunk_sequence(PySequence_Fast(
-                    group_source, "each group must be a sequence of chunks"));
-                if (!chunk_sequence.get()) {
-                    return fail(nullptr);
+        nb::tuple group_sequence(groups_source);
+        if (group_sequence.size()
+            != static_cast<std::size_t>(element_size)) {
+            throw nb::value_error(
+                "groups must contain exactly one group per byte stream.");
+        }
+
+        std::array<std::vector<std::size_t>, 4>
+            stream_chunk_indices;
+        for (int stream = 0; stream < element_size; ++stream) {
+            nb::tuple chunk_sequence(
+                nb::handle(group_sequence[stream].ptr()));
+            std::size_t output_offset = 0;
+            for (std::size_t chunk_index = 0;
+                 chunk_index < chunk_sequence.size();
+                 ++chunk_index) {
+                nb::tuple chunk_source(
+                    nb::handle(chunk_sequence[chunk_index].ptr()));
+                if (chunk_source.size() != 5) {
+                    throw nb::type_error(
+                        "Each chunk must contain mode, payload, "
+                        "symbol_count, decodebook, and frame_4x.");
+                }
+                const std::string kind = nb::cast<std::string>(
+                    nb::handle(chunk_source[0].ptr()));
+                nb::handle payload_source(chunk_source[1].ptr());
+                const Py_ssize_t requested_symbols =
+                    nb::cast<Py_ssize_t>(
+                        nb::handle(chunk_source[2].ptr()));
+                nb::handle decodebook_source(chunk_source[3].ptr());
+                const bool frame_4x = truthy(
+                    nb::handle(chunk_source[4].ptr()));
+
+                if (requested_symbols < 0) {
+                    throw nb::value_error(
+                        "chunk symbol_count must be non-negative.");
+                }
+                const std::size_t symbol_count =
+                    static_cast<std::size_t>(requested_symbols);
+                if (symbol_count > numel - output_offset) {
+                    throw nb::value_error(
+                        "chunk symbol counts exceed the tensor numel.");
                 }
 
-                std::size_t output_offset = 0;
-                const Py_ssize_t chunk_count = PySequence_Fast_GET_SIZE(
-                    chunk_sequence.get());
-                for (Py_ssize_t chunk_index = 0;
-                     chunk_index < chunk_count;
-                     ++chunk_index) {
-                    PyObject* chunk_source = PySequence_Fast_GET_ITEM(
-                        chunk_sequence.get(), chunk_index);
-                    const char* kind = nullptr;
-                    PyObject* payload_source = nullptr;
-                    Py_ssize_t requested_symbols = 0;
-                    PyObject* decodebook_source = nullptr;
-                    int frame_4x = 0;
-                    if (!PyArg_ParseTuple(
-                            chunk_source,
-                            "sOnOp",
-                            &kind,
-                            &payload_source,
-                            &requested_symbols,
-                            &decodebook_source,
-                            &frame_4x)) {
-                        return fail(nullptr);
-                    }
-                    if (requested_symbols < 0) {
-                        return fail("chunk symbol_count must be non-negative.");
-                    }
-                    const std::size_t symbol_count = static_cast<std::size_t>(
-                        requested_symbols);
-                    if (symbol_count > numel - output_offset) {
-                        return fail(
-                            "chunk symbol counts exceed the tensor numel.");
-                    }
+                chunks.emplace_back();
+                MixedStreamDecodeChunk& chunk = chunks.back();
+                chunk.tensor_index = tensor_index;
+                chunk.stream = stream;
+                chunk.output_offset = output_offset;
+                chunk.symbol_count = symbol_count;
+                chunk.frame_4x = frame_4x;
+                chunk.payload.acquire(payload_source);
 
-                    chunks.emplace_back();
-                    MixedStreamDecodeChunk& chunk = chunks.back();
-                    chunk.tensor_index = static_cast<std::size_t>(tensor_index);
-                    chunk.stream = stream;
-                    chunk.output_offset = output_offset;
-                    chunk.symbol_count = symbol_count;
-                    chunk.frame_4x = frame_4x != 0;
-                    if (PyObject_GetBuffer(
-                            payload_source,
-                            &chunk.payload_view,
-                            PyBUF_CONTIG_RO) < 0) {
-                        return fail(nullptr);
+                if (kind == "raw") {
+                    chunk.mode = MixedStreamDecodeMode::Raw;
+                    if (!decodebook_source.is_none()) {
+                        throw nb::value_error(
+                            "raw chunks cannot reference a decodebook.");
                     }
-
-                    if (std::strcmp(kind, "raw") == 0) {
-                        chunk.mode = MixedStreamDecodeMode::Raw;
-                        if (decodebook_source != Py_None) {
-                            return fail("raw chunks cannot reference a decodebook.");
-                        }
-                        if (chunk.payload_view.len != requested_symbols) {
-                            return fail(
-                                "raw chunk payload size must equal symbol_count.");
-                        }
-                    } else if (std::strcmp(kind, "zero") == 0) {
-                        chunk.mode = MixedStreamDecodeMode::Zero;
-                        if (decodebook_source != Py_None) {
-                            return fail("zero chunks cannot reference a decodebook.");
-                        }
-                        if (chunk.payload_view.len != 0) {
-                            return fail("zero chunk payload must be empty.");
-                        }
-                    } else if (std::strcmp(kind, "local_huff0") == 0) {
-                        chunk.mode = MixedStreamDecodeMode::LocalHuff0;
-                        if (decodebook_source != Py_None) {
-                            return fail(
-                                "local_huff0 chunks cannot reference a decodebook.");
-                        }
-                        if (symbol_count == 0 || chunk.payload_view.len <= 0) {
-                            return fail(
-                                "local_huff0 chunks must contain symbols and payload.");
-                        }
-                        if (symbol_count > kMaxBlockSize) {
-                            return fail(
-                                "local_huff0 chunk exceeds the Huff0 block limit.");
-                        }
-                    } else if (std::strcmp(kind, "shared_huff0") == 0) {
-                        chunk.mode = MixedStreamDecodeMode::SharedHuff0;
-                        if (decodebook_source == Py_None) {
-                            return fail(
-                                "shared_huff0 chunks require a decodebook handle.");
-                        }
-                        if (symbol_count == 0 || chunk.payload_view.len <= 0) {
-                            return fail(
-                                "shared_huff0 chunks must contain symbols and payload.");
-                        }
-                        if (symbol_count > kMaxBlockSize) {
-                            return fail(
-                                "shared_huff0 chunk exceeds the Huff0 block limit.");
-                        }
-                        chunk.decodebook = decodebook_from_capsule(
-                            decodebook_source);
-                        Py_INCREF(decodebook_source);
-                        chunk.decodebook_capsule = decodebook_source;
-                    } else if (std::strcmp(kind, "packed_huff0") == 0) {
-                        return fail(
-                            "decompress_mixed_streams_many does not support packed_huff0.");
-                    } else {
-                        return fail("Unsupported mixed-stream decode chunk mode.");
+                    if (chunk.payload.size() != requested_symbols) {
+                        throw nb::value_error(
+                            "raw chunk payload size must equal symbol_count.");
                     }
-
-                    stream_chunk_indices[static_cast<std::size_t>(stream)]
-                        .push_back(chunks.size() - 1U);
-                    output_offset += symbol_count;
+                } else if (kind == "zero") {
+                    chunk.mode = MixedStreamDecodeMode::Zero;
+                    if (!decodebook_source.is_none()) {
+                        throw nb::value_error(
+                            "zero chunks cannot reference a decodebook.");
+                    }
+                    if (chunk.payload.size() != 0) {
+                        throw nb::value_error(
+                            "zero chunk payload must be empty.");
+                    }
+                } else if (kind == "local_huff0") {
+                    chunk.mode = MixedStreamDecodeMode::LocalHuff0;
+                    if (!decodebook_source.is_none()) {
+                        throw nb::value_error(
+                            "local_huff0 chunks cannot reference a decodebook.");
+                    }
+                    if (symbol_count == 0 || chunk.payload.size() <= 0) {
+                        throw nb::value_error(
+                            "local_huff0 chunks must contain symbols "
+                            "and payload.");
+                    }
+                    if (symbol_count > kMaxBlockSize) {
+                        throw nb::value_error(
+                            "local_huff0 chunk exceeds the Huff0 block limit.");
+                    }
+                } else if (kind == "shared_huff0") {
+                    chunk.mode = MixedStreamDecodeMode::SharedHuff0;
+                    if (decodebook_source.is_none()) {
+                        throw nb::value_error(
+                            "shared_huff0 chunks require a "
+                            "decodebook handle.");
+                    }
+                    if (symbol_count == 0 || chunk.payload.size() <= 0) {
+                        throw nb::value_error(
+                            "shared_huff0 chunks must contain symbols "
+                            "and payload.");
+                    }
+                    if (symbol_count > kMaxBlockSize) {
+                        throw nb::value_error(
+                            "shared_huff0 chunk exceeds the "
+                            "Huff0 block limit.");
+                    }
+                    chunk.decodebook_owner =
+                        nb::borrow<nb::object>(decodebook_source);
+                    chunk.decodebook =
+                        decodebook_from_capsule(decodebook_source);
+                } else if (kind == "packed_huff0") {
+                    throw nb::value_error(
+                        "decompress_mixed_streams_many does not support "
+                        "packed_huff0.");
+                } else {
+                    throw nb::value_error(
+                        "Unsupported mixed-stream decode chunk mode.");
                 }
-                if (output_offset != numel) {
-                    return fail(
-                        "Each decoded byte stream must contain exactly numel symbols.");
-                }
+
+                stream_chunk_indices[
+                    static_cast<std::size_t>(stream)].push_back(
+                        chunks.size() - 1U);
+                output_offset += symbol_count;
             }
-
-            bool chunks_are_aligned = true;
-            const std::size_t aligned_chunk_count =
-                stream_chunk_indices[0].size();
-            for (std::size_t stream = 1; stream < width; ++stream) {
-                if (stream_chunk_indices[stream].size()
-                    != aligned_chunk_count) {
-                    chunks_are_aligned = false;
-                    break;
-                }
+            if (output_offset != numel) {
+                throw nb::value_error(
+                    "Each decoded byte stream must contain exactly "
+                    "numel symbols.");
             }
-            if (chunks_are_aligned) {
-                for (std::size_t chunk_index = 0;
-                     chunk_index < aligned_chunk_count;
-                     ++chunk_index) {
-                    const MixedStreamDecodeChunk& first = chunks[
-                        stream_chunk_indices[0][chunk_index]];
-                    for (std::size_t stream = 1; stream < width; ++stream) {
-                        const MixedStreamDecodeChunk& other = chunks[
-                            stream_chunk_indices[stream][chunk_index]];
-                        if (other.output_offset != first.output_offset
-                            || other.symbol_count != first.symbol_count) {
-                            chunks_are_aligned = false;
-                            break;
-                        }
-                    }
-                    if (!chunks_are_aligned) {
+        }
+
+        bool chunks_are_aligned = true;
+        const std::size_t aligned_chunk_count =
+            stream_chunk_indices[0].size();
+        for (std::size_t stream = 1; stream < width; ++stream) {
+            if (stream_chunk_indices[stream].size()
+                != aligned_chunk_count) {
+                chunks_are_aligned = false;
+                break;
+            }
+        }
+        if (chunks_are_aligned) {
+            for (std::size_t chunk_index = 0;
+                 chunk_index < aligned_chunk_count;
+                 ++chunk_index) {
+                const MixedStreamDecodeChunk& first = chunks[
+                    stream_chunk_indices[0][chunk_index]];
+                for (std::size_t stream = 1;
+                     stream < width;
+                     ++stream) {
+                    const MixedStreamDecodeChunk& other = chunks[
+                        stream_chunk_indices[stream][chunk_index]];
+                    if (other.output_offset != first.output_offset
+                        || other.symbol_count != first.symbol_count) {
+                        chunks_are_aligned = false;
                         break;
                     }
                 }
-            }
-
-            if (chunks_are_aligned) {
-                for (std::size_t chunk_index = 0;
-                     chunk_index < aligned_chunk_count;
-                     ++chunk_index) {
-                    MixedStreamAlignedDecodeJob job;
-                    const MixedStreamDecodeChunk& first = chunks[
-                        stream_chunk_indices[0][chunk_index]];
-                    job.tensor_index = static_cast<std::size_t>(tensor_index);
-                    job.output_offset = first.output_offset;
-                    job.symbol_count = first.symbol_count;
-                    for (std::size_t stream = 0; stream < width; ++stream) {
-                        job.chunk_indices[stream] =
-                            stream_chunk_indices[stream][chunk_index];
-                    }
-                    aligned_jobs.push_back(std::move(job));
-                }
-            } else {
-                request.lanes.resize(width);
-                for (auto& lane : request.lanes) {
-                    lane.resize(numel);
-                }
-                for (std::size_t stream = 0; stream < width; ++stream) {
-                    fallback_chunk_jobs.insert(
-                        fallback_chunk_jobs.end(),
-                        stream_chunk_indices[stream].begin(),
-                        stream_chunk_indices[stream].end());
-                }
-
-                constexpr std::size_t kCombineJobBytes = 256U << 10;
-                const std::size_t combine_step = std::max<std::size_t>(
-                    1U, kCombineJobBytes / width);
-                for (std::size_t start = 0;
-                     start < numel;
-                     start += combine_step) {
-                    combine_jobs.push_back(
-                        {
-                            static_cast<std::size_t>(tensor_index),
-                            start,
-                            std::min(combine_step, numel - start),
-                        });
+                if (!chunks_are_aligned) {
+                    break;
                 }
             }
         }
-    } catch (const std::bad_alloc&) {
-        PyErr_NoMemory();
-        return fail(nullptr);
-    } catch (const std::exception& error) {
-        if (!PyErr_Occurred()) {
-            PyErr_SetString(PyExc_ValueError, error.what());
+
+        if (chunks_are_aligned) {
+            for (std::size_t chunk_index = 0;
+                 chunk_index < aligned_chunk_count;
+                 ++chunk_index) {
+                MixedStreamAlignedDecodeJob job;
+                const MixedStreamDecodeChunk& first = chunks[
+                    stream_chunk_indices[0][chunk_index]];
+                job.tensor_index = tensor_index;
+                job.output_offset = first.output_offset;
+                job.symbol_count = first.symbol_count;
+                for (std::size_t stream = 0;
+                     stream < width;
+                     ++stream) {
+                    job.chunk_indices[stream] =
+                        stream_chunk_indices[stream][chunk_index];
+                }
+                aligned_jobs.push_back(std::move(job));
+            }
+        } else {
+            request.lanes.resize(width);
+            for (auto& lane : request.lanes) {
+                lane.resize(numel);
+            }
+            for (std::size_t stream = 0;
+                 stream < width;
+                 ++stream) {
+                fallback_chunk_jobs.insert(
+                    fallback_chunk_jobs.end(),
+                    stream_chunk_indices[stream].begin(),
+                    stream_chunk_indices[stream].end());
+            }
+
+            constexpr std::size_t kCombineJobBytes = 256U << 10;
+            const std::size_t combine_step = std::max<std::size_t>(
+                1U, kCombineJobBytes / width);
+            for (std::size_t start = 0;
+                 start < numel;
+                 start += combine_step) {
+                combine_jobs.push_back({
+                    tensor_index,
+                    start,
+                    std::min(combine_step, numel - start),
+                });
+            }
         }
-        return fail(nullptr);
     }
 
     std::string thread_error;
     std::string native_error;
     const std::string* decode_error = nullptr;
-    PyThreadState* saved = PyEval_SaveThread();
-    try {
-        const std::size_t aligned_job_count = aligned_jobs.size();
-        const std::size_t first_phase_job_count = aligned_job_count
-            + fallback_chunk_jobs.size();
-        thread_error = run_parallel_jobs(
-            first_phase_job_count,
-            total_output_bytes,
-            requested_threads,
-            [&](std::size_t job_index) {
-                if (job_index < aligned_job_count) {
-                    MixedStreamAlignedDecodeJob& job = aligned_jobs[job_index];
-                    const MixedStreamDecodeTensor& request = requests[
-                        job.tensor_index];
-                    try {
-                        const std::size_t width = static_cast<std::size_t>(
-                            request.element_size);
-                        std::size_t huff_lane_count = 0;
-                        for (std::size_t stream = 0; stream < width; ++stream) {
-                            const MixedStreamDecodeMode mode = chunks[
-                                job.chunk_indices[stream]].mode;
-                            if (mode == MixedStreamDecodeMode::LocalHuff0
-                                || mode == MixedStreamDecodeMode::SharedHuff0) {
-                                ++huff_lane_count;
-                            }
-                        }
-                        if (huff_lane_count > 0
-                            && job.symbol_count
-                                > std::numeric_limits<std::size_t>::max()
-                                    / huff_lane_count) {
-                            throw std::length_error(
-                                "Aligned Huff0 scratch size overflowed.");
-                        }
-
-                        thread_local std::vector<std::uint8_t> scratch;
-                        scratch.resize(huff_lane_count * job.symbol_count);
-                        std::array<const std::uint8_t*, 4> lane_data{};
-                        std::size_t scratch_offset = 0;
-                        for (std::size_t stream = 0; stream < width; ++stream) {
-                            MixedStreamDecodeChunk& chunk = chunks[
-                                job.chunk_indices[stream]];
-                            const auto* payload = static_cast<
-                                const std::uint8_t*>(chunk.payload_view.buf);
-                            switch (chunk.mode) {
-                            case MixedStreamDecodeMode::Raw:
-                                lane_data[stream] = payload;
-                                break;
-                            case MixedStreamDecodeMode::Zero:
-                                lane_data[stream] = nullptr;
-                                break;
-                            case MixedStreamDecodeMode::LocalHuff0: {
-                                std::uint8_t* destination = scratch.data()
-                                    + scratch_offset;
-                                decompress_local_block_into(
-                                    payload,
-                                    chunk.payload_view.len,
-                                    destination,
-                                    chunk.symbol_count);
-                                lane_data[stream] = destination;
-                                scratch_offset += chunk.symbol_count;
-                                break;
-                            }
-                            case MixedStreamDecodeMode::SharedHuff0: {
-                                std::uint8_t* destination = scratch.data()
-                                    + scratch_offset;
-                                decode_huff0_block_into(
-                                    payload,
-                                    chunk.payload_view.len,
-                                    destination,
-                                    chunk.symbol_count,
-                                    *chunk.decodebook,
-                                    chunk.frame_4x);
-                                lane_data[stream] = destination;
-                                scratch_offset += chunk.symbol_count;
-                                break;
-                            }
-                            }
-                        }
-                        restore_mixed_stream_aligned_chunk(
-                            request,
-                            lane_data,
-                            job.output_offset,
-                            job.symbol_count);
-                    } catch (const std::exception& error) {
-                        job.error = error.what();
-                    } catch (...) {
-                        job.error = "Unknown aligned mixed-stream decode failure.";
-                    }
-                    return;
-                }
-
-                MixedStreamDecodeChunk& chunk = chunks[
-                    fallback_chunk_jobs[job_index - aligned_job_count]];
-                MixedStreamDecodeTensor& request = requests[chunk.tensor_index];
-                std::uint8_t* destination = nullptr;
-                if (chunk.symbol_count > 0) {
-                    destination = request.lanes[
-                        static_cast<std::size_t>(chunk.stream)].data()
-                        + chunk.output_offset;
-                }
-                try {
-                    const auto* payload = static_cast<const std::uint8_t*>(
-                        chunk.payload_view.buf);
-                    switch (chunk.mode) {
-                    case MixedStreamDecodeMode::Raw:
-                        if (chunk.symbol_count > 0) {
-                            std::memcpy(
-                                destination, payload, chunk.symbol_count);
-                        }
-                        break;
-                    case MixedStreamDecodeMode::Zero:
-                        if (chunk.symbol_count > 0) {
-                            std::memset(destination, 0, chunk.symbol_count);
-                        }
-                        break;
-                    case MixedStreamDecodeMode::LocalHuff0:
-                        decompress_local_block_into(
-                            payload,
-                            chunk.payload_view.len,
-                            destination,
-                            chunk.symbol_count);
-                        break;
-                    case MixedStreamDecodeMode::SharedHuff0:
-                        decode_huff0_block_into(
-                            payload,
-                            chunk.payload_view.len,
-                            destination,
-                            chunk.symbol_count,
-                            *chunk.decodebook,
-                            chunk.frame_4x);
-                        break;
-                    }
-                } catch (const std::exception& error) {
-                    chunk.error = error.what();
-                } catch (...) {
-                    chunk.error = "Unknown mixed-stream decode failure.";
-                }
-            });
-
-        if (thread_error.empty()) {
-            for (const auto& job : aligned_jobs) {
-                if (!job.error.empty()) {
-                    decode_error = &job.error;
-                    break;
-                }
-            }
-        }
-        if (thread_error.empty() && decode_error == nullptr) {
-            for (const auto& chunk : chunks) {
-                if (!chunk.error.empty()) {
-                    decode_error = &chunk.error;
-                    break;
-                }
-            }
-        }
-        if (thread_error.empty() && decode_error == nullptr) {
+    {
+        nb::gil_scoped_release release;
+        try {
+            const std::size_t aligned_job_count = aligned_jobs.size();
+            const std::size_t first_phase_job_count =
+                aligned_job_count + fallback_chunk_jobs.size();
             thread_error = run_parallel_jobs(
-                combine_jobs.size(),
+                first_phase_job_count,
                 total_output_bytes,
                 requested_threads,
                 [&](std::size_t job_index) {
-                    const MixedStreamCombineJob& job = combine_jobs[job_index];
-                    restore_mixed_stream_tensor_range(
-                        requests[job.tensor_index], job.start, job.length);
+                    if (job_index < aligned_job_count) {
+                        MixedStreamAlignedDecodeJob& job =
+                            aligned_jobs[job_index];
+                        const MixedStreamDecodeTensor& request =
+                            requests[job.tensor_index];
+                        try {
+                            const std::size_t width =
+                                static_cast<std::size_t>(
+                                    request.element_size);
+                            std::size_t huff_lane_count = 0;
+                            for (std::size_t stream = 0;
+                                 stream < width;
+                                 ++stream) {
+                                const MixedStreamDecodeMode mode =
+                                    chunks[job.chunk_indices[stream]].mode;
+                                if (mode
+                                        == MixedStreamDecodeMode::LocalHuff0
+                                    || mode
+                                        == MixedStreamDecodeMode::SharedHuff0) {
+                                    ++huff_lane_count;
+                                }
+                            }
+                            if (huff_lane_count > 0
+                                && job.symbol_count
+                                    > std::numeric_limits<std::size_t>::max()
+                                        / huff_lane_count) {
+                                throw std::length_error(
+                                    "Aligned Huff0 scratch size overflowed.");
+                            }
+
+                            thread_local std::vector<std::uint8_t> scratch;
+                            scratch.resize(
+                                huff_lane_count * job.symbol_count);
+                            std::array<const std::uint8_t*, 4> lane_data{};
+                            std::size_t scratch_offset = 0;
+                            for (std::size_t stream = 0;
+                                 stream < width;
+                                 ++stream) {
+                                MixedStreamDecodeChunk& chunk = chunks[
+                                    job.chunk_indices[stream]];
+                                const auto* payload = chunk.payload.data();
+                                switch (chunk.mode) {
+                                case MixedStreamDecodeMode::Raw:
+                                    lane_data[stream] = payload;
+                                    break;
+                                case MixedStreamDecodeMode::Zero:
+                                    lane_data[stream] = nullptr;
+                                    break;
+                                case MixedStreamDecodeMode::LocalHuff0: {
+                                    std::uint8_t* destination =
+                                        scratch.data() + scratch_offset;
+                                    decompress_local_block_into(
+                                        payload,
+                                        chunk.payload.size(),
+                                        destination,
+                                        chunk.symbol_count);
+                                    lane_data[stream] = destination;
+                                    scratch_offset += chunk.symbol_count;
+                                    break;
+                                }
+                                case MixedStreamDecodeMode::SharedHuff0: {
+                                    std::uint8_t* destination =
+                                        scratch.data() + scratch_offset;
+                                    decode_huff0_block_into(
+                                        payload,
+                                        chunk.payload.size(),
+                                        destination,
+                                        chunk.symbol_count,
+                                        *chunk.decodebook,
+                                        chunk.frame_4x);
+                                    lane_data[stream] = destination;
+                                    scratch_offset += chunk.symbol_count;
+                                    break;
+                                }
+                                }
+                            }
+                            restore_mixed_stream_aligned_chunk(
+                                request,
+                                lane_data,
+                                job.output_offset,
+                                job.symbol_count);
+                        } catch (const std::exception& error) {
+                            job.error = error.what();
+                        } catch (...) {
+                            job.error =
+                                "Unknown aligned mixed-stream decode failure.";
+                        }
+                        return;
+                    }
+
+                    MixedStreamDecodeChunk& chunk = chunks[
+                        fallback_chunk_jobs[
+                            job_index - aligned_job_count]];
+                    MixedStreamDecodeTensor& request =
+                        requests[chunk.tensor_index];
+                    std::uint8_t* destination = nullptr;
+                    if (chunk.symbol_count > 0) {
+                        destination = request.lanes[
+                            static_cast<std::size_t>(chunk.stream)].data()
+                            + chunk.output_offset;
+                    }
+                    try {
+                        const auto* payload = chunk.payload.data();
+                        switch (chunk.mode) {
+                        case MixedStreamDecodeMode::Raw:
+                            if (chunk.symbol_count > 0) {
+                                std::memcpy(
+                                    destination,
+                                    payload,
+                                    chunk.symbol_count);
+                            }
+                            break;
+                        case MixedStreamDecodeMode::Zero:
+                            if (chunk.symbol_count > 0) {
+                                std::memset(
+                                    destination,
+                                    0,
+                                    chunk.symbol_count);
+                            }
+                            break;
+                        case MixedStreamDecodeMode::LocalHuff0:
+                            decompress_local_block_into(
+                                payload,
+                                chunk.payload.size(),
+                                destination,
+                                chunk.symbol_count);
+                            break;
+                        case MixedStreamDecodeMode::SharedHuff0:
+                            decode_huff0_block_into(
+                                payload,
+                                chunk.payload.size(),
+                                destination,
+                                chunk.symbol_count,
+                                *chunk.decodebook,
+                                chunk.frame_4x);
+                            break;
+                        }
+                    } catch (const std::exception& error) {
+                        chunk.error = error.what();
+                    } catch (...) {
+                        chunk.error =
+                            "Unknown mixed-stream decode failure.";
+                    }
                 });
+
+            if (thread_error.empty()) {
+                for (const auto& job : aligned_jobs) {
+                    if (!job.error.empty()) {
+                        decode_error = &job.error;
+                        break;
+                    }
+                }
+            }
+            if (thread_error.empty() && decode_error == nullptr) {
+                for (const auto& chunk : chunks) {
+                    if (!chunk.error.empty()) {
+                        decode_error = &chunk.error;
+                        break;
+                    }
+                }
+            }
+            if (thread_error.empty() && decode_error == nullptr) {
+                thread_error = run_parallel_jobs(
+                    combine_jobs.size(),
+                    total_output_bytes,
+                    requested_threads,
+                    [&](std::size_t job_index) {
+                        const MixedStreamCombineJob& job =
+                            combine_jobs[job_index];
+                        restore_mixed_stream_tensor_range(
+                            requests[job.tensor_index],
+                            job.start,
+                            job.length);
+                    });
+            }
+        } catch (const std::exception& error) {
+            native_error = error.what();
+        } catch (...) {
+            native_error =
+                "Unknown model-wide mixed-stream decode failure.";
         }
-    } catch (const std::exception& error) {
-        native_error = error.what();
-    } catch (...) {
-        native_error = "Unknown model-wide mixed-stream decode failure.";
     }
-    PyEval_RestoreThread(saved);
 
     if (!native_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, native_error.c_str());
-        return fail(nullptr);
+        throw std::runtime_error(native_error);
     }
     if (!thread_error.empty()) {
-        PyErr_SetString(PyExc_RuntimeError, thread_error.c_str());
-        return fail(nullptr);
+        throw std::runtime_error(thread_error);
     }
     if (decode_error != nullptr) {
-        PyErr_SetString(PyExc_ValueError, decode_error->c_str());
-        return fail(nullptr);
+        throw nb::value_error(decode_error->c_str());
     }
 
-    release_inputs();
-    PyObject* output = PyList_New(tensor_count);
-    if (!output) {
-        release_outputs();
-        return nullptr;
-    }
-    for (Py_ssize_t tensor_index = 0;
-         tensor_index < tensor_count;
-         ++tensor_index) {
-        MixedStreamDecodeTensor& request = requests[
-            static_cast<std::size_t>(tensor_index)];
-        PyList_SET_ITEM(output, tensor_index, request.output);
-        request.output = nullptr;
-        request.output_data = nullptr;
+    nb::list output;
+    for (const auto& request : requests) {
+        output.append(request.output);
     }
     return output;
 }
 
-PyObject* py_decompress_block(PyObject*, PyObject* args) {
-    Py_buffer payload_view{};
-    Py_ssize_t symbol_count = 0;
-    if (!PyArg_ParseTuple(args, "y*n", &payload_view, &symbol_count)) {
-        return nullptr;
-    }
-    try {
-        const auto* payload = static_cast<const std::uint8_t*>(payload_view.buf);
-        std::vector<std::uint8_t> decoded = decompress_local_block(
-            payload,
-            payload_view.len,
-            symbol_count);
-        PyObject* result = bytes_from_vector(decoded);
-        PyBuffer_Release(&payload_view);
-        return result;
-    } catch (const std::bad_alloc&) {
-        PyBuffer_Release(&payload_view);
-        PyErr_NoMemory();
-        return nullptr;
-    } catch (const std::exception& error) {
-        PyBuffer_Release(&payload_view);
-        PyErr_SetString(PyExc_ValueError, error.what());
-        return nullptr;
-    }
+nb::bytes decompress_block(
+    nb::handle payload_source,
+    Py_ssize_t symbol_count) {
+    ReadOnlyBuffer payload(payload_source);
+    return with_value_errors([&]() {
+        return bytes_from_vector(decompress_local_block(
+            payload.data(),
+            payload.size(),
+            symbol_count));
+    });
 }
-
-static PyMethodDef methods[] = {
-    {"max_block_size", py_max_block_size, METH_NOARGS, "Return Huff0 maximum block size."},
-    {"build_codebook", reinterpret_cast<PyCFunction>(py_build_codebook), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook."},
-    {"build_codebook_from_counts", reinterpret_cast<PyCFunction>(py_build_codebook_from_counts), METH_VARARGS | METH_KEYWORDS, "Build a Huff0 codebook from a complete 256-bin histogram."},
-    {"build_codebook_from_header", py_build_codebook_from_header, METH_VARARGS, "Rebuild a Huff0 encoder table from its serialized header."},
-    {"build_decodebook", py_build_decodebook, METH_VARARGS, "Build a Huff0 decode table from a serialized codebook."},
-    {"export_code_table", reinterpret_cast<PyCFunction>(py_export_code_table), METH_VARARGS | METH_KEYWORDS, "Export exact Huff0 symbol lengths and canonical code values."},
-    {"encode_gpu_bfloat16", reinterpret_cast<PyCFunction>(py_encode_gpu_bfloat16), METH_VARARGS | METH_KEYWORDS, "Encode little-endian BF16 bytes into the NeuralZip GPU layout."},
-    {"encode_with_codebook", py_encode_with_codebook, METH_VARARGS, "Encode using a Huff0 codebook."},
-    {"encode_ngram_with_codebook", py_encode_ngram_with_codebook, METH_VARARGS, "Tokenize n-grams and encode token ids using a Huff0 codebook."},
-    {"decompress_with_decodebook", py_decompress_with_decodebook, METH_VARARGS, "Decompress using a Huff0 decodebook."},
-    {"decompress_ngram_with_decodebook", py_decompress_ngram_with_decodebook, METH_VARARGS, "Decode Huff0 token ids and restore packed n-grams."},
-    {"compress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_compress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Encode many tensors with one mixed-stream Huff0 native job queue."},
-    {"decompress_mixed_streams_many", reinterpret_cast<PyCFunction>(py_decompress_mixed_streams_many), METH_VARARGS | METH_KEYWORDS, "Decode many mixed-stream tensors with one native job queue."},
-    {"decompress_block", py_decompress_block, METH_VARARGS, "Decompress one self-contained Huff0 block."},
-    {nullptr, nullptr, 0, nullptr},
-};
-
-static PyModuleDef module = {
-    PyModuleDef_HEAD_INIT,
-    "_huff0_cpp",
-    "NeuralZip stream bridge backed by upstream Zstd Huff0.",
-    -1,
-    methods,
-};
 
 }  // namespace
 
-PyMODINIT_FUNC PyInit__huff0_cpp() {
-    return PyModule_Create(&module);
+NB_MODULE(_huff0_cpp, module) {
+    module.doc() =
+        "NeuralZip stream bridge backed by upstream Zstd Huff0.";
+
+    module.def(
+        "max_block_size",
+        &max_block_size,
+        "Return Huff0 maximum block size.");
+    module.def(
+        "build_codebook",
+        &build_codebook,
+        nb::arg("data"),
+        nb::arg("prior_count") = 0,
+        nb::arg("max_bits") = kTableLog,
+        "Build a Huff0 codebook.");
+    module.def(
+        "build_codebook_from_counts",
+        &build_codebook_from_counts,
+        nb::arg("symbol_counts"),
+        nb::arg("prior_count") = 0,
+        nb::arg("max_bits") = kTableLog,
+        "Build a Huff0 codebook from a complete 256-bin histogram.");
+    module.def(
+        "build_codebook_from_header",
+        &build_codebook_from_header,
+        "Rebuild a Huff0 encoder table from its serialized header.");
+    module.def(
+        "build_decodebook",
+        &build_decodebook,
+        "Build a Huff0 decode table from a serialized codebook.");
+    module.def(
+        "export_code_table",
+        &export_code_table,
+        nb::arg("codebook"),
+        nb::arg("max_bits") = 12,
+        "Export exact Huff0 symbol lengths and canonical code values.");
+    module.def(
+        "encode_gpu_bfloat16",
+        &encode_gpu_bfloat16,
+        nb::arg("raw_bf16"),
+        nb::arg("codebook"),
+        nb::arg("bytes_per_thread") = 8,
+        nb::arg("threads_per_block") = 512,
+        "Encode little-endian BF16 bytes into the NeuralZip GPU layout.");
+    module.def(
+        "encode_with_codebook",
+        &encode_with_codebook,
+        "Encode using a Huff0 codebook.");
+    module.def(
+        "encode_ngram_with_codebook",
+        &encode_ngram_with_codebook,
+        "Tokenize n-grams and encode token ids using a Huff0 codebook.");
+    module.def(
+        "decompress_with_decodebook",
+        &decompress_with_decodebook,
+        "Decompress using a Huff0 decodebook.");
+    module.def(
+        "decompress_ngram_with_decodebook",
+        &decompress_ngram_with_decodebook,
+        "Decode Huff0 token ids and restore packed n-grams.");
+    module.def(
+        "compress_mixed_streams_many",
+        &compress_mixed_streams_many,
+        nb::arg("tensor_specs"),
+        nb::arg("min_saving_bytes") = 0,
+        nb::arg("threads") = 0,
+        nb::arg("compression_threshold") = 0.95,
+        "Encode many tensors with one mixed-stream Huff0 native job queue.");
+    module.def(
+        "decompress_mixed_streams_many",
+        &decompress_mixed_streams_many,
+        nb::arg("tensor_specs"),
+        nb::arg("threads") = 0,
+        "Decode many mixed-stream tensors with one native job queue.");
+    module.def(
+        "decompress_block",
+        &decompress_block,
+        "Decompress one self-contained Huff0 block.");
 }

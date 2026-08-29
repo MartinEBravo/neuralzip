@@ -12,17 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Modified for NeuralZip in 2026:
-// - use a flat, collision-free uint16 Huffman lookup table;
-// - accept the maximum Huffman code length at runtime;
-// - initialize code lookahead bytes and bound packed-gap reads;
-// - make the CUDA block size a runtime, power-of-two launch choice;
-// - share the decoder across single-group and batched descriptor launches; and
-// - use a two-barrier hierarchical warp scan for output offsets.
+// Modified for NeuralZip in 2026: flat runtime-length LUT, bounded lookahead,
+// batched descriptors, and a two-barrier hierarchical warp scan.
 
-// Keep the kernel self-contained for CuPy/NVRTC installations that do not
-// expose the host C standard-library headers. CUDA's primitive widths are
-// fixed on every supported target.
+// NVRTC may not expose host C headers; CUDA primitive widths are fixed.
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
@@ -39,8 +32,7 @@ namespace {
 __device__ __forceinline__ uint8_t read_packed_gap(
     const uint8_t* __restrict__ gaps,
     const uint64_t thread_id) {
-    // Four-bit gaps are packed most-significant nibble first. The final byte
-    // is always present even for the supported one-thread launch.
+    // Four-bit gaps are packed most-significant nibble first.
     const uint8_t packed = gaps[thread_id >> 1U];
     const unsigned shift = (thread_id & 1U) == 0U ? 4U : 0U;
     return static_cast<uint8_t>((packed >> shift) & 0x0FU);
@@ -75,10 +67,7 @@ __device__ __forceinline__ uint16_t assemble_bfloat16(
 __device__ __forceinline__ uint32_t exclusive_block_prefix(
     const uint32_t value,
     uint32_t* __restrict__ warp_offsets) {
-    // Every supported launch has at most 32 warps. First compute an inclusive
-    // scan inside each warp, then let warp zero scan the per-warp totals. This
-    // replaces the two-phase Blelloch scan and its O(log(blockDim)) barriers
-    // with exactly two block barriers.
+    // Scan inside each warp, then let warp zero scan the per-warp totals.
     const uint32_t lane = THREAD_ID & 31U;
     const uint32_t warp_id = THREAD_ID >> 5U;
     const uint32_t warp_count = (N_THREADS + 31U) >> 5U;
@@ -134,8 +123,7 @@ __device__ __forceinline__ void decode_bf16_block(
     const int n_bytes,
     const uint32_t local_block_id,
     uint8_t* __restrict__ shared_mem) {
-    // Zero initialization makes partial final threads and the four lookahead
-    // bytes deterministic without reading beyond the logical code stream.
+    // Zero initialization prevents partial threads from reading past the stream.
     uint8_t register_buffer[12] = {};
     uint32_t* warp_offsets = reinterpret_cast<uint32_t*>(shared_mem);
     const uint32_t warp_count = (N_THREADS + 31U) >> 5U;
@@ -156,8 +144,7 @@ __device__ __forceinline__ void decode_bf16_block(
 
     const uint8_t gap = read_packed_gap(gaps, group_thread_id);
 
-    // CUDA devices are little-endian. Reverse each code word while loading so
-    // that the earliest encoded bit occupies the most-significant buffer bit.
+    // Put the earliest encoded bit in the most-significant buffer position.
     uint64_t long_buffer = 0;
 #pragma unroll
     for (int index = 0; index < 8; ++index) {
@@ -186,9 +173,6 @@ __device__ __forceinline__ void decode_bf16_block(
     long_buffer |= static_cast<uint64_t>(lookahead) << (free_bits - 32U);
     free_bits = static_cast<uint8_t>(free_bits - 32U);
 
-    // BYTES_PER_THREAD is eight and the four-byte lookahead has just been
-    // inserted, so the former `4 + free_bits / 8 < 8` condition is exactly
-    // equivalent to this comparison without an integer division.
     while (free_bits < 32U) {
         const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
         const uint8_t nbits = entry_nbits(entry);
@@ -263,8 +247,6 @@ extern "C" __global__ void decode_bf16_batched(
     const int32_t* __restrict__ n_bytes,
     const int32_t* __restrict__ block_group_ids,
     const int32_t* __restrict__ block_local_ids) {
-    // All descriptor arrays and their contents are immutable and fully
-    // validated by prepare_batch before they reach this hot kernel.
     const int32_t group_id = __ldg(block_group_ids + BLOCK_ID);
     const int32_t local_block_id = __ldg(block_local_ids + BLOCK_ID);
     const int32_t group_n_bytes = __ldg(n_bytes + group_id);

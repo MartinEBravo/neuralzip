@@ -7,10 +7,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .export import BYTES_PER_THREAD, THREADS_PER_BLOCK
-
 KERNEL_NAME = "decode_bf16_batched"
 KERNEL_PATH = Path(__file__).with_name("cuda") / "decode_bf16.cu"
+BYTES_PER_THREAD = 8
+THREADS_PER_BLOCK = 512
 DESCRIPTOR_NAMES = (
     "lut",
     "encoded_exponents",
@@ -19,19 +19,6 @@ DESCRIPTOR_NAMES = (
     "output_positions",
     "output",
 )
-
-
-@dataclass(frozen=True)
-class BF16DecodeGroup:
-    lut: torch.Tensor
-    encoded_exponents: torch.Tensor
-    sign_mantissa: torch.Tensor
-    packed_gaps: torch.Tensor
-    output_positions: torch.Tensor
-    output: torch.Tensor
-    max_bits: int
-    max_block_elements: int
-
 
 @dataclass(frozen=True)
 class PreparedBF16Batch:
@@ -42,7 +29,6 @@ class PreparedBF16Batch:
     kernel_args: tuple[object, ...] = field(repr=False)
     outputs: tuple[torch.Tensor, ...] = field(repr=False)
 
-
 @dataclass
 class _Kernel:
     module: object
@@ -51,19 +37,8 @@ class _Kernel:
     optin_shared_memory: int | None = None
     configured_shared_memory: int = 0
 
-
-def _load_cupy():
-    try:
-        return importlib.import_module("cupy")
-    except ImportError as error:
-        raise ImportError(
-            "NeuralZip GPU inference requires a CuPy wheel matching CUDA."
-        ) from error
-
-
 def _device_property(properties, name):
     return int(properties.get(name, properties.get(name.encode("ascii"), 0)))
-
 
 class CuPyBF16Decoder:
     def __init__(self, kernel_path=KERNEL_PATH):
@@ -74,7 +49,10 @@ class CuPyBF16Decoder:
     @property
     def cupy(self):
         if self._cupy is None:
-            self._cupy = _load_cupy()
+            try:
+                self._cupy = importlib.import_module("cupy")
+            except ImportError as error:
+                raise ImportError("NeuralZip GPU inference requires a CuPy wheel matching CUDA.") from error
         return self._cupy
 
     def _kernel(self, device_index):
@@ -97,12 +75,9 @@ class CuPyBF16Decoder:
             return
         if kernel.default_shared_memory is None:
             properties = self.cupy.cuda.runtime.getDeviceProperties(device_index)
-            kernel.default_shared_memory = _device_property(
-                properties, "sharedMemPerBlock"
-            )
+            kernel.default_shared_memory = _device_property(properties, "sharedMemPerBlock")
             kernel.optin_shared_memory = (
-                _device_property(properties, "sharedMemPerBlockOptin")
-                or kernel.default_shared_memory
+                _device_property(properties, "sharedMemPerBlockOptin") or kernel.default_shared_memory
             )
         if required <= kernel.default_shared_memory:
             return
@@ -137,11 +112,8 @@ class CuPyBF16Decoder:
         def integers(values):
             return torch.tensor(tuple(values), dtype=torch.int32, device=device)
 
-        group_ids = []
-        local_ids = []
-        for group_id, grid in enumerate(grids):
-            group_ids.extend([group_id] * grid)
-            local_ids.extend(range(grid))
+        group_ids = [group_id for group_id, grid in enumerate(grids) for _ in range(grid)]
+        local_ids = [local_id for grid in grids for local_id in range(grid)]
 
         descriptors = tuple(pointers(name) for name in DESCRIPTOR_NAMES)
         descriptors += (
@@ -150,9 +122,7 @@ class CuPyBF16Decoder:
             integers(group_ids),
             integers(local_ids),
         )
-        shared_memory = 4 * ((THREADS_PER_BLOCK + 31) // 32) + 2 * max(
-            group.max_block_elements for group in groups
-        )
+        shared_memory = 4 * ((THREADS_PER_BLOCK + 31) // 32) + 2 * max(group.max_block_elements for group in groups)
         return PreparedBF16Batch(
             descriptor_tensors=descriptors,
             device=device,
@@ -178,9 +148,7 @@ class CuPyBF16Decoder:
             )
         return prepared.outputs
 
-
 _DECODER = CuPyBF16Decoder()
-
 
 def default_decoder():
     return _DECODER

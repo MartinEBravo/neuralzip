@@ -10,6 +10,7 @@ from .codec_primitives import (
     _byte_group_reordered_bytes,
     _tensor_from_raw_bytes,
     dtype_name,
+    estimate_mode,
     exponent_distribution,
     jensen_shannon_distance,
     select_fastest_within_ratio,
@@ -28,18 +29,14 @@ from .payloads import (
 )
 
 _TRANSFER_NAME_FALLBACKS = {
-    # Tied-output models such as Qwen store this tensor only under the input
-    # embedding name. Untied targets may expose the equivalent output head as
-    # a second tensor, whose streams can safely reuse the embedding modes.
+    # Qwen ties the output head to the input embedding in some family members.
     "lm_head.weight": ("model.embed_tokens.weight",),
 }
-
 
 def _floating_tensors(named_tensors):
     for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
         if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.numel():
             yield name, tensor
-
 
 class NeuralZipCodec:
     """JS-clustered Huffman with deterministic packed-exponent selection."""
@@ -70,9 +67,7 @@ class NeuralZipCodec:
         self.threads = int(threads)
         self.prior_count = int(prior_count)
         self.exponent_prior_count = int(exponent_prior_count)
-        self.cluster_map = {
-            str(name): str(value) for name, value in (cluster_map or {}).items()
-        }
+        self.cluster_map = {str(name): str(value) for name, value in (cluster_map or {}).items()}
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
@@ -98,9 +93,7 @@ class NeuralZipCodec:
         return tuple(self._codebook_payloads)
 
     def load_codebooks(self, codebooks):
-        self._codebook_payload_by_id = {
-            int(codebook.codebook_id): codebook for codebook in codebooks
-        }
+        self._codebook_payload_by_id = {int(codebook.codebook_id): codebook for codebook in codebooks}
         self._decode_codebooks = {}
 
     def prepare_clusters(self, named_tensors):
@@ -137,9 +130,7 @@ class NeuralZipCodec:
 
             cluster = clusters[best_index]
             total_weight = cluster["weight"] + weight
-            cluster["centroid"] = (
-                cluster["centroid"] * cluster["weight"] + distribution * weight
-            ) / total_weight
+            cluster["centroid"] = (cluster["centroid"] * cluster["weight"] + distribution * weight) / total_weight
             cluster["weight"] = total_weight
             computed[name] = cluster["cluster_id"]
         self._computed_cluster_map = computed
@@ -161,21 +152,11 @@ class NeuralZipCodec:
         segment_size = max(1, max_bytes // segment_count)
         last_start = len(stream) - segment_size
         starts = np.linspace(0, last_start, segment_count, dtype=np.int64)
-        sample = b"".join(
-            stream[int(start) : int(start) + segment_size] for start in starts
-        )
+        sample = b"".join(stream[int(start) : int(start) + segment_size] for start in starts)
         return sample[:max_bytes]
 
     def _measure_direct_mode(self, mode, element_size, sample_parts):
-        """Return exact bytes and time from the production native encoder.
-
-        The sampled logical byte lane is placed in stream zero of a synthetic
-        tensor before the timer; the remaining lanes use raw mode and therefore
-        contribute the same background work to every candidate.  The timed
-        call is the model-wide mixed primitive itself, so shared/packed
-        rejection, the strict compression threshold, and direct raw fallback
-        are identical to the real direct encoder.
-        """
+        """Measure a mode with the same native primitive used by ``encode``."""
         element_size = int(element_size)
         raw_mode = {"kind": "raw"}
         stream_modes = (mode,) + (raw_mode,) * (element_size - 1)
@@ -184,10 +165,7 @@ class NeuralZipCodec:
             part = bytes(part)
             if not part:
                 continue
-            # Sampling produced a logical (already reordered) byte lane.  A
-            # no-bit-reorder synthetic tensor preserves it exactly in stream
-            # zero while letting the production primitive perform extraction,
-            # chunking, encoding, and every fallback decision.
+            # Put the sampled byte lane in stream zero; other lanes stay raw.
             interleaved = bytearray(len(part) * element_size)
             interleaved[0::element_size] = part
             tensor_specs.append(
@@ -212,9 +190,7 @@ class NeuralZipCodec:
             )
             return output, time.perf_counter() - started
 
-        # Warm code/data caches once, then use the best of three complete
-        # measurements. The minimum estimates algorithmic work without letting
-        # scheduler jitter change the frozen family setup.
+        # Warm once and use the best of three runs to limit scheduler jitter.
         native_batch, _ = encode_once()
         seconds = min(encode_once()[1] for _ in range(3))
 
@@ -226,12 +202,7 @@ class NeuralZipCodec:
         encoded_bytes = 0
         for native_groups in native_batch:
             for final_kind, body, _, escapes, tail in native_groups[0]:
-                encoded_bytes += (
-                    metadata_by_mode[str(final_kind)]
-                    + len(body)
-                    + len(escapes)
-                    + len(tail)
-                )
+                encoded_bytes += metadata_by_mode[str(final_kind)] + len(body) + len(escapes) + len(tail)
         return encoded_bytes, seconds
 
     def _score_mode(
@@ -241,13 +212,9 @@ class NeuralZipCodec:
         codebook_payload=None,
         sample_parts=(),
     ):
-        sample_cost, sample_seconds = self._measure_direct_mode(
-            mode, element_size, tuple(sample_parts)
-        )
+        sample_cost, sample_seconds = self._measure_direct_mode(mode, element_size, tuple(sample_parts))
         mode["sample_cost"] = sample_cost
-        mode["fixed_cost"] = (
-            codebook_payload.metadata_bytes if codebook_payload is not None else 0
-        )
+        mode["fixed_cost"] = codebook_payload.metadata_bytes if codebook_payload is not None else 0
         mode["sample_cost"] += mode["fixed_cost"]
         mode["sample_seconds"] = sample_seconds
         return mode
@@ -316,13 +283,7 @@ class NeuralZipCodec:
         shared_chunk_count,
         codebook_payload,
     ):
-        """Return a sample-independent upper bound for shared Huff0 bytes.
-
-        The symbol contribution is exact for the complete histogram. Huff0's
-        4X frame adds a six-byte jump table and at most one padded byte for
-        each of its four bitstreams, hence the ten-byte per-chunk bound. Raw
-        fallback can only make the emitted chunks smaller than this bound.
-        """
+        """Bound shared size from exact counts plus Huff0's 10-byte 4X overhead."""
 
         table = huff0.export_code_table(mode["codebook"].codebook, max_bits=12)
         symbol_bits = sum(
@@ -335,14 +296,8 @@ class NeuralZipCodec:
         )
         symbol_bytes = (symbol_bits + 7) // 8
         frame_overhead = 10 * int(shared_chunk_count)
-        shared_chunks = (
-            symbol_bytes
-            + frame_overhead
-            + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
-        )
-        fallback_chunks = (
-            int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
-        )
+        shared_chunks = symbol_bytes + frame_overhead + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
+        fallback_chunks = int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
         return int(codebook_payload.metadata_bytes) + min(
             shared_chunks,
             fallback_chunks,
@@ -366,9 +321,7 @@ class NeuralZipCodec:
             element_size,
             sample_parts=sample_parts,
         )
-        raw_mode["full_cost"] = (
-            int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
-        )
+        raw_mode["full_cost"] = int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
         prior_count = self.exponent_prior_count if is_exponent else self.prior_count
 
         shared = None
@@ -384,9 +337,7 @@ class NeuralZipCodec:
             payload = self._candidate_payload(key, shared)
             if symbol_counts is not None:
                 shared["fixed_cost"] = payload.metadata_bytes
-                _, shared["sample_seconds"] = self._measure_direct_mode(
-                    shared, element_size, tuple(sample_parts)
-                )
+                _, shared["sample_seconds"] = self._measure_direct_mode(shared, element_size, tuple(sample_parts))
                 shared["full_cost"] = self._shared_histogram_cost(
                     shared,
                     symbol_counts,
@@ -407,27 +358,10 @@ class NeuralZipCodec:
         if shared is not None:
             base_candidates.append(shared)
         scale = total_size / len(sample)
-
-        def estimated_cost(candidate):
-            if "full_cost" in candidate:
-                return float(candidate["full_cost"])
-            fixed_cost = float(candidate.get("fixed_cost", 0))
-            return (
-                fixed_cost
-                + max(0.0, float(candidate["sample_cost"]) - fixed_cost) * scale
-            )
-
-        def estimated_seconds(candidate):
-            return float(candidate["sample_seconds"]) * scale
-
-        base = select_fastest_within_ratio(
-            base_candidates,
-            estimated_bytes=estimated_cost,
-            estimated_seconds=estimated_seconds,
+        base, base_cost, base_seconds = select_fastest_within_ratio(
+            (estimate_mode(candidate, scale) for candidate in base_candidates),
             ratio_tolerance=self.speed_ratio_tolerance,
         )
-        base_cost = estimated_cost(base)
-        base_seconds = estimated_seconds(base)
 
         packed_candidates = []
         if is_exponent:
@@ -449,28 +383,17 @@ class NeuralZipCodec:
                 )
                 packed_candidates.append(packed)
 
-        improving_packed_candidates = [
-            candidate
-            for candidate in packed_candidates
-            if estimated_cost(candidate) < base_cost
-        ]
+        packed_scores = (estimate_mode(candidate, scale) for candidate in packed_candidates)
+        improving_packed_candidates = [score for score in packed_scores if score[1] < base_cost]
         packed = None
         if improving_packed_candidates:
-            # Reject non-saving packed modes before applying the speed
-            # tolerance. Otherwise a faster n-gram that is slightly larger
-            # than the selected base can hide another n that saves bytes. The
-            # surviving opportunity remains time-aware here and is then
-            # subject to the model-wide packed-time budget below.
-            packed = select_fastest_within_ratio(
+            # Apply the speed tolerance only among packed modes that save bytes.
+            packed, packed_cost, packed_seconds = select_fastest_within_ratio(
                 improving_packed_candidates,
-                estimated_bytes=estimated_cost,
-                estimated_seconds=estimated_seconds,
                 ratio_tolerance=self.speed_ratio_tolerance,
             )
         opportunity = None
         if packed is not None:
-            packed_cost = estimated_cost(packed)
-            packed_seconds = estimated_seconds(packed)
             saved_bytes = base_cost - packed_cost
             opportunity = {
                 "mode": packed,
@@ -506,33 +429,17 @@ class NeuralZipCodec:
             config = _byte_group_dtype_config(tensor.dtype)
             for stream_id in range(int(config["element_size"])):
                 key = self._codebook_key(name, tensor, stream_id)
-                # The source cluster decision already compared compressed size
-                # and direct-encoding time under the configured tolerance.
-                # Re-probing every tensor with a ratio-only local fallback here
-                # would undo that decision and prune all shared codebooks.
                 selected = mode_by_key[key]
 
                 plan_key = self._transfer_plan_key(name, tensor, stream_id)
                 self._mode_by_tensor_stream[plan_key] = selected
 
     def prepare_direct_transfer_target(self, named_tensors):
-        """Map a family target to a reusable source setup.
-
-        This path reads only target metadata (name, dtype, size, and number of
-        byte streams). It does not inspect tensor values, compute exponent
-        histograms or Jensen--Shannon distances, or evaluate alternative modes.
-        The target can encode immediately from its own tensor buffers while
-        retaining the source model's modes, vocabularies, and codebooks. No
-        target data are copied or retained by this mapping step. Exact tensor
-        names are preferred; explicit structural aliases cover equivalent
-        tensors represented differently by related architectures.
-        """
+        """Map target names, dtypes and streams to a reusable source setup."""
         if not self._clusters_prepared:
             raise RuntimeError("Source clusters must be prepared before transfer.")
         if not self._mode_by_tensor_stream:
-            raise RuntimeError(
-                "Source codebooks and modes must be built before transfer."
-            )
+            raise RuntimeError("Source codebooks and modes must be built before transfer.")
 
         transfer_modes = {}
         target_tensors = 0
@@ -551,24 +458,16 @@ class NeuralZipCodec:
                 (
                     candidate
                     for candidate in candidates
-                    if all(
-                        (candidate, dtype, stream_id) in self._mode_by_tensor_stream
-                        for stream_id in stream_ids
-                    )
+                    if all((candidate, dtype, stream_id) in self._mode_by_tensor_stream for stream_id in stream_ids)
                 ),
                 None,
             )
             if source_name is None:
-                raise ValueError(
-                    "Direct transfer has no compatible source tensor for "
-                    f"{tensor_name}:{dtype}."
-                )
+                raise ValueError(f"Direct transfer has no compatible source tensor for {tensor_name}:{dtype}.")
 
             for stream_id in stream_ids:
                 plan_key = (tensor_name, dtype, stream_id)
-                transfer_modes[plan_key] = self._mode_by_tensor_stream[
-                    (source_name, dtype, stream_id)
-                ]
+                transfer_modes[plan_key] = self._mode_by_tensor_stream[(source_name, dtype, stream_id)]
                 if source_name != tensor_name:
                     fallback_assignments[f"{tensor_name}:{dtype}:stream{stream_id}"] = (
                         f"{source_name}:{dtype}:stream{stream_id}"
@@ -606,13 +505,7 @@ class NeuralZipCodec:
         return stats
 
     def _collect_codebook_samples(self, named_tensors):
-        """Collect bounded probes and complete exponent histograms.
-
-        Bounded byte samples remain only for direct-time probes and packed
-        vocabulary/cost discovery. Shared exponent codebooks and their symbol
-        costs use all 256 bins, so their ratio decision no longer depends on
-        the sample budget or tensor traversal position.
-        """
+        """Collect bounded timing probes and complete exponent histograms."""
 
         sample_parts = {}
         sample_sizes = {}
@@ -666,9 +559,7 @@ class NeuralZipCodec:
 
     def build_codebooks_and_select_modes(self, named_tensors):
         if not self._clusters_prepared:
-            raise RuntimeError(
-                "Clusters must be prepared before building NeuralZip codebooks."
-            )
+            raise RuntimeError("Clusters must be prepared before building NeuralZip codebooks.")
         named_tensors = list(named_tensors)
         (
             sample_parts,
@@ -695,14 +586,8 @@ class NeuralZipCodec:
                 )
             )
 
-        exponent_source_bytes = sum(
-            evaluation["total_size"]
-            for evaluation in evaluations
-            if evaluation["is_exponent"]
-        )
-        packed_source_budget = int(
-            exponent_source_bytes * self.packed_source_budget_ratio
-        )
+        exponent_source_bytes = sum(evaluation["total_size"] for evaluation in evaluations if evaluation["is_exponent"])
+        packed_source_budget = int(exponent_source_bytes * self.packed_source_budget_ratio)
         time_selected_keys = select_packed_time_budget(
             evaluations,
             packed_time_budget_ratio=self.packed_time_budget_ratio,
@@ -712,8 +597,7 @@ class NeuralZipCodec:
         opportunities = [
             evaluation
             for evaluation in evaluations
-            if evaluation["opportunity"] is not None
-            and evaluation["key"] in time_selected_keys
+            if evaluation["opportunity"] is not None and evaluation["key"] in time_selected_keys
         ]
         opportunities.sort(
             key=lambda evaluation: (
@@ -782,9 +666,6 @@ class NeuralZipCodec:
         """Compress a model without retaining target-derived data."""
         named_tensors = list(named_tensors)
 
-        # Build transient input views and submit input-size-windowed batches to
-        # the fused native encoder. Every public encoding entrypoint reaches
-        # this path, so setup selection and runtime fallback share one backend.
         outputs = []
         batch = []
         batch_bytes = 0
@@ -801,21 +682,17 @@ class NeuralZipCodec:
             raw_bytes = int(tensor.numel()) * int(config["element_size"])
             if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
                 flush_batch()
-            # Copy a GPU/non-contiguous tensor only after the preceding
-            # window has released its native scratch buffers.
+            # Copy only after the preceding window releases native scratch space.
             original = tensor.detach().cpu().contiguous()
             stream_count = int(config["element_size"])
             if original.numel() == 0:
                 tensor_modes = ({"kind": "raw"},) * stream_count
             else:
                 tensor_modes = tuple(
-                    self._mode_for_tensor_stream(name, original, stream_id)
-                    for stream_id in range(stream_count)
+                    self._mode_for_tensor_stream(name, original, stream_id) for stream_id in range(stream_count)
                 )
             batch.append((name, original, config, tensor_modes))
             batch_bytes += raw_bytes
-            # One oversized tensor is still bounded to that tensor rather
-            # than being retained alongside the following tensors.
             if batch_bytes >= self.direct_batch_bytes:
                 flush_batch()
         flush_batch()
@@ -832,9 +709,7 @@ class NeuralZipCodec:
         """Assemble the stable archive objects returned by the native engine."""
         element_size = int(config["element_size"])
         groups = []
-        for planned_mode, native_chunks in zip(
-            tensor_modes, native_groups, strict=True
-        ):
+        for planned_mode, native_chunks in zip(tensor_modes, native_groups, strict=True):
             chunks = []
             for native_chunk in native_chunks:
                 final_kind, payload, symbol_count, escapes, tail = native_chunk
@@ -844,11 +719,7 @@ class NeuralZipCodec:
                         mode=final_kind,
                         symbol_count=int(symbol_count),
                         payload=payload,
-                        codebook_id=(
-                            planned_mode.get("codebook_id")
-                            if final_kind != "raw"
-                            else None
-                        ),
+                        codebook_id=(planned_mode.get("codebook_id") if final_kind != "raw" else None),
                         escape_payload=escapes,
                         tail_payload=tail,
                     )
@@ -928,9 +799,7 @@ class NeuralZipCodec:
         )
         return [
             _tensor_from_raw_bytes(raw, dtype, compressed.shape)
-            for compressed, (_, dtype), raw in zip(
-                payloads, prepared, raw_buffers, strict=True
-            )
+            for compressed, (_, dtype), raw in zip(payloads, prepared, raw_buffers, strict=True)
         ]
 
     def decompress_tensors(self, payloads):

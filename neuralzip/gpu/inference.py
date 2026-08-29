@@ -8,17 +8,117 @@ from itertools import pairwise
 import torch
 from torch import nn
 
-from .. import huff0
+from .. import _huff0_cpp, huff0
 from .._setup import materialize_setup
 from . import decoder as gpu_decoder
-from .export import GPUCodebook, GPUEncodedBF16, encode_bfloat16_native
 
 RUNTIME_ATTRIBUTE = "neuralzip_runtime"
+BYTES_PER_THREAD = gpu_decoder.BYTES_PER_THREAD
+THREADS_PER_BLOCK = gpu_decoder.THREADS_PER_BLOCK
+MAX_CODE_BITS = 12
 
+@dataclass(frozen=True)
+class GPUCodebook:
+    code_lengths: tuple[int, ...]
+    code_values: tuple[int, ...]
+    max_bits: int = field(init=False)
+    decode_lut: tuple[int, ...] = field(init=False, repr=False)
+
+    def __post_init__(self):
+        lengths = tuple(self.code_lengths)
+        values = tuple(self.code_values)
+        if len(lengths) != 256 or len(values) != 256:
+            raise ValueError("A BF16 exponent codebook must contain 256 entries.")
+        max_bits = max(lengths)
+        if not 1 <= max_bits <= MAX_CODE_BITS or any(length < 0 for length in lengths):
+            raise ValueError("The GPU Huffman code length is unsupported.")
+
+        lut = [0] * (1 << max_bits)
+        for symbol, (length, value) in enumerate(zip(lengths, values, strict=True)):
+            if not length:
+                continue
+            if not 0 <= value < 1 << length:
+                raise ValueError("A Huffman code does not fit its declared length.")
+            begin = value << (max_bits - length)
+            end = begin + (1 << (max_bits - length))
+            entry = (length << 8) | symbol
+            for index in range(begin, end):
+                if lut[index]:
+                    raise ValueError("The Huffman codebook is not prefix-free.")
+                lut[index] = entry
+        if not all(lut):
+            # A zero entry makes the CUDA decoder advance by zero bits forever.
+            raise ValueError("The Huffman codebook does not cover every prefix.")
+
+        object.__setattr__(self, "code_lengths", lengths)
+        object.__setattr__(self, "code_values", values)
+        object.__setattr__(self, "max_bits", max_bits)
+        object.__setattr__(self, "decode_lut", tuple(lut))
+
+@dataclass(frozen=True)
+class GPUEncodedExponents:
+    bitstream: bytes
+    bit_length: int
+    symbol_count: int
+    packed_gaps: bytes
+    output_positions: tuple[int, ...]
+
+    def __post_init__(self):
+        bitstream = bytes(self.bitstream)
+        gaps = bytes(self.packed_gaps)
+        positions = tuple(self.output_positions)
+        blocks = (len(bitstream) + BYTES_PER_THREAD * THREADS_PER_BLOCK - 1) // (BYTES_PER_THREAD * THREADS_PER_BLOCK)
+        if len(bitstream) != (self.bit_length + 7) // 8:
+            raise ValueError("Exponent bit length does not match its payload.")
+        if self.bit_length < 0 or self.symbol_count < 0:
+            raise ValueError("Exponent sizes cannot be negative.")
+        if len(gaps) != (blocks * THREADS_PER_BLOCK + 1) // 2:
+            raise ValueError("Exponent restart metadata has the wrong size.")
+        if len(positions) != blocks + 1 or positions[0] != 0:
+            raise ValueError("Exponent output positions have the wrong shape.")
+        if positions[-1] != self.symbol_count:
+            raise ValueError("Exponent output positions have the wrong end offset.")
+        if any(left > right for left, right in pairwise(positions)):
+            raise ValueError("Exponent output positions must be ordered.")
+        object.__setattr__(self, "bitstream", bitstream)
+        object.__setattr__(self, "packed_gaps", gaps)
+        object.__setattr__(self, "output_positions", positions)
+
+@dataclass(frozen=True)
+class GPUEncodedBF16:
+    sign_mantissa: bytes
+    exponents: GPUEncodedExponents
+
+    def __post_init__(self):
+        data = bytes(self.sign_mantissa)
+        if len(data) != self.exponents.symbol_count:
+            raise ValueError("BF16 fields contain different element counts.")
+        object.__setattr__(self, "sign_mantissa", data)
+
+    @property
+    def numel(self):
+        return len(self.sign_mantissa)
+
+def encode_bfloat16_native(raw_bfloat16, codebook_header):
+    encoded, sign_mantissa, gaps, positions, bit_length, _max_bits = _huff0_cpp.encode_gpu_bfloat16(
+        bytes(raw_bfloat16),
+        bytes(codebook_header),
+        bytes_per_thread=BYTES_PER_THREAD,
+        threads_per_block=THREADS_PER_BLOCK,
+    )
+    return GPUEncodedBF16(
+        sign_mantissa,
+        GPUEncodedExponents(
+            encoded,
+            int(bit_length),
+            len(sign_mantissa),
+            gaps,
+            tuple(positions),
+        ),
+    )
 
 @dataclass(frozen=True)
 class LinearWeightBinding:
-    block_name: str
     module_name: str
     tensor_name: str
     shape: tuple[int, ...]
@@ -26,7 +126,6 @@ class LinearWeightBinding:
     workspace_offset: int
     requires_grad: bool
     module_kind: str = "linear"
-
 
 @dataclass(frozen=True)
 class BF16WeightGroup:
@@ -36,11 +135,6 @@ class BF16WeightGroup:
     encoded: GPUEncodedBF16
     bindings: tuple[LinearWeightBinding, ...]
     workspace_offset: int
-
-    @property
-    def numel(self):
-        return self.encoded.numel
-
 
 @dataclass(frozen=True)
 class NeuralZipModelExport:
@@ -57,10 +151,9 @@ class NeuralZipModelExport:
     @property
     def workspace_numel(self):
         return max(
-            (group.workspace_offset + group.numel for group in self.groups),
+            (group.workspace_offset + group.encoded.numel for group in self.groups),
             default=0,
         )
-
 
 @dataclass(frozen=True)
 class _Candidate:
@@ -69,7 +162,6 @@ class _Candidate:
     tensor_name: str
     parameter: nn.Parameter = field(repr=False, compare=False)
     module_kind: str = "linear"
-
 
 @dataclass(frozen=True)
 class _UploadedGroup:
@@ -80,11 +172,11 @@ class _UploadedGroup:
     packed_gaps: torch.Tensor
     output_positions: torch.Tensor
     output: torch.Tensor
-
+    max_bits: int
+    max_block_elements: int
 
 def _join(parent, child):
     return f"{parent}.{child}" if parent and child else parent or child
-
 
 def _gpu_candidates(model, include_embeddings):
     """Find direct ModuleList children and their linear-like weights."""
@@ -132,20 +224,12 @@ def _gpu_candidates(model, include_embeddings):
                 )
     return tuple(name for name, _ in blocks), tuple(candidates)
 
-
-def _raw_bytes(tensor):
-    tensor = tensor.detach().to(device="cpu").contiguous()
-    return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
-
-
 def _assemble_export(model, block_order, candidates, codec):
     occurrences = defaultdict(int)
     for _name, parameter in model.named_parameters(remove_duplicate=False):
         occurrences[id(parameter)] += 1
 
-    payloads = {
-        int(payload.codebook_id): payload for payload in codec.export_codebooks()
-    }
+    payloads = {int(payload.codebook_id): payload for payload in codec.export_codebooks()}
     codebooks = {}
     grouped = defaultdict(list)
     for candidate in candidates:
@@ -162,15 +246,12 @@ def _assemble_export(model, block_order, candidates, codec):
         if kind == "raw":
             continue
         if kind != "shared_huff0":
-            raise ValueError(
-                "GPU inference needs a sharing-only setup; "
-                f"{candidate.tensor_name} uses {kind!r}."
-            )
+            raise ValueError(f"GPU inference needs a sharing-only setup; {candidate.tensor_name} uses {kind!r}.")
         codebook_id = int(mode["codebook_id"])
         payload = payloads[codebook_id]
         if codebook_id not in codebooks:
             table = huff0.export_code_table(payload.codebook)
-            codebooks[codebook_id] = GPUCodebook.from_codes(
+            codebooks[codebook_id] = GPUCodebook(
                 table.code_lengths,
                 table.code_values,
             )
@@ -192,7 +273,6 @@ def _assemble_export(model, block_order, candidates, codec):
             parameter = member.parameter
             bindings.append(
                 LinearWeightBinding(
-                    block_name,
                     member.module_name,
                     member.tensor_name,
                     tuple(parameter.shape),
@@ -202,7 +282,8 @@ def _assemble_export(model, block_order, candidates, codec):
                     member.module_kind,
                 )
             )
-            raw_parts.append(_raw_bytes(parameter))
+            raw = parameter.detach().to(device="cpu").contiguous()
+            raw_parts.append(raw.reshape(-1).view(torch.uint8).numpy().tobytes())
             group_offset += parameter.numel()
 
         groups.append(
@@ -222,26 +303,21 @@ def _assemble_export(model, block_order, candidates, codec):
 
     return NeuralZipModelExport(tuple(groups))
 
-
 def export_model_for_gpu(model, setup, *, threads=0, include_embeddings=False):
     """Create the immutable sharing-only BF16 export used by the runtime."""
 
     codec = materialize_setup(setup, threads=threads)
     named_tensors = tuple(
-        (str(name), parameter)
-        for name, parameter in model.named_parameters()
-        if parameter.is_floating_point()
+        (str(name), parameter) for name, parameter in model.named_parameters() if parameter.is_floating_point()
     )
     codec.prepare_direct_transfer_target(named_tensors)
     blocks, candidates = _gpu_candidates(model, include_embeddings)
     return _assemble_export(model, blocks, candidates, codec)
 
-
 def _bytes_tensor(data, device):
     if not data:
         return torch.empty(0, dtype=torch.uint8, device=device)
     return torch.frombuffer(bytearray(data), dtype=torch.uint8).to(device=device)
-
 
 def _binding_module(model, binding):
     module = model.get_submodule(binding.module_name)
@@ -249,7 +325,6 @@ def _binding_module(model, binding):
     if not isinstance(module, expected):
         raise TypeError(f"{binding.module_name!r} is not an {expected.__name__}.")
     return module
-
 
 class NeuralZipRuntime:
     """Sequential runtime attached to one model on one CUDA device."""
@@ -285,23 +360,20 @@ class NeuralZipRuntime:
                     _bytes_tensor(group.encoded.sign_mantissa, self.device),
                     _bytes_tensor(group.encoded.exponents.packed_gaps, self.device),
                     torch.tensor(positions, dtype=torch.int32, device=self.device),
-                    self.workspace[
-                        group.workspace_offset : group.workspace_offset + group.numel
-                    ],
+                    self.workspace[group.workspace_offset : group.workspace_offset + group.encoded.numel],
+                    group.codebook.max_bits,
+                    max(
+                        (right - left for left, right in pairwise(positions)),
+                        default=0,
+                    ),
                 )
             )
-        self._uploaded_groups = tuple(uploaded)
         by_block = defaultdict(list)
         for group in uploaded:
             by_block[group.group.block_name].append(group)
-        self._groups_by_block = {
-            name: tuple(by_block[name]) for name in exported.block_order
-        }
+        self._groups_by_block = {name: tuple(by_block[name]) for name in exported.block_order}
         self._prepared_batches = {
-            name: self._decoder.prepare_batch(
-                tuple(self._decode_group(group) for group in groups)
-            )
-            for name, groups in self._groups_by_block.items()
+            name: self._decoder.prepare_batch(groups) for name, groups in self._groups_by_block.items()
         }
         torch.cuda.synchronize(self.device)
 
@@ -327,28 +399,11 @@ class NeuralZipRuntime:
         runtime._install()
         return runtime
 
-    def _decode_group(self, uploaded):
-        positions = uploaded.group.encoded.exponents.output_positions
-        max_block_elements = max(
-            (right - left for left, right in pairwise(positions)),
-            default=0,
-        )
-        return gpu_decoder.BF16DecodeGroup(
-            uploaded.lut,
-            uploaded.encoded_exponents,
-            uploaded.sign_mantissa,
-            uploaded.packed_gaps,
-            uploaded.output_positions,
-            uploaded.output,
-            uploaded.group.codebook.max_bits,
-            max_block_elements,
-        )
-
     def _install(self):
         for binding in self.export.bindings:
-            view = self.workspace[
-                binding.workspace_offset : binding.workspace_offset + binding.numel
-            ].view(binding.shape)
+            view = self.workspace[binding.workspace_offset : binding.workspace_offset + binding.numel].view(
+                binding.shape
+            )
             _binding_module(self.model, binding).__dict__["weight"] = view
         for block_name in self.export.block_order:
             handle = self.model.get_submodule(block_name).register_forward_pre_hook(
@@ -376,10 +431,7 @@ class NeuralZipRuntime:
                 for uploaded in self._groups_by_block[block_name]:
                     for binding in uploaded.group.bindings:
                         tensors[binding.tensor_name] = (
-                            self.workspace[
-                                binding.workspace_offset : binding.workspace_offset
-                                + binding.numel
-                            ]
+                            self.workspace[binding.workspace_offset : binding.workspace_offset + binding.numel]
                             .view(binding.shape)
                             .clone()
                         )
@@ -403,6 +455,5 @@ class NeuralZipRuntime:
             )
         delattr(self.model, RUNTIME_ATTRIBUTE)
         return self.model
-
 
 __all__ = ["NeuralZipRuntime"]

@@ -11,9 +11,11 @@ import torch
 from safetensors.torch import load_file, save_file
 from torch import nn
 
-from .export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
 from .inference import (
     BF16WeightGroup,
+    GPUCodebook,
+    GPUEncodedBF16,
+    GPUEncodedExponents,
     LinearWeightBinding,
     NeuralZipModelExport,
     NeuralZipRuntime,
@@ -26,21 +28,12 @@ MANIFEST_FILENAME = "neuralzip_config.json"
 EXPORT_FILENAME = "neuralzip-export.pt"
 RESIDENT_FILENAME = "neuralzip-resident.safetensors"
 
-
 def _sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _checkpoint_files(directory):
-    files = [EXPORT_FILENAME, RESIDENT_FILENAME, "config.json"]
-    if (directory / "generation_config.json").is_file():
-        files.append("generation_config.json")
-    return files
-
 
 def _checkpoint_source(
     value,
@@ -69,7 +62,6 @@ def _checkpoint_source(
         )
     )
 
-
 def _transformers_model(directory, module_name, class_name):
     if not module_name.startswith("transformers."):
         raise ValueError("The checkpoint does not contain a Transformers model.")
@@ -82,13 +74,10 @@ def _transformers_model(directory, module_name, class_name):
     config = AutoConfig.from_pretrained(directory, local_files_only=True)
     return model_class(config)
 
-
 def _resident_state(runtime):
     return {
-        name: tensor.detach().to(device="cpu").contiguous().clone()
-        for name, tensor in runtime.resident_state_dict().items()
+        name: tensor.detach().to(device="cpu").contiguous() for name, tensor in runtime.resident_state_dict().items()
     }
-
 
 def _export_state(exported):
     codebooks = {}
@@ -130,11 +119,10 @@ def _export_state(exported):
         "groups": groups,
     }
 
-
 def _load_export(path):
     state = torch.load(path, map_location="cpu", weights_only=True)
     codebooks = {
-        int(codebook_id): GPUCodebook.from_codes(value["lengths"], value["values"])
+        int(codebook_id): GPUCodebook(value["lengths"], value["values"])
         for codebook_id, value in state["codebooks"].items()
     }
     groups = []
@@ -160,7 +148,6 @@ def _load_export(path):
             numel = math.prod(shape)
             bindings.append(
                 LinearWeightBinding(
-                    block_name=block,
                     module_name=binding["module"],
                     tensor_name=binding["tensor"],
                     shape=shape,
@@ -185,7 +172,6 @@ def _load_export(path):
         )
         workspace_offsets[block] = workspace_offset + encoded.numel
     return NeuralZipModelExport(tuple(groups))
-
 
 def save_gpu_pretrained(model, directory, *, tokenizer=None):
     """Save one trusted export and one resident Safetensors file."""
@@ -218,7 +204,13 @@ def save_gpu_pretrained(model, directory, *, tokenizer=None):
         "model_class": type(model).__name__,
         "sha256": {
             filename: _sha256(target / filename)
-            for filename in _checkpoint_files(target)
+            for filename in (
+                EXPORT_FILENAME,
+                RESIDENT_FILENAME,
+                "config.json",
+                "generation_config.json",
+            )
+            if (target / filename).is_file()
         },
     }
     (target / MANIFEST_FILENAME).write_text(
@@ -226,7 +218,6 @@ def save_gpu_pretrained(model, directory, *, tokenizer=None):
         encoding="utf-8",
     )
     return target
-
 
 def attach_gpu_model(
     model,
@@ -247,7 +238,6 @@ def attach_gpu_model(
     NeuralZipRuntime.attach(model, exported, device=device)
     return model
 
-
 def load_gpu_pretrained(
     pretrained_model_name_or_path,
     *,
@@ -267,10 +257,7 @@ def load_gpu_pretrained(
         local_files_only=local_files_only,
     )
     manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    if (
-        manifest.get("format") != FORMAT_NAME
-        or manifest.get("version") != FORMAT_VERSION
-    ):
+    if manifest.get("format") != FORMAT_NAME or manifest.get("version") != FORMAT_VERSION:
         raise ValueError("Unsupported NeuralZip GPU checkpoint.")
     hashes = manifest["sha256"]
     if not {EXPORT_FILENAME, RESIDENT_FILENAME, "config.json"} <= hashes.keys():
@@ -305,7 +292,6 @@ def load_gpu_pretrained(
         )
     NeuralZipRuntime.attach(model, exported, device=device)
     return model
-
 
 __all__ = [
     "FORMAT_NAME",

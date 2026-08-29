@@ -48,14 +48,12 @@ def _immutable_bytes(value):
     return value if isinstance(value, bytes) else bytes(value)
 
 
+def _codebook(result):
+    return Huff0Codebook(*result)
+
+
 def _payload(result):
-    if result is None:
-        return None
-    encoded, symbol_count = result
-    return Huff0Payload(
-        payload=encoded,
-        symbol_count=symbol_count,
-    )
+    return None if result is None else Huff0Payload(*result)
 
 
 def _ngram_payload(result):
@@ -63,17 +61,12 @@ def _ngram_payload(result):
         return None
     encoded, symbol_count, escape_bytes, tail, hits, misses = result
     return Huff0NGramPayload(
-        payload=encoded,
-        symbol_count=symbol_count,
-        escape_bytes=escape_bytes,
-        tail=tail,
-        hits=int(hits),
-        misses=int(misses),
+        encoded, symbol_count, escape_bytes, tail, int(hits), int(misses)
     )
 
 
 def max_block_size():
-    return int(_huff0_cpp.max_block_size())
+    return _huff0_cpp.max_block_size()
 
 
 def _normalize_mixed_stream_modes(element_size, stream_modes):
@@ -82,36 +75,32 @@ def _normalize_mixed_stream_modes(element_size, stream_modes):
     if len(modes) != element_size:
         raise ValueError("stream_modes must contain one mode per byte stream.")
 
-    native_modes = []
     supported = {"raw", "shared_huff0", "packed_huff0"}
+    native_modes = []
     for mode in modes:
         kind = str(mode.get("kind"))
         if kind not in supported:
             raise ValueError(f"Unsupported mixed Huff0 stream mode: {kind!r}.")
-        if kind in {"shared_huff0", "packed_huff0"}:
-            codebook = mode.get("codebook")
-            if codebook is None:
-                raise ValueError(f"{kind} requires a Huff0 codebook.")
-            handle = codebook.handle
-        else:
-            handle = None
+        if kind == "raw":
+            native_modes.append((kind, None, b"", 1, bool(mode.get("frame_4x", False))))
+            continue
 
+        codebook = mode.get("codebook")
+        if codebook is None:
+            raise ValueError(f"{kind} requires a Huff0 codebook.")
+        ngram_n = 1
+        vocab = b""
         if kind == "packed_huff0":
             ngram_n = int(mode.get("ngram_n", 1))
             if not 2 <= ngram_n <= 8:
                 raise ValueError("packed_huff0 requires ngram_n in [2, 8].")
-            vocab = mode.get("vocab", b"")
-            if not isinstance(vocab, (bytes, bytearray, memoryview)):
-                vocab = bytes(vocab)
+            vocab = _bytes(mode.get("vocab", b""))
             if not vocab:
                 raise ValueError("packed_huff0 vocabulary is empty.")
-        else:
-            ngram_n = 1
-            vocab = b""
         native_modes.append(
             (
                 kind,
-                handle,
+                codebook.handle,
                 vocab,
                 ngram_n,
                 bool(mode.get("frame_4x", False)),
@@ -127,13 +116,10 @@ def compress_mixed_streams_many(
     threads=0,
     compression_threshold=0.95,
 ):
-    """Encode a model's tensors through one native mixed-stream job queue.
+    """Encode ``(data, element_size, bit_reorder, chunk_size, modes)`` specs.
 
-    Each input is ``(data, element_size, bit_reorder, chunk_size,
-    stream_modes)`` and produces one list per reordered byte stream. Input
-    buffers and the native job queue live only for this call; no reordered or
-    tokenized target representation is retained afterwards. Callers must not
-    mutate input buffers until the call returns.
+    Input buffers are borrowed for this call and must not be mutated until it
+    returns.
     """
     native_specs = []
     for spec in tensor_specs:
@@ -143,11 +129,10 @@ def compress_mixed_streams_many(
                 "bit_reorder, chunk_size, and stream_modes."
             )
         data, element_size, bit_reorder, chunk_size, stream_modes = spec
-        element_size = int(element_size)
         native_specs.append(
             (
                 data,
-                element_size,
+                int(element_size),
                 int(bit_reorder),
                 int(chunk_size),
                 _normalize_mixed_stream_modes(element_size, stream_modes),
@@ -162,23 +147,35 @@ def compress_mixed_streams_many(
     )
 
 
+_DECODE_MODES = frozenset({"raw", "zero", "local_huff0", "shared_huff0"})
+
+
+def _normalize_decode_chunk(chunk):
+    if len(chunk) != 5:
+        raise ValueError(
+            "Each decode chunk must contain mode, payload, symbol_count, "
+            "decodebook, and frame_4x."
+        )
+    mode, payload, symbol_count, decodebook, frame_4x = chunk
+    mode = str(mode)
+    if mode == "packed_huff0":
+        raise ValueError("decompress_mixed_streams_many does not support packed_huff0.")
+    if mode not in _DECODE_MODES:
+        raise ValueError(f"Unsupported decode chunk mode: {mode!r}.")
+    if isinstance(decodebook, Huff0Decodebook):
+        decodebook = decodebook.handle
+    return (
+        mode,
+        _immutable_bytes(payload),
+        int(symbol_count),
+        decodebook,
+        bool(frame_4x),
+    )
+
+
 def decompress_mixed_streams_many(tensor_specs, *, threads=0):
-    """Decode sharing-only tensors through one native job queue.
-
-    Each tensor spec is ``(element_size, bit_reorder, numel, groups)``.
-    ``groups`` contains one chunk sequence per byte stream, and every chunk is
-    ``(mode, payload, symbol_count, decodebook, frame_4x)``. Supported modes
-    are ``raw``, ``zero``, ``local_huff0``, and ``shared_huff0``. A shared
-    chunk accepts either a :class:`Huff0Decodebook` or its native handle;
-    every other mode must use ``None``. Packed chunks are intentionally
-    outside this sharing-only primitive.
-
-    The returned list contains one owning ``bytearray`` per tensor in the
-    original dtype byte order, after native lane recombination and inverse
-    bit reorder.
-    """
+    """Decode sharing-only ``(element_size, bit_reorder, numel, groups)`` specs."""
     native_specs = []
-    supported = {"raw", "zero", "local_huff0", "shared_huff0"}
     for spec in tensor_specs:
         if len(spec) != 4:
             raise ValueError(
@@ -191,41 +188,15 @@ def decompress_mixed_streams_many(tensor_specs, *, threads=0):
         if len(groups) != element_size:
             raise ValueError("groups must contain exactly one group per byte stream.")
 
-        native_groups = []
-        for group in groups:
-            native_chunks = []
-            for chunk in group:
-                if len(chunk) != 5:
-                    raise ValueError(
-                        "Each decode chunk must contain mode, payload, "
-                        "symbol_count, decodebook, and frame_4x."
-                    )
-                mode, payload, symbol_count, decodebook, frame_4x = chunk
-                mode = str(mode)
-                if mode == "packed_huff0":
-                    raise ValueError(
-                        "decompress_mixed_streams_many does not support packed_huff0."
-                    )
-                if mode not in supported:
-                    raise ValueError(f"Unsupported decode chunk mode: {mode!r}.")
-                if isinstance(decodebook, Huff0Decodebook):
-                    decodebook = decodebook.handle
-                native_chunks.append(
-                    (
-                        mode,
-                        _immutable_bytes(payload),
-                        int(symbol_count),
-                        decodebook,
-                        bool(frame_4x),
-                    )
-                )
-            native_groups.append(tuple(native_chunks))
         native_specs.append(
             (
                 element_size,
                 bool(bit_reorder),
                 int(numel),
-                tuple(native_groups),
+                tuple(
+                    tuple(_normalize_decode_chunk(chunk) for chunk in group)
+                    for group in groups
+                ),
             )
         )
 
@@ -235,14 +206,12 @@ def decompress_mixed_streams_many(tensor_specs, *, threads=0):
 
 
 def build_codebook(data, *, prior_count=0, max_bits=11):
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        data = bytes(data)
-    handle, codebook = _huff0_cpp.build_codebook(
-        data,
-        prior_count=int(prior_count),
-        max_bits=int(max_bits),
+    data = _bytes(data)
+    return _codebook(
+        _huff0_cpp.build_codebook(
+            data, prior_count=int(prior_count), max_bits=int(max_bits)
+        )
     )
-    return Huff0Codebook(handle=handle, codebook=codebook)
 
 
 def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
@@ -254,12 +223,11 @@ def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
     """
 
     counts = tuple(int(count) for count in symbol_counts)
-    handle, codebook = _huff0_cpp.build_codebook_from_counts(
-        counts,
-        prior_count=int(prior_count),
-        max_bits=int(max_bits),
+    return _codebook(
+        _huff0_cpp.build_codebook_from_counts(
+            counts, prior_count=int(prior_count), max_bits=int(max_bits)
+        )
     )
-    return Huff0Codebook(handle=handle, codebook=codebook)
 
 
 def build_codebook_from_header(codebook):
@@ -267,33 +235,21 @@ def build_codebook_from_header(codebook):
 
     if isinstance(codebook, Huff0Codebook):
         codebook = codebook.codebook
-    handle, header = _huff0_cpp.build_codebook_from_header(_immutable_bytes(codebook))
-    return Huff0Codebook(handle=handle, codebook=header)
+    return _codebook(_huff0_cpp.build_codebook_from_header(_immutable_bytes(codebook)))
 
 
 def build_decodebook(codebook):
-    handle = _huff0_cpp.build_decodebook(_immutable_bytes(codebook))
-    return Huff0Decodebook(handle=handle)
+    return Huff0Decodebook(_huff0_cpp.build_decodebook(_immutable_bytes(codebook)))
 
 
 def export_code_table(codebook, *, max_bits=12):
-    """Return the exact right-aligned Huff0 code for every byte symbol.
-
-    ``codebook`` is the serialized header stored in NeuralZip archives. The
-    result always contains 256 entries; symbols absent from the table use a
-    zero length and value. ``max_bits`` rejects tables that cannot fit the
-    intended decoder lookup representation.
-    """
+    """Return all 256 right-aligned canonical codes from a Huff0 header."""
     if isinstance(codebook, Huff0Codebook):
         codebook = codebook.codebook
     lengths, values, actual_max_bits = _huff0_cpp.export_code_table(
         _immutable_bytes(codebook), max_bits=int(max_bits)
     )
-    return Huff0CodeTable(
-        code_lengths=tuple(lengths),
-        code_values=tuple(values),
-        max_bits=int(actual_max_bits),
-    )
+    return Huff0CodeTable(tuple(lengths), tuple(values), int(actual_max_bits))
 
 
 def encode_with_codebook(

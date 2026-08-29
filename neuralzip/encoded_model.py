@@ -293,21 +293,9 @@ def make_encoded_model(
     )
 
 
-def _decode_payloads(encoded, decoder):
-    reset = getattr(decoder, "reset_decompression", None)
-    if callable(reset):
-        reset()
-    load_codebooks = getattr(decoder, "load_codebooks", None)
-    if encoded.codebooks and callable(load_codebooks):
-        load_codebooks(encoded.codebooks)
-    decode_many = getattr(decoder, "decompress_tensors", None)
-    if callable(decode_many):
-        decoded = tuple(decode_many(encoded.payloads))
-    else:
-        decode_one = getattr(decoder, "decompress_tensor", None)
-        if not callable(decode_one):
-            raise TypeError("Decoder must implement decompress_tensor(s).")
-        decoded = tuple(decode_one(payload) for payload in encoded.payloads)
+def _decode_payloads(encoded, codec):
+    codec.load_codebooks(encoded.codebooks)
+    decoded = tuple(codec.decompress_tensors(encoded.payloads))
 
     if len(decoded) != len(encoded.names):
         raise RuntimeError("Decoder returned a different number of tensors.")
@@ -471,12 +459,12 @@ def _reconstruct(
     return destination
 
 
-def decode_model(encoded, decoder, *, destination=None, model_factory=None):
+def decode_model(encoded, codec, *, destination=None, model_factory=None):
     """Decode payloads and reconstruct their original input category."""
 
     return _reconstruct(
         encoded,
-        _decode_payloads(encoded, decoder),
+        _decode_payloads(encoded, codec),
         destination=destination,
         model_factory=model_factory,
     )

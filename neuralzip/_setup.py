@@ -60,16 +60,10 @@ def validate_setup(codec):
         raise ValueError(
             "Transferable NeuralZip setups require positive Huffman priors."
         )
-    mode_maps = (
-        codec._mode_by_key,
-        codec._mode_by_tensor_stream,
-        codec._transfer_mode_by_tensor_stream,
-    )
     invalid = sorted(
         {
             str(mode.get("kind"))
-            for mode_map in mode_maps
-            for mode in mode_map.values()
+            for mode in codec._mode_by_tensor_stream.values()
             if str(mode.get("kind")) not in POST_SETUP_MODES
         }
     )
@@ -87,16 +81,11 @@ def validate_setup(codec):
 
 def _unique_modes(codec):
     seen = set()
-    for mode_map in (
-        codec._mode_by_key,
-        codec._mode_by_tensor_stream,
-        codec._transfer_mode_by_tensor_stream,
-    ):
-        for mode in mode_map.values():
-            if id(mode) in seen:
-                continue
-            seen.add(id(mode))
-            yield mode
+    for mode in codec._mode_by_tensor_stream.values():
+        if id(mode) in seen:
+            continue
+        seen.add(id(mode))
+        yield mode
 
 
 def _detached_codec_snapshot(codec):
@@ -110,29 +99,22 @@ def _detached_codec_snapshot(codec):
     # codec, while preserving the relationships expected by encoding.
     copied_modes = {}
 
-    def clone_mode_map(mode_map):
-        cloned = {}
-        for key, mode in mode_map.items():
-            identity = id(mode)
-            if identity not in copied_modes:
-                copied_modes[identity] = dict(mode)
-            cloned[key] = copied_modes[identity]
-        return cloned
-
-    snapshot._mode_by_key = clone_mode_map(codec._mode_by_key)
-    snapshot._mode_by_tensor_stream = clone_mode_map(codec._mode_by_tensor_stream)
+    snapshot._mode_by_tensor_stream = {}
+    for key, mode in codec._mode_by_tensor_stream.items():
+        identity = id(mode)
+        copied = copied_modes.get(identity)
+        if copied is None:
+            copied = copied_modes[identity] = dict(mode)
+        snapshot._mode_by_tensor_stream[key] = copied
 
     # Transfer mapping depends on one particular target. It is runtime state,
     # not part of the reusable source setup, and must never cross persistence
     # or NeuralZip operation boundaries.
     snapshot._transfer_mode_by_tensor_stream = {}
-    snapshot._transfer_active = False
 
-    # Native decoder handles are reconstructed from immutable payload headers.
+    # Runtime lookup tables are reconstructed from immutable payload headers.
     snapshot._decode_codebooks = {}
-    snapshot._codebook_payload_by_id = {
-        int(payload.codebook_id): payload for payload in snapshot._codebook_payloads
-    }
+    snapshot._codebook_payload_by_id = {}
     return snapshot
 
 

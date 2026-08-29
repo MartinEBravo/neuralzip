@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=1.0", "nanobind>=3.0"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "neuralzip"
@@ -24,22 +24,20 @@ gpu = [
     "cupy-cuda12x>=13",
 ]
 
-[tool.setuptools]
-include-package-data = false
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["neuralzip*"]
-
-[tool.setuptools.package-data]
-"neuralzip.gpu" = ["cuda/*.cu"]
-
-[tool.setuptools.exclude-package-data]
-neuralzip = ["*.cpp"]
-
-[tool.setuptools.data-files]
-"share/neuralzip/licenses/dfloat11" = ["third_party/dfloat11/LICENSE"]
-"share/neuralzip/licenses/zstd" = [
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.18"
+cmake.build-type = "Release"
+wheel.packages = ["neuralzip"]
+wheel.exclude = ["neuralzip/_huff0_cpp.cpp"]
+sdist.include = [
+    "CMakeLists.txt",
+    "neuralzip/_huff0_cpp.cpp",
+    "neuralzip/gpu/cuda/*.cu",
+    "third_party/dfloat11/LICENSE",
     "third_party/zstd/LICENSE",
     "third_party/zstd/UPSTREAM",
 ]
+
+[tool.scikit-build.cmake.define]
+CMAKE_OSX_DEPLOYMENT_TARGET = { env = "MACOSX_DEPLOYMENT_TARGET", default = "13.0" }

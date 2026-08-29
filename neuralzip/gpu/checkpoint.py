@@ -10,15 +10,25 @@ objects.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
-import tempfile
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 
 import torch
 
+from ._persistence import (
+    atomic_safetensors,
+    canonical_json,
+    path_argument,
+    require_dotted_name,
+    require_fields,
+    require_int,
+    require_string,
+    safetensors_functions,
+    strict_json_loads,
+)
 from .export import GPUCodebook, GPUEncodedBF16, GPUEncodedExponents
 from .inference import BF16WeightGroup, LinearWeightBinding, NeuralZipModelExport
 
@@ -41,74 +51,48 @@ class GPUCheckpointError(ValueError):
     """Raised when a GPU checkpoint is malformed, corrupt, or unsupported."""
 
 
-def _canonical_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError) as error:  # pragma: no cover - internal invariant.
-        raise GPUCheckpointError(
-            "The GPU checkpoint manifest is not JSON-safe."
-        ) from error
-
-
-def _reject_constant(value: str) -> None:
-    raise GPUCheckpointError(f"Invalid JSON constant {value!r} in GPU checkpoint.")
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    output = {}
-    for key, value in pairs:
-        if key in output:
-            raise GPUCheckpointError(f"Duplicate JSON field {key!r} in GPU checkpoint.")
-        output[key] = value
-    return output
+_canonical_json = partial(
+    canonical_json,
+    error_type=GPUCheckpointError,
+    error_message="The GPU checkpoint manifest is not JSON-safe.",
+)
+_require_fields = partial(
+    require_fields,
+    error_type=GPUCheckpointError,
+    compact=True,
+)
+_require_string = partial(require_string, error_type=GPUCheckpointError)
+_require_int = partial(require_int, error_type=GPUCheckpointError)
+_require_name = partial(
+    require_dotted_name,
+    kind="module",
+    error_type=GPUCheckpointError,
+)
+_require_safetensors = partial(
+    safetensors_functions,
+    "GPU checkpoint persistence requires the 'safetensors' package.",
+)
+_path_argument = partial(
+    path_argument,
+    type_message="directory_or_file must be a string or path-like value.",
+    bytes_message="directory_or_file must be a text path, not bytes.",
+    invalid_message="directory_or_file must be a non-empty valid path.",
+)
 
 
 def _parse_canonical_json(source: str) -> dict[str, object]:
     if not isinstance(source, str):
         raise GPUCheckpointError("The embedded GPU checkpoint manifest is missing.")
-    try:
-        value = json.loads(
-            source,
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except GPUCheckpointError:
-        raise
-    except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise GPUCheckpointError(
-            "The embedded GPU checkpoint manifest is invalid JSON."
-        ) from error
+    value = strict_json_loads(
+        source,
+        error_type=GPUCheckpointError,
+        document="GPU checkpoint",
+        invalid_message="The embedded GPU checkpoint manifest is invalid JSON.",
+    )
     if not isinstance(value, dict):
         raise GPUCheckpointError("The GPU checkpoint manifest must be a JSON object.")
     if _canonical_json(value) != source:
         raise GPUCheckpointError("The GPU checkpoint manifest is not canonical JSON.")
-    return value
-
-
-def _require_fields(
-    value: object,
-    fields: set[str],
-    *,
-    context: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise GPUCheckpointError(f"{context} must be a JSON object.")
-    actual = set(value)
-    if actual != fields:
-        missing = sorted(fields - actual)
-        unexpected = sorted(actual - fields)
-        details = []
-        if missing:
-            details.append(f"missing {missing}")
-        if unexpected:
-            details.append(f"unexpected {unexpected}")
-        raise GPUCheckpointError(f"Invalid {context} fields: {', '.join(details)}.")
     return value
 
 
@@ -118,46 +102,10 @@ def _require_list(value: object, *, context: str) -> list[object]:
     return value
 
 
-def _require_string(value: object, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise GPUCheckpointError(f"{context} must be a non-empty string.")
-    return value
-
-
 def _require_bool(value: object, *, context: str) -> bool:
     if not isinstance(value, bool):
         raise GPUCheckpointError(f"{context} must be a boolean.")
     return value
-
-
-def _require_int(
-    value: object,
-    *,
-    context: str,
-    minimum: int = 0,
-    maximum: int | None = None,
-) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise GPUCheckpointError(f"{context} must be an integer.")
-    if value < minimum or (maximum is not None and value > maximum):
-        if maximum is None:
-            expected = f">= {minimum}"
-        else:
-            expected = f"in [{minimum}, {maximum}]"
-        raise GPUCheckpointError(f"{context} must be {expected}.")
-    return value
-
-
-def _require_name(value: object, *, context: str) -> str:
-    name = _require_string(value, context=context)
-    segments = name.split(".")
-    if any(
-        not segment
-        or not (segment.isidentifier() or (segment.isascii() and segment.isdecimal()))
-        for segment in segments
-    ):
-        raise GPUCheckpointError(f"{context} is not a valid dotted module path.")
-    return name
 
 
 def _validate_binding_paths(binding: LinearWeightBinding) -> None:
@@ -199,31 +147,6 @@ def _validate_export_paths(exported: NeuralZipModelExport) -> None:
         resident_name = _require_name(name, context="resident_weight_names entry")
         if not resident_name.endswith(".weight"):
             raise GPUCheckpointError("Resident tensor paths must end in '.weight'.")
-
-
-def _require_safetensors():
-    try:
-        from safetensors import safe_open
-        from safetensors.torch import save_file
-    except ImportError as error:  # pragma: no cover - exercised without the extra.
-        raise RuntimeError(
-            "GPU checkpoint persistence requires the 'safetensors' package."
-        ) from error
-    return safe_open, save_file
-
-
-def _path_argument(value: str | os.PathLike[str]) -> Path:
-    try:
-        source = os.fspath(value)
-    except TypeError as error:
-        raise TypeError(
-            "directory_or_file must be a string or path-like value."
-        ) from error
-    if isinstance(source, bytes):
-        raise TypeError("directory_or_file must be a text path, not bytes.")
-    if not source or "\x00" in source:
-        raise ValueError("directory_or_file must be a non-empty valid path.")
-    return Path(source)
 
 
 def _checkpoint_path(
@@ -371,19 +294,6 @@ def _build_archive(
     return tensors, manifest
 
 
-def _fsync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - platform/filesystem dependent.
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - platform/filesystem dependent.
-        pass
-    finally:
-        os.close(descriptor)
-
-
 def save_gpu_export(
     exported: NeuralZipModelExport,
     directory_or_file: str | os.PathLike[str],
@@ -396,28 +306,19 @@ def save_gpu_export(
 
     if not isinstance(exported, NeuralZipModelExport):
         raise TypeError("exported must be a NeuralZipModelExport.")
-    _safe_open, save_file = _require_safetensors()
+    _require_safetensors()
     tensors, manifest = _build_archive(exported)
     checkpoint = _checkpoint_path(directory_or_file, create_directory=True)
     if checkpoint.exists() and not checkpoint.is_file():
         raise ValueError("The GPU checkpoint target is not a regular file.")
 
     metadata = {_MANIFEST_METADATA_KEY: _canonical_json(manifest)}
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=checkpoint.parent,
-        prefix=f".{checkpoint.name}.",
-        suffix=".tmp",
+    atomic_safetensors(
+        tensors,
+        checkpoint,
+        metadata=metadata,
+        dependency_error="GPU checkpoint persistence requires the 'safetensors' package.",
     )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        save_file(tensors, str(temporary), metadata=metadata)
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, checkpoint)
-        _fsync_directory(checkpoint.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
     return checkpoint
 
 

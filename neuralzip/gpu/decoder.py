@@ -575,17 +575,17 @@ class CuPyBF16Decoder:
             output=output,
             max_bits=max_bits,
         )
-        launch = _validate_decode_inputs(
-            lut,
-            encoded_exponents,
-            sign_mantissa,
-            packed_gaps,
-            output_positions,
-            output,
-            max_bits=max_bits,
-            threads_per_block=threads_per_block,
-        )
-        if launch.n_elements == 0:
+        if not torch.is_tensor(output) or output.numel() == 0:
+            _validate_decode_inputs(
+                lut,
+                encoded_exponents,
+                sign_mantissa,
+                packed_gaps,
+                output_positions,
+                output,
+                max_bits=max_bits,
+                threads_per_block=threads_per_block,
+            )
             return output
         prepared = self.prepare_batch(
             (group,),

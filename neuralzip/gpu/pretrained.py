@@ -9,19 +9,26 @@ deserializing executable Python objects.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 
+from ._persistence import (
+    atomic_text,
+    canonical_json,
+    path_argument,
+    require_fields,
+    require_string,
+    sha256_file,
+    strict_json_loads,
+)
 from .adapters import GPUModelAdapter
 from .checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
 from .checkpoint import load_gpu_export, save_gpu_export
@@ -44,8 +51,6 @@ from .resident import (
 FORMAT_NAME = "neuralzip-gpu-pretrained"
 FORMAT_VERSION = 1
 MANIFEST_FILENAME = "neuralzip_config.json"
-# Kept as a public alias for callers that imported the early prototype name.
-RESIDENT_FILENAME = RESIDENT_INDEX_FILENAME
 _AUTO_CLASS_NAMES = (
     "AutoModelForSpeechSeq2Seq",
     "AutoModelForVision2Seq",
@@ -104,55 +109,40 @@ class GPUPretrainedError(ValueError):
     """Raised when a complete NeuralZip inference checkpoint is invalid."""
 
 
-def _canonical_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError) as error:
-        raise GPUPretrainedError("The checkpoint manifest is not JSON-safe.") from error
+_canonical_json = partial(
+    canonical_json,
+    error_type=GPUPretrainedError,
+    error_message="The checkpoint manifest is not JSON-safe.",
+)
+_require_fields = partial(require_fields, error_type=GPUPretrainedError)
+_require_string = partial(require_string, error_type=GPUPretrainedError)
+_sha256_file = sha256_file
+_atomic_text = atomic_text
+_directory_argument = partial(
+    path_argument,
+    type_message="directory must be a string or path-like value.",
+    bytes_message="directory must be a text path, not bytes.",
+    invalid_message="directory must be a non-empty valid path.",
+)
 
 
 def _parse_manifest(path: Path) -> dict[str, object]:
     try:
         source = path.read_text(encoding="ascii")
-        value = json.loads(source)
+        value = strict_json_loads(
+            source,
+            error_type=GPUPretrainedError,
+            document="checkpoint manifest",
+            invalid_message="Unable to read neuralzip_config.json.",
+        )
     except FileNotFoundError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError) as error:
         raise GPUPretrainedError("Unable to read neuralzip_config.json.") from error
     if not isinstance(value, dict):
         raise GPUPretrainedError("The checkpoint manifest must be a JSON object.")
     if _canonical_json(value) + "\n" != source:
         raise GPUPretrainedError("The checkpoint manifest is not canonical JSON.")
-    return value
-
-
-def _require_fields(
-    value: object,
-    expected: set[str],
-    *,
-    context: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise GPUPretrainedError(f"{context} must be a JSON object.")
-    actual = set(value)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
-        raise GPUPretrainedError(
-            f"Invalid {context} fields: missing={missing}, unexpected={unexpected}."
-        )
-    return value
-
-
-def _require_string(value: object, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise GPUPretrainedError(f"{context} must be a non-empty string.")
     return value
 
 
@@ -168,15 +158,7 @@ def _require_string_list(value: object, *, context: str) -> tuple[str, ...]:
 
 
 def _checkpoint_directory(value: str | os.PathLike[str], *, create: bool) -> Path:
-    try:
-        source = os.fspath(value)
-    except TypeError as error:
-        raise TypeError("directory must be a string or path-like value.") from error
-    if isinstance(source, bytes):
-        raise TypeError("directory must be a text path, not bytes.")
-    if not source or "\x00" in source:
-        raise ValueError("directory must be a non-empty valid path.")
-    path = Path(source)
+    path = _directory_argument(value)
     if path.exists() and not path.is_dir():
         raise ValueError("A NeuralZip pretrained checkpoint must be a directory.")
     if create:
@@ -227,31 +209,6 @@ def _resolve_pretrained_source(
             f"Unable to resolve NeuralZip checkpoint {source!r} from the Hub."
         ) from error
     return Path(snapshot)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_text(path: Path, source: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(source)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _resident_state(
@@ -1024,7 +981,6 @@ def _resolve_placement(
     device: object | None,
     device_map: str | Mapping[str, object] | None,
     max_memory: Mapping[object, object] | None,
-    offload_folder: str | os.PathLike[str] | None,
     allow_cpu_blocks: bool,
     execution_device: object | None,
     cpu_offload: bool,
@@ -1039,8 +995,6 @@ def _resolve_placement(
         raise ValueError("Pass either device or device_map, not both.")
     if max_memory is not None and device_map != "auto":
         raise ValueError("max_memory requires device_map='auto'.")
-    if offload_folder is not None and device_map is None:
-        raise ValueError("offload_folder requires device_map.")
     if execution_device is not None and device_map is None:
         raise ValueError("execution_device only applies to device_map placement.")
 
@@ -1168,8 +1122,6 @@ def _resolve_placement(
 def _apply_placement(
     model: nn.Module,
     placement: _Placement,
-    *,
-    offload_folder: str | os.PathLike[str] | None,
 ) -> nn.Module:
     if placement.device_map is None:
         return model.to(placement.direct_device)
@@ -1196,7 +1148,6 @@ def _apply_placement(
         model,
         device_map=placement.device_map,
         main_device=placement.main_device,
-        offload_dir=offload_folder,
         offload_buffers=False,
         force_hooks=(
             bool(placement.cpu_stored_blocks)
@@ -1213,7 +1164,6 @@ def attach_gpu_model(
     device: object | None = None,
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
-    offload_folder: str | os.PathLike[str] | None = None,
     execution_device: object | None = None,
     adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
@@ -1245,7 +1195,6 @@ def attach_gpu_model(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        offload_folder=offload_folder,
         allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
@@ -1269,7 +1218,7 @@ def attach_gpu_model(
             module._parameters.pop("weight")
             module.__dict__.pop("weight", None)
         removed = True
-        model = _apply_placement(model, placement, offload_folder=offload_folder)
+        model = _apply_placement(model, placement)
         runtime.model = model
         runtime._install()
     except Exception:
@@ -1291,7 +1240,6 @@ def load_gpu_pretrained(
     device: object | None = None,
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
-    offload_folder: str | os.PathLike[str] | None = None,
     execution_device: object | None = None,
     decoder: Callable[..., Any] | object | None = None,
     cpu_offload: bool = False,
@@ -1371,7 +1319,6 @@ def load_gpu_pretrained(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        offload_folder=offload_folder,
         allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
@@ -1385,11 +1332,7 @@ def load_gpu_pretrained(
         enabled=generation_record is not None,
         trust_remote_code=trust_remote_code,
     )
-    model = _apply_placement(
-        model,
-        placement,
-        offload_folder=offload_folder,
-    )
+    model = _apply_placement(model, placement)
     NeuralZipRuntime.attach(
         model,
         exported,
@@ -1408,7 +1351,6 @@ __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
     "MANIFEST_FILENAME",
-    "RESIDENT_FILENAME",
     "GPUPretrainedError",
     "attach_gpu_model",
     "load_gpu_pretrained",

@@ -312,7 +312,6 @@ class _LinearCandidate:
     block_name: str
     module_name: str
     tensor_name: str
-    module: nn.Module = field(repr=False, compare=False)
     parameter: nn.Parameter = field(repr=False, compare=False)
     module_kind: str = "linear"
 
@@ -327,10 +326,6 @@ class _UploadedGroup:
     output_positions: torch.Tensor
     output: torch.Tensor
     payload_offloaded: bool = False
-
-
-def _join_name(parent: str, child: str) -> str:
-    return f"{parent}.{child}" if parent else child
 
 
 def _gpu_candidates(
@@ -350,7 +345,6 @@ def _gpu_candidates(
             block_name=binding.block_name,
             module_name=binding.module_name,
             tensor_name=binding.tensor_name,
-            module=binding.module,
             parameter=binding.parameter,
             module_kind=(
                 "embedding" if binding.kind is GPUWeightKind.EMBEDDING else "linear"
@@ -377,17 +371,7 @@ def _native_gpu_payload(raw_bf16: bytes, codebook_header: bytes) -> GPUEncodedBF
 
 def _parameter_occurrences(model: nn.Module) -> dict[int, int]:
     occurrences = defaultdict(int)
-    try:
-        named_parameters = model.named_parameters(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        named_parameters = (
-            (name, parameter)
-            for name, module in model.named_modules()
-            for parameter_name, parameter in module._parameters.items()
-            if parameter is not None
-            for name in (_join_name(name, parameter_name),)
-        )
-    for _name, parameter in named_parameters:
+    for _name, parameter in model.named_parameters(remove_duplicate=False):
         occurrences[id(parameter)] += 1
     return dict(occurrences)
 
@@ -445,8 +429,7 @@ def _assemble_gpu_export(
         if payload is None:
             raise ValueError(f"Missing codebook payload {codebook_id}.")
         if (
-            payload.codec != "huff0"
-            or payload.mode not in {"shared_huff0", "shared_huff0_4x"}
+            payload.mode != "shared_huff0"
             or payload.dtype != "bfloat16"
             or int(payload.stream_id) != 1
         ):
@@ -662,14 +645,12 @@ def export_encoded_model_for_gpu(
             )
         parameter = candidate.parameter
         if (
-            payload.strategy != "neuralzip"
-            or payload.dtype != "bfloat16"
+            payload.dtype != "bfloat16"
             or tuple(payload.shape) != tuple(parameter.shape)
             or int(payload.numel) != parameter.numel()
             or int(payload.element_size) != 2
             or int(payload.bit_reorder) != 1
             or len(payload.groups) != 2
-            or payload.exponent_layout != "original"
         ):
             raise ValueError(
                 f"Encoded tensor {candidate.tensor_name!r} is incompatible with "
@@ -925,7 +906,6 @@ class NeuralZipRuntime:
         self._state_lock = threading.Lock()
         self._forward_claims = threading.local()
         self._active_block = None
-        self._cuda_stream = None
         self._cuda_streams = {}
         self._hook_handles = []
         self._state_dict_hook_handle = None
@@ -949,9 +929,6 @@ class NeuralZipRuntime:
             )
             for device in self.devices
         }
-        self.workspace = (
-            self.workspaces[self.device] if self.device is not None else None
-        )
         lut_by_id = {}
         for group in exported.groups:
             group_device = self.block_devices[group.block_name]
@@ -1042,14 +1019,6 @@ class NeuralZipRuntime:
             event = torch.cuda.Event()
             event.record(torch.cuda.current_stream(device=state_device))
             self._attach_events[state_device] = event
-        self._cuda_tensors = tuple(
-            tensor
-            for tensors in self._cuda_tensors_by_device.values()
-            for tensor in tensors
-        )
-        self._attach_event = (
-            self._attach_events.get(self.device) if self.device is not None else None
-        )
 
     @classmethod
     def _prepare_runtime(
@@ -1179,13 +1148,10 @@ class NeuralZipRuntime:
         self._uploaded_groups = ()
         self._groups_by_block = {}
         self._prepared_batches = {}
-        self._cuda_tensors = ()
         self._cuda_tensors_by_device = {}
         self._attach_events = {}
         self._cuda_streams = {}
         self.workspaces = {}
-        self.workspace = None
-        self._attach_event = None
         self._decoder_backend = None
         self._decoder = None
         self._prepare_batch = None
@@ -1221,23 +1187,14 @@ class NeuralZipRuntime:
                 module._parameters.pop("weight")
             self._install_weight_views()
 
-            try:
-                model_pre = self.model.register_forward_pre_hook(
-                    self._model_pre_hook,
-                    prepend=True,
-                )
-            except TypeError:  # pragma: no cover - older PyTorch.
-                model_pre = self.model.register_forward_pre_hook(self._model_pre_hook)
-            try:
-                model_post = self.model.register_forward_hook(
-                    self._model_post_hook,
-                    always_call=True,
-                )
-            except TypeError as error:  # pragma: no cover - older PyTorch.
-                raise RuntimeError(
-                    "NeuralZip GPU inference requires a PyTorch version whose "
-                    "forward hooks support always_call=True."
-                ) from error
+            model_pre = self.model.register_forward_pre_hook(
+                self._model_pre_hook,
+                prepend=True,
+            )
+            model_post = self.model.register_forward_hook(
+                self._model_post_hook,
+                always_call=True,
+            )
             handles.extend((model_pre, model_post))
             state_dict_handle = self.model.register_state_dict_pre_hook(
                 self._state_dict_pre_hook
@@ -1247,15 +1204,10 @@ class NeuralZipRuntime:
 
             for block_name in self.export.block_order:
                 block = self.model.get_submodule(block_name)
-                try:
-                    pre = block.register_forward_pre_hook(
-                        partial(self._block_pre_hook, block_name),
-                        prepend=True,
-                    )
-                except TypeError:  # pragma: no cover - older PyTorch.
-                    pre = block.register_forward_pre_hook(
-                        partial(self._block_pre_hook, block_name)
-                    )
+                pre = block.register_forward_pre_hook(
+                    partial(self._block_pre_hook, block_name),
+                    prepend=True,
+                )
                 handles.append(pre)
             self._hook_handles = handles
             setattr(self.model, _RUNTIME_ATTRIBUTE, self)
@@ -1282,12 +1234,8 @@ class NeuralZipRuntime:
             for tensor in self._cuda_tensors_by_device.get(device, ()):
                 tensor.record_stream(stream)
             self._cuda_streams[device] = current
-            if self.device == device:
-                self._cuda_stream = current
         elif current != previous:
-            raise RuntimeError(
-                "NeuralZip supports one CUDA stream per runtime device."
-            )
+            raise RuntimeError("NeuralZip supports one CUDA stream per runtime device.")
 
     def _decode_descriptor(
         self,
@@ -1361,9 +1309,6 @@ class NeuralZipRuntime:
             return
         for uploaded in uploaded_groups:
             self._decode_uploaded_group(uploaded)
-
-    def _inject_block(self, block_name: str) -> None:
-        self._decode_block(block_name)
 
     def _model_pre_hook(self, _module, _args) -> None:
         claims = getattr(self._forward_claims, "stack", None)
@@ -1448,7 +1393,7 @@ class NeuralZipRuntime:
                 "Invoke the attached root model rather than a compressed block "
                 "directly."
             )
-        self._inject_block(block_name)
+        self._decode_block(block_name)
 
     def _materialize_tensors(self) -> dict[str, torch.Tensor]:
         tensors = {}

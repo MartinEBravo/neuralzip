@@ -295,29 +295,9 @@ def _join_name(parent: str, child: str) -> str:
 
 
 def _named_modules_with_aliases(module: nn.Module) -> Iterator[tuple[str, nn.Module]]:
-    """Yield registered paths, retaining aliases when PyTorch supports it."""
+    """Yield every registered module path, retaining aliases."""
 
-    try:
-        yield from module.named_modules(remove_duplicate=False)
-    except TypeError:  # pragma: no cover - compatibility with older PyTorch.
-        yield from _named_modules_fallback(module)
-
-
-def _named_modules_fallback(
-    module: nn.Module,
-    prefix: str = "",
-    ancestors: frozenset[int] = frozenset(),
-) -> Iterator[tuple[str, nn.Module]]:
-    yield prefix, module
-    next_ancestors = ancestors | {id(module)}
-    for child_name, child in module._modules.items():
-        if child is None or id(child) in next_ancestors:
-            continue
-        yield from _named_modules_fallback(
-            child,
-            _join_name(prefix, child_name),
-            next_ancestors,
-        )
+    return module.named_modules(remove_duplicate=False)
 
 
 def _kind_for_module(
@@ -380,7 +360,7 @@ def _automatic_blocks(model: nn.Module) -> tuple[GPUBlock, ...]:
 
 
 class AutoModuleListAdapter(BaseGPUModelAdapter):
-    """Backward-compatible discovery for direct children of ``ModuleList``."""
+    """Discover candidate blocks among direct children of ``ModuleList``."""
 
     def __init__(
         self,
@@ -714,17 +694,7 @@ class GPUAdapterRegistry:
         return self.select(model, name=name).discover(model)
 
 
-def default_gpu_adapter_registry() -> GPUAdapterRegistry:
-    """Return an independent registry with the legacy automatic adapter."""
-
-    return GPUAdapterRegistry((AutoModuleListAdapter(),))
-
-
-DEFAULT_GPU_ADAPTER_REGISTRY = default_gpu_adapter_registry()
-
-
 __all__ = [
-    "DEFAULT_GPU_ADAPTER_REGISTRY",
     "AdapterNotFoundError",
     "AmbiguousAdapterError",
     "AmbiguousPatternError",
@@ -743,5 +713,4 @@ __all__ = [
     "PatternNotFoundError",
     "RegexGPUAdapter",
     "UnsupportedWeightModuleError",
-    "default_gpu_adapter_registry",
 ]

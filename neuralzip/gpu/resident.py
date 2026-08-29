@@ -8,18 +8,30 @@ and readers can consume one validated shard at a time.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
-import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 
 import torch
+
+from ._persistence import (
+    atomic_safetensors,
+    atomic_text,
+    canonical_json,
+    path_argument,
+    require_dotted_name,
+    require_fields,
+    require_int,
+    require_string,
+    safetensors_functions,
+    sha256_file,
+    strict_json_loads,
+)
 
 FORMAT_NAME = "neuralzip-resident-state"
 FORMAT_VERSION = 1
@@ -82,6 +94,42 @@ class ResidentStateError(ValueError):
     """Raised when resident state is unsafe, corrupt, or structurally invalid."""
 
 
+_canonical_json = partial(
+    canonical_json,
+    error_type=ResidentStateError,
+    error_message="The resident index is not JSON-safe.",
+)
+_require_fields = partial(require_fields, error_type=ResidentStateError)
+_require_int = partial(
+    require_int,
+    error_type=ResidentStateError,
+    combined_error=True,
+)
+_require_string = partial(require_string, error_type=ResidentStateError)
+_require_tensor_name = partial(
+    require_dotted_name,
+    kind="tensor",
+    error_type=ResidentStateError,
+)
+_require_safetensors = partial(
+    safetensors_functions,
+    "Resident state requires the 'safetensors' package.",
+)
+_atomic_text = atomic_text
+_atomic_safetensors = partial(
+    atomic_safetensors,
+    metadata={"format": FORMAT_NAME, "version": str(FORMAT_VERSION)},
+    dependency_error="Resident state requires the 'safetensors' package.",
+)
+_sha256_file = sha256_file
+_path_argument = partial(
+    path_argument,
+    type_message="directory must be a string or path-like value.",
+    bytes_message="directory must be a text path, not bytes.",
+    invalid_message="directory must be a non-empty valid path.",
+)
+
+
 @dataclass(frozen=True)
 class ResidentTensorDescriptor:
     """Logical description of one physically stored tensor."""
@@ -122,56 +170,20 @@ class ResidentStateManifest:
         return tuple(sorted((*self.descriptors, *self.aliases)))
 
 
-def _require_safetensors():
-    try:
-        from safetensors import safe_open
-        from safetensors.torch import save_file
-    except ImportError as error:  # pragma: no cover - required core dependency.
-        raise RuntimeError(
-            "Resident state requires the 'safetensors' package."
-        ) from error
-    return safe_open, save_file
-
-
-def _canonical_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError) as error:  # pragma: no cover - internal invariant.
-        raise ResidentStateError("The resident index is not JSON-safe.") from error
-
-
-def _reject_constant(value: str) -> None:
-    raise ResidentStateError(f"Invalid JSON constant {value!r} in resident index.")
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    output = {}
-    for key, value in pairs:
-        if key in output:
-            raise ResidentStateError(f"Duplicate JSON field {key!r} in resident index.")
-        output[key] = value
-    return output
-
-
 def _parse_index(path: Path) -> dict[str, object]:
     try:
         source = path.read_text(encoding="ascii")
-        value = json.loads(
+        value = strict_json_loads(
             source,
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
+            error_type=ResidentStateError,
+            document="resident index",
+            invalid_message="Unable to read the resident-state index.",
         )
     except FileNotFoundError:
         raise
     except ResidentStateError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError) as error:
         raise ResidentStateError("Unable to read the resident-state index.") from error
     if not isinstance(value, dict):
         raise ResidentStateError("The resident-state index must be a JSON object.")
@@ -180,57 +192,8 @@ def _parse_index(path: Path) -> dict[str, object]:
     return value
 
 
-def _require_fields(
-    value: object,
-    expected: set[str],
-    *,
-    context: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ResidentStateError(f"{context} must be a JSON object.")
-    actual = set(value)
-    if actual != expected:
-        raise ResidentStateError(
-            f"Invalid {context} fields: missing={sorted(expected - actual)}, "
-            f"unexpected={sorted(actual - expected)}."
-        )
-    return value
-
-
-def _require_int(value: object, *, context: str, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ResidentStateError(f"{context} must be an integer >= {minimum}.")
-    return value
-
-
-def _require_string(value: object, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ResidentStateError(f"{context} must be a non-empty string.")
-    return value
-
-
-def _require_tensor_name(value: object, *, context: str) -> str:
-    name = _require_string(value, context=context)
-    segments = name.split(".")
-    if any(
-        not segment
-        or not (segment.isidentifier() or (segment.isascii() and segment.isdecimal()))
-        for segment in segments
-    ):
-        raise ResidentStateError(f"{context} is not a valid dotted tensor path.")
-    return name
-
-
 def _directory(value: str | os.PathLike[str], *, create: bool) -> Path:
-    try:
-        source = os.fspath(value)
-    except TypeError as error:
-        raise TypeError("directory must be a string or path-like value.") from error
-    if isinstance(source, bytes):
-        raise TypeError("directory must be a text path, not bytes.")
-    if not source or "\x00" in source:
-        raise ValueError("directory must be a non-empty valid path.")
-    path = Path(source)
+    path = _path_argument(value)
     if path.exists() and not path.is_dir():
         raise ValueError("Resident state must be stored in a directory.")
     if create:
@@ -260,70 +223,6 @@ def _parse_max_shard_size(value: int | str) -> int:
     if size <= 0:
         raise ValueError("max_shard_size must resolve to at least one byte.")
     return size
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(8 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _fsync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:  # pragma: no cover - filesystem dependent.
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:  # pragma: no cover - filesystem dependent.
-        pass
-    finally:
-        os.close(descriptor)
-
-
-def _atomic_text(path: Path, source: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(source)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_safetensors(
-    tensors: Mapping[str, torch.Tensor],
-    path: Path,
-) -> None:
-    _safe_open, save_file = _require_safetensors()
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        save_file(
-            dict(tensors),
-            str(temporary),
-            metadata={"format": FORMAT_NAME, "version": str(FORMAT_VERSION)},
-        )
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _storage_key(tensor: torch.Tensor) -> tuple[object, ...]:

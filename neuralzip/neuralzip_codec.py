@@ -12,8 +12,8 @@ from .byte_group_codec import (
     _byte_group_reordered_bytes,
     _byte_group_restored_bytes,
     _tensor_from_raw_bytes,
+    dtype_name,
 )
-from .dtypes import dtype_name
 from .metrics import exponent_distribution, jensen_shannon_distance
 from .mode_selection import (
     select_fastest_within_ratio,

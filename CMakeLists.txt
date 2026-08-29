@@ -111,7 +111,7 @@ nanobind_add_module(
   _huff0_cpp
   NB_STATIC
   NOMINSIZE
-  neuralzip/_huff0_cpp.cpp
+  neuralzip/native/module.cpp
   ${ZSTD_SOURCES}
 )
 target_compile_features(_huff0_cpp PRIVATE cxx_std_17)

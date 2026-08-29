@@ -23,10 +23,11 @@ minimum-version = "build-system.requires"
 cmake.version = ">=3.18"
 cmake.build-type = "Release"
 wheel.packages = ["neuralzip"]
-wheel.exclude = ["neuralzip/_huff0_cpp.cpp"]
+wheel.exclude = ["neuralzip/native/*"]
 sdist.include = [
     "CMakeLists.txt",
-    "neuralzip/_huff0_cpp.cpp",
+    "neuralzip/native/*.cpp",
+    "neuralzip/native/*.inc",
     "neuralzip/gpu/cuda/*.cu",
     "third_party/dfloat11/LICENSE",
     "third_party/zstd/LICENSE",

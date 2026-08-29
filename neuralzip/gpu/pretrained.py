@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch import nn
@@ -29,7 +28,6 @@ from ._persistence import (
     sha256_file,
     strict_json_loads,
 )
-from .adapters import GPUModelAdapter
 from .checkpoint import DEFAULT_FILENAME as GPU_EXPORT_FILENAME
 from .checkpoint import load_gpu_export, save_gpu_export
 from .inference import (
@@ -323,11 +321,11 @@ def _save_model_metadata(
     return {"config": config_record, "generation_config": generation_record}
 
 
-def _file_record(path: Path) -> dict[str, str | int]:
+def _file_record(path: Path, *, sha256: str | None = None) -> dict[str, str | int]:
     return {
         "name": path.name,
         "nbytes": path.stat().st_size,
-        "sha256": _sha256_file(path),
+        "sha256": _sha256_file(path) if sha256 is None else sha256,
     }
 
 
@@ -400,9 +398,16 @@ def save_gpu_pretrained(
             "config": model_files["config"],
             "generation_config": model_files["generation_config"],
             "gpu_export": _file_record(export_path),
-            "resident_index": _file_record(resident_manifest.index_path),
+            "resident_index": _file_record(
+                resident_manifest.index_path,
+                sha256=resident_manifest.index_sha256,
+            ),
             "resident_shards": [
-                _file_record(path) for path in resident_manifest.shard_paths
+                _file_record(
+                    path,
+                    sha256=resident_manifest.shard_hashes[path.name],
+                )
+                for path in resident_manifest.shard_paths
             ],
         },
         "format": FORMAT_NAME,
@@ -423,6 +428,7 @@ def _file_from_record(
     expected_name: str | None,
     context: str,
     required: bool,
+    verify_sha256: bool = True,
 ) -> Path | None:
     if value is None:
         if required:
@@ -450,7 +456,7 @@ def _file_from_record(
         or path.stat().st_size != nbytes
     ):
         raise GPUPretrainedError(f"{name} has the wrong file size.")
-    if _sha256_file(path) != digest:
+    if verify_sha256 and _sha256_file(path) != digest:
         raise GPUPretrainedError(f"{name} failed its SHA-256 check.")
     return path
 
@@ -510,6 +516,7 @@ def _load_checkpoint_metadata(
         expected_name=RESIDENT_INDEX_FILENAME,
         context="manifest.files.resident_index",
         required=True,
+        verify_sha256=False,
     )
     export_path = _file_from_record(
         directory,
@@ -542,6 +549,7 @@ def _load_checkpoint_metadata(
             expected_name=None,
             context=f"manifest.files.resident_shards[{index}]",
             required=True,
+            verify_sha256=False,
         )
         for index, record in enumerate(shard_records)
     )
@@ -552,6 +560,16 @@ def _load_checkpoint_metadata(
     ):
         raise GPUPretrainedError(
             "The full checkpoint and resident shard index disagree."
+        )
+    if files["resident_index"] != _file_record(
+        resident_manifest.index_path,
+        sha256=resident_manifest.index_sha256,
+    ) or shard_records != [
+        _file_record(path, sha256=resident_manifest.shard_hashes[path.name])
+        for path in resident_manifest.shard_paths
+    ]:
+        raise GPUPretrainedError(
+            "The full checkpoint and resident file hashes disagree."
         )
     resident_names = _require_string_list(
         root["resident_tensor_names"], context="resident_tensor_names"
@@ -661,15 +679,6 @@ def _validated_compressed_weights(
     return tuple(validated)
 
 
-def _validate_and_remove_compressed_weights(
-    model: nn.Module,
-    exported: NeuralZipModelExport,
-) -> None:
-    for module, _parameter in _validated_compressed_weights(model, exported):
-        module._parameters.pop("weight")
-        module.__dict__.pop("weight", None)
-
-
 def _tensor_slot(model: nn.Module, tensor_name: str) -> tuple[nn.Module, str]:
     segments = tensor_name.split(".")
     module = model
@@ -732,8 +741,9 @@ def _load_model_state(
     exported: NeuralZipModelExport,
     placement: _Placement,
 ) -> nn.Module:
+    model_state = model.state_dict()
     compressed_names = {binding.tensor_name for binding in exported.bindings}
-    expected_names = set(model.state_dict()) - compressed_names
+    expected_names = set(model_state) - compressed_names
     resident_names = set(resident.tensor_names)
     if expected_names != resident_names:
         raise GPUPretrainedError(
@@ -741,7 +751,6 @@ def _load_model_state(
             f"missing={sorted(expected_names - resident_names)}, "
             f"unexpected={sorted(resident_names - expected_names)}."
         )
-    model_state = model.state_dict()
     for name in resident.tensor_names:
         canonical = resident.aliases.get(name, name)
         descriptor = resident.descriptors[canonical]
@@ -749,7 +758,9 @@ def _load_model_state(
             raise GPUPretrainedError(
                 f"Resident tensor {name!r} does not match the model architecture."
             )
-    _validate_and_remove_compressed_weights(model, exported)
+    for module, _parameter in _validated_compressed_weights(model, exported):
+        module._parameters.pop("weight")
+        module.__dict__.pop("weight", None)
 
     try:
         from accelerate.utils import set_module_tensor_to_device
@@ -981,7 +992,6 @@ def _resolve_placement(
     device: object | None,
     device_map: str | Mapping[str, object] | None,
     max_memory: Mapping[object, object] | None,
-    allow_cpu_blocks: bool,
     execution_device: object | None,
     cpu_offload: bool,
     cpu_offload_blocks: int | None,
@@ -1086,7 +1096,7 @@ def _resolve_placement(
             main_device = torch.device(execution_device)
         elif mapped_cuda:
             main_device = mapped_cuda[0]
-        elif not allow_cpu_blocks and torch.cuda.is_available():
+        elif torch.cuda.is_available():
             main_device = torch.device("cuda", torch.cuda.current_device())
         else:
             main_device = torch.device("cpu")
@@ -1104,18 +1114,17 @@ def _resolve_placement(
             ),
         )
 
-    if not allow_cpu_blocks:
-        non_cuda = {
-            name: str(value)
-            for name, value in placement.block_devices.items()
-            if value.type != "cuda"
-        }
-        if non_cuda:
-            raise GPUPretrainedError(
-                "The native decoder requires every compressed block on CUDA; "
-                f"non-CUDA blocks={non_cuda}. Increase GPU max_memory or provide "
-                "an explicit CUDA device_map."
-            )
+    non_cuda = {
+        name: str(value)
+        for name, value in placement.block_devices.items()
+        if value.type != "cuda"
+    }
+    if non_cuda:
+        raise GPUPretrainedError(
+            "The native decoder requires every compressed block on CUDA; "
+            f"non-CUDA blocks={non_cuda}. Increase GPU max_memory or provide "
+            "an explicit CUDA device_map."
+        )
     return placement
 
 
@@ -1165,9 +1174,7 @@ def attach_gpu_model(
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
     execution_device: object | None = None,
-    adapter: GPUModelAdapter | None = None,
     include_embeddings: bool = False,
-    decoder: Callable[..., Any] | object | None = None,
     cpu_offload: bool = False,
     cpu_offload_blocks: int | None = None,
     pin_memory: bool = True,
@@ -1184,7 +1191,6 @@ def attach_gpu_model(
         model,
         setup,
         threads=threads,
-        adapter=adapter,
         include_embeddings=include_embeddings,
     )
     if not exported.groups:
@@ -1195,7 +1201,6 @@ def attach_gpu_model(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1205,7 +1210,6 @@ def attach_gpu_model(
         model,
         exported,
         block_devices=placement.block_devices,
-        decoder=decoder,
         precompressed=True,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1241,7 +1245,6 @@ def load_gpu_pretrained(
     device_map: str | Mapping[str, object] | None = None,
     max_memory: Mapping[object, object] | None = None,
     execution_device: object | None = None,
-    decoder: Callable[..., Any] | object | None = None,
     cpu_offload: bool = False,
     cpu_offload_blocks: int | None = None,
     pin_memory: bool = True,
@@ -1319,7 +1322,6 @@ def load_gpu_pretrained(
         device=device,
         device_map=device_map,
         max_memory=max_memory,
-        allow_cpu_blocks=decoder is not None,
         execution_device=execution_device,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,
@@ -1337,7 +1339,6 @@ def load_gpu_pretrained(
         model,
         exported,
         block_devices=placement.block_devices,
-        decoder=decoder,
         precompressed=True,
         cpu_offload=cpu_offload,
         cpu_offload_blocks=cpu_offload_blocks,

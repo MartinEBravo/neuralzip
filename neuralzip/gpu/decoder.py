@@ -548,52 +548,6 @@ class CuPyBF16Decoder:
         device = prepared_batches[0].groups[0].lut.device
         torch.cuda.synchronize(device=device)
 
-    def decode(
-        self,
-        lut,
-        encoded_exponents,
-        sign_mantissa,
-        packed_gaps,
-        output_positions,
-        output,
-        *,
-        max_bits,
-        threads_per_block=_DEFAULT_THREADS_PER_BLOCK,
-    ):
-        """Decode one continuous exponent stream into an existing BF16 tensor.
-
-        The group uses the same batched kernel as runtime block decoding. The
-        launch is asynchronous on PyTorch's current CUDA stream, so all input
-        tensors must remain alive until work on that stream completes.
-        """
-        group = BF16DecodeGroup(
-            lut=lut,
-            encoded_exponents=encoded_exponents,
-            sign_mantissa=sign_mantissa,
-            packed_gaps=packed_gaps,
-            output_positions=output_positions,
-            output=output,
-            max_bits=max_bits,
-        )
-        if not torch.is_tensor(output) or output.numel() == 0:
-            _validate_decode_inputs(
-                lut,
-                encoded_exponents,
-                sign_mantissa,
-                packed_gaps,
-                output_positions,
-                output,
-                max_bits=max_bits,
-                threads_per_block=threads_per_block,
-            )
-            return output
-        prepared = self.prepare_batch(
-            (group,),
-            threads_per_block=threads_per_block,
-        )
-        self.decode_batch(prepared)
-        return output
-
 
 _DEFAULT_DECODER = CuPyBF16Decoder()
 

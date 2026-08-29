@@ -352,7 +352,7 @@ def _validate_manifest_root(
 def _validate_tensor_descriptors(
     source: Mapping[str, object],
     tensors: Mapping[str, torch.Tensor],
-) -> None:
+) -> dict[str, bytes]:
     if set(source) != set(tensors):
         missing = sorted(set(source) - set(tensors))
         unexpected = sorted(set(tensors) - set(source))
@@ -360,6 +360,7 @@ def _validate_tensor_descriptors(
             f"Safetensors members do not match the manifest "
             f"(missing={missing}, unexpected={unexpected})."
         )
+    payloads = {}
     for name, tensor in tensors.items():
         descriptor = _require_fields(
             source[name],
@@ -392,6 +393,8 @@ def _validate_tensor_descriptors(
             raise GPUCheckpointError(f"Tensor {name!r} has an invalid SHA-256 value.")
         if hashlib.sha256(payload).hexdigest() != digest:
             raise GPUCheckpointError(f"Tensor {name!r} failed its SHA-256 check.")
+        payloads[name] = payload
+    return payloads
 
 
 def _int_array(
@@ -524,16 +527,11 @@ def _load_binding(
         raise GPUCheckpointError(f"{context} is invalid.") from error
 
 
-def _bytes_from_tensor(tensor: torch.Tensor) -> bytes:
-    if tensor.dtype != torch.uint8 or tensor.ndim != 1:
-        raise GPUCheckpointError("A byte buffer has an invalid dtype or shape.")
-    return _tensor_bytes(tensor)
-
-
 def _load_groups(
     source: object,
     codebooks: Mapping[int, GPUCodebook],
     tensors: Mapping[str, torch.Tensor],
+    payloads: Mapping[str, bytes],
 ) -> tuple[tuple[BF16WeightGroup, ...], set[str]]:
     records = _require_list(source, context="manifest.export.groups")
     groups = []
@@ -575,6 +573,13 @@ def _load_groups(
             raise GPUCheckpointError(
                 f"{context} references a missing buffer."
             ) from error
+        if any(
+            selected[name].dtype != torch.uint8 or selected[name].ndim != 1
+            for name in ("bitstream", "packed_gaps", "sign_mantissa")
+        ):
+            raise GPUCheckpointError(
+                f"{context} contains a byte buffer with an invalid dtype or shape."
+            )
 
         encoded_record = _require_fields(
             record["encoded"],
@@ -587,7 +592,7 @@ def _load_groups(
         positions = tuple(int(value) for value in positions_tensor.tolist())
         try:
             exponents = GPUEncodedExponents(
-                bitstream=_bytes_from_tensor(selected["bitstream"]),
+                bitstream=payloads[expected_buffers["bitstream"]],
                 bit_length=_require_int(
                     encoded_record["bit_length"], context=f"{context} bit_length"
                 ),
@@ -596,7 +601,7 @@ def _load_groups(
                     context=f"{context} symbol_count",
                     maximum=_MAX_INT32,
                 ),
-                packed_gaps=_bytes_from_tensor(selected["packed_gaps"]),
+                packed_gaps=payloads[expected_buffers["packed_gaps"]],
                 output_positions=positions,
                 bytes_per_thread=_require_int(
                     encoded_record["bytes_per_thread"],
@@ -610,7 +615,7 @@ def _load_groups(
                 ),
             )
             encoded = GPUEncodedBF16(
-                sign_mantissa=_bytes_from_tensor(selected["sign_mantissa"]),
+                sign_mantissa=payloads[expected_buffers["sign_mantissa"]],
                 exponents=exponents,
             )
         except GPUCheckpointError:
@@ -687,9 +692,11 @@ def load_gpu_export(
         ) from error
 
     export_record, descriptors = _validate_manifest_root(manifest)
-    _validate_tensor_descriptors(descriptors, tensors)
+    payloads = _validate_tensor_descriptors(descriptors, tensors)
     codebooks, lut_tensors = _load_codebooks(manifest["codebooks"], tensors)
-    groups, group_tensors = _load_groups(export_record["groups"], codebooks, tensors)
+    groups, group_tensors = _load_groups(
+        export_record["groups"], codebooks, tensors, payloads
+    )
     if set(codebooks) != {group.codebook_id for group in groups}:
         raise GPUCheckpointError("Every stored codebook must be used by a group.")
     if lut_tensors | group_tensors != set(tensors):

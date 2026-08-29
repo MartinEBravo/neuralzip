@@ -8,6 +8,7 @@ and readers can consume one validated shard at a time.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Iterator, Mapping
@@ -170,7 +171,7 @@ class ResidentStateManifest:
         return tuple(sorted((*self.descriptors, *self.aliases)))
 
 
-def _parse_index(path: Path) -> dict[str, object]:
+def _parse_index(path: Path) -> tuple[dict[str, object], str]:
     try:
         source = path.read_text(encoding="ascii")
         value = strict_json_loads(
@@ -189,7 +190,7 @@ def _parse_index(path: Path) -> dict[str, object]:
         raise ResidentStateError("The resident-state index must be a JSON object.")
     if source != _canonical_json(value) + "\n":
         raise ResidentStateError("The resident-state index is not canonical JSON.")
-    return value
+    return value, hashlib.sha256(source.encode("ascii")).hexdigest()
 
 
 def _directory(value: str | os.PathLike[str], *, create: bool) -> Path:
@@ -421,7 +422,8 @@ def _validate_shard(
     *,
     expected_names: set[str],
     descriptors: Mapping[str, ResidentTensorDescriptor],
-) -> None:
+    load_tensors: bool = False,
+) -> dict[str, torch.Tensor] | None:
     safe_open, _save_file = _require_safetensors()
     try:
         with safe_open(str(path), framework="pt", device="cpu") as archive:
@@ -443,6 +445,9 @@ def _validate_shard(
                     raise ResidentStateError(f"Tensor {name!r} has the wrong dtype.")
                 if tuple(slice_.get_shape()) != descriptor.shape:
                     raise ResidentStateError(f"Tensor {name!r} has the wrong shape.")
+            if load_tensors:
+                return {name: archive.get_tensor(name) for name in names}
+            return None
     except ResidentStateError:
         raise
     except Exception as error:
@@ -458,7 +463,7 @@ def load_resident_state(
 
     target = _directory(directory, create=False)
     index_path = target / INDEX_FILENAME
-    index = _parse_index(index_path)
+    index, index_sha256 = _parse_index(index_path)
     root = _require_fields(
         index,
         {"aliases", "format", "metadata", "shards", "tensors", "version", "weight_map"},
@@ -576,7 +581,7 @@ def load_resident_state(
         shard_hashes=shard_hashes,
         weight_map=weight_map,
         total_size=total_size,
-        index_sha256=_sha256_file(index_path),
+        index_sha256=index_sha256,
     )
 
 
@@ -590,7 +595,6 @@ def iter_resident_shards(
         if isinstance(manifest_or_directory, ResidentStateManifest)
         else load_resident_state(manifest_or_directory)
     )
-    safe_open, _save_file = _require_safetensors()
     for path in manifest.shard_paths:
         expected_digest = manifest.shard_hashes[path.name]
         if not path.is_file() or _sha256_file(path) != expected_digest:
@@ -600,19 +604,13 @@ def iter_resident_shards(
             for name, filename in manifest.weight_map.items()
             if filename == path.name
         }
-        _validate_shard(
+        tensors = _validate_shard(
             path,
             expected_names=expected_names,
             descriptors=manifest.descriptors,
+            load_tensors=True,
         )
-        try:
-            with safe_open(str(path), framework="pt", device="cpu") as archive:
-                tensors = {
-                    name: archive.get_tensor(name)
-                    for name in archive.keys()  # noqa: SIM118 - safe_open is not iterable.
-                }
-        except Exception as error:
-            raise ResidentStateError(f"Unable to load shard {path.name!r}.") from error
+        assert tensors is not None
         yield path, tensors
 
 

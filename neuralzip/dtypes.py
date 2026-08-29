@@ -1,15 +1,4 @@
-"""Canonical conversion helpers for torch dtype values and names."""
+from .byte_group_codec import DTYPE_BY_NAME as FLOAT_DTYPES_BY_NAME
+from .byte_group_codec import dtype_name
 
-import torch
-
-FLOAT_DTYPES_BY_NAME = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
-}
-
-
-def dtype_name(dtype):
-    """Return the stable, unqualified name used in NeuralZip payloads."""
-
-    return str(dtype).replace("torch.", "")
+__all__ = ["FLOAT_DTYPES_BY_NAME", "dtype_name"]

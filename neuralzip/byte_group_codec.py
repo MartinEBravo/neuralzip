@@ -1,11 +1,15 @@
+"""Dtype metadata and byte-group transforms used by NeuralZip."""
+
 import math
 
 import numpy as np
 import torch
 
-from .dtypes import FLOAT_DTYPES_BY_NAME
-
-DTYPE_BY_NAME = FLOAT_DTYPES_BY_NAME
+DTYPE_BY_NAME = {
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "float32": torch.float32,
+}
 
 BYTE_GROUP_DTYPE_CONFIG = {
     torch.float32: {
@@ -27,6 +31,12 @@ BYTE_GROUP_DTYPE_CONFIG = {
         "bit_reorder": 0,
     },
 }
+
+
+def dtype_name(dtype):
+    """Return the stable, unqualified name used in NeuralZip payloads."""
+
+    return str(dtype).replace("torch.", "")
 
 
 def _tensor_raw_bytes(tensor):

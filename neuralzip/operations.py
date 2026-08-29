@@ -4,7 +4,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .dtypes import dtype_name
+from .byte_group_codec import dtype_name
 
 
 @dataclass(frozen=True)

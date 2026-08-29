@@ -1,17 +1,44 @@
+"""Immutable payload records and their canonical byte accounting."""
+
+import struct
 from dataclasses import dataclass
 
-from .serialization import (
-    serialized_codebook_size as _serialized_codebook_size,
+_SUPPORTED_CHUNK_MODES = {
+    "raw",
+    "zero",
+    "shared_huff0",
+    "packed_huff0",
+    "local_huff0",
+}
+
+
+def _struct_size(fmt):
+    return struct.calcsize("<" + fmt)
+
+
+RAW_CHUNK_METADATA_BYTES = _struct_size("BQ") + _struct_size("Q")
+SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + _struct_size("q")
+PACKED_CHUNK_METADATA_BYTES = (
+    RAW_CHUNK_METADATA_BYTES + _struct_size("qQB") + 2 * _struct_size("Q")
 )
-from .serialization import (
-    serialized_group_size as _serialized_group_size,
-)
-from .serialization import (
-    serialized_tensor_size as _serialized_tensor_size,
-)
-from .serialization import (
-    stream_chunk_metadata_bytes as _stream_chunk_metadata_bytes,
-)
+
+
+def _chunk_metadata_bytes(mode):
+    if mode not in _SUPPORTED_CHUNK_MODES:
+        raise ValueError(f"Unsupported archive chunk mode {mode!r}.")
+    if mode == "shared_huff0":
+        return SHARED_CHUNK_METADATA_BYTES
+    if mode == "packed_huff0":
+        return PACKED_CHUNK_METADATA_BYTES
+    return RAW_CHUNK_METADATA_BYTES
+
+
+def _bytes_size(value):
+    return _struct_size("Q") + len(value)
+
+
+def _text_size(value):
+    return _struct_size("I") + len(str(value).encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -29,7 +56,7 @@ class CodebookPayload:
 
     @property
     def metadata_bytes(self):
-        return _serialized_codebook_size(self)
+        return _codebook_size(self)
 
 
 @dataclass(frozen=True)
@@ -51,7 +78,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        return _stream_chunk_metadata_bytes(self.mode)
+        return _chunk_metadata_bytes(self.mode)
 
     @property
     def compressed_bytes(self):
@@ -70,44 +97,11 @@ class ByteGroupPayload:
 
     @property
     def metadata_bytes(self):
-        return _serialized_group_size(self) - self.payload_bytes
+        return _group_size(self) - self.payload_bytes
 
     @property
     def compressed_bytes(self):
-        return _serialized_group_size(self)
-
-    @property
-    def huffman_chunks(self):
-        modes = {"local_huff0", "shared_huff0", "packed_huff0"}
-        return sum(chunk.mode in modes for chunk in self.chunks)
-
-    @property
-    def local_huff0_chunks(self):
-        return sum(chunk.mode == "local_huff0" for chunk in self.chunks)
-
-    @property
-    def shared_huff0_chunks(self):
-        return sum(chunk.mode == "shared_huff0" for chunk in self.chunks)
-
-    @property
-    def raw_chunks(self):
-        return sum(chunk.mode == "raw" for chunk in self.chunks)
-
-    @property
-    def zero_chunks(self):
-        return sum(chunk.mode == "zero" for chunk in self.chunks)
-
-    @property
-    def packed_ngram_chunks(self):
-        return sum(chunk.mode == "packed_huff0" for chunk in self.chunks)
-
-    @property
-    def ngram_hits(self):
-        return sum(int(chunk.ngram_hits) for chunk in self.chunks)
-
-    @property
-    def ngram_escapes(self):
-        return sum(int(chunk.ngram_escapes) for chunk in self.chunks)
+        return _group_size(self)
 
 
 @dataclass(frozen=True)
@@ -136,36 +130,59 @@ class TensorPayload:
 
     @property
     def compressed_bytes(self):
-        return _serialized_tensor_size(self)
+        return _tensor_size(self)
 
-    @property
-    def huffman_chunks(self):
-        return sum(group.huffman_chunks for group in self.groups)
 
-    @property
-    def raw_chunks(self):
-        return sum(group.raw_chunks for group in self.groups)
+def _group_size(group):
+    chunks = sum(
+        _chunk_metadata_bytes(chunk.mode)
+        + len(chunk.payload)
+        + len(chunk.escape_payload)
+        + len(chunk.tail_payload)
+        for chunk in group.chunks
+    )
+    return _text_size(group.stream_kind) + _struct_size("QQ") + chunks
 
-    @property
-    def zero_chunks(self):
-        return sum(group.zero_chunks for group in self.groups)
 
-    @property
-    def local_huff0_chunks(self):
-        return sum(getattr(group, "local_huff0_chunks", 0) for group in self.groups)
+def _codebook_size(codebook):
+    return (
+        _struct_size("q")
+        + _text_size(codebook.cluster_id)
+        + _struct_size("i")
+        + _text_size(codebook.dtype)
+        + _text_size(codebook.codec)
+        + _text_size(codebook.mode)
+        + _struct_size("B")
+        + _bytes_size(codebook.code_lengths)
+        + _bytes_size(codebook.codebook)
+        + _bytes_size(codebook.vocab)
+    )
 
-    @property
-    def shared_huff0_chunks(self):
-        return sum(getattr(group, "shared_huff0_chunks", 0) for group in self.groups)
 
-    @property
-    def packed_ngram_chunks(self):
-        return sum(getattr(group, "packed_ngram_chunks", 0) for group in self.groups)
+def _tensor_size(tensor):
+    return (
+        _text_size(tensor.name)
+        + _text_size(tensor.dtype)
+        + _text_size(tensor.strategy)
+        + _text_size(tensor.cluster_id or "")
+        + _text_size(tensor.exponent_layout)
+        + _struct_size("QQiiiI")
+        + len(tensor.shape) * _struct_size("q")
+        + _bytes_size(tensor.remainder_payload)
+        + _struct_size("Q")
+        + sum(_group_size(group) for group in tensor.groups)
+    )
 
-    @property
-    def ngram_hits(self):
-        return sum(getattr(group, "ngram_hits", 0) for group in self.groups)
 
-    @property
-    def ngram_escapes(self):
-        return sum(getattr(group, "ngram_escapes", 0) for group in self.groups)
+def serialized_size(codebooks, tensors):
+    """Return the complete encoded size under NeuralZip's canonical layout."""
+
+    return (
+        len(b"NZP1")
+        + _struct_size("H")
+        + _text_size("neuralzip")
+        + _struct_size("Q")
+        + sum(_codebook_size(codebook) for codebook in codebooks)
+        + _struct_size("Q")
+        + sum(_tensor_size(tensor) for tensor in tensors)
+    )

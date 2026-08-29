@@ -208,96 +208,8 @@ class NeuralZipCodec:
         )
         return sample[:max_bytes]
 
-    def _source_chunk_size(self, element_size, mode):
-        base = self._stream_chunk_size(element_size)
-        if mode["kind"] == "packed_huff0":
-            n = int(mode["ngram_n"])
-            limit = min(base, huff0.max_block_size() * n)
-            return max(n, (limit // n) * n)
-        if mode["kind"] == "shared_huff0":
-            return min(base, huff0.max_block_size())
-        return base
-
-    def _encode_chunk(self, chunk, mode):
-        if mode["kind"] == "shared_huff0":
-            max_payload_bytes = max(
-                0,
-                int(len(chunk) * self.compression_threshold)
-                - SHARED_CHUNK_METADATA_BYTES,
-            )
-            encoded = huff0.encode_with_codebook(
-                chunk,
-                mode["codebook"],
-                min_saving_bytes=self.min_saving_bytes,
-                max_output_bytes=max_payload_bytes,
-            )
-            if encoded is None:
-                return None
-            candidate = StreamChunk(
-                mode="shared_huff0",
-                symbol_count=len(chunk),
-                payload=encoded.payload,
-                codebook_id=mode.get("codebook_id"),
-            )
-        elif mode["kind"] == "packed_huff0":
-            max_payload_bytes = max(
-                0,
-                int(len(chunk) * self.compression_threshold)
-                - PACKED_CHUNK_METADATA_BYTES,
-            )
-            encoded = huff0.encode_ngram_with_codebook(
-                chunk,
-                mode["codebook"],
-                mode["vocab"],
-                n=mode["ngram_n"],
-                min_saving_bytes=self.min_saving_bytes,
-                max_output_bytes=max_payload_bytes,
-            )
-            if encoded is None:
-                return None
-            candidate = StreamChunk(
-                mode="packed_huff0",
-                symbol_count=len(chunk),
-                payload=encoded.payload,
-                codebook_id=mode.get("codebook_id"),
-                escape_payload=encoded.escape_bytes,
-                tail_payload=encoded.tail,
-            )
-        else:
-            raise ValueError(f"Cannot encode mode {mode['kind']!r}.")
-
-        if candidate.compressed_bytes >= len(chunk) * self.compression_threshold:
-            return None
-        return candidate
-
-    def _mode_cost(
-        self,
-        sample,
-        mode,
-        element_size,
-        codebook_payload=None,
-        sample_parts=None,
-    ):
-        parts = tuple(sample_parts) if sample_parts is not None else (sample,)
-        total = codebook_payload.metadata_bytes if codebook_payload is not None else 0
-        step = self._source_chunk_size(element_size, mode)
-        for part in parts:
-            for start in range(0, len(part), step):
-                chunk = part[start : start + step]
-                encoded = (
-                    None if mode["kind"] == "raw" else self._encode_chunk(chunk, mode)
-                )
-                if encoded is not None:
-                    total += encoded.compressed_bytes
-                else:
-                    # Post-setup encoding never builds a target-local tree.
-                    # Raw is the exact runtime fallback for every rejected
-                    # precomputed shared or packed representation.
-                    total += RAW_CHUNK_METADATA_BYTES + len(chunk)
-        return total
-
-    def _measure_direct_mode_seconds(self, mode, element_size, sample_parts):
-        """Measure target-dependent work in the uncached direct encoder.
+    def _measure_direct_mode(self, mode, element_size, sample_parts):
+        """Return exact bytes and time from the production native encoder.
 
         The sampled logical byte lane is placed in stream zero of a synthetic
         tensor before the timer; the remaining lanes use raw mode and therefore
@@ -330,23 +242,39 @@ class NeuralZipCodec:
                 )
             )
         if not tensor_specs:
-            return 0.0
+            return 0, 0.0
 
         def encode_once():
             started = time.perf_counter()
-            huff0.compress_mixed_streams_many(
+            output = huff0.compress_mixed_streams_many(
                 tuple(tensor_specs),
                 min_saving_bytes=self.min_saving_bytes,
                 threads=self.threads,
                 compression_threshold=self.compression_threshold,
             )
-            return time.perf_counter() - started
+            return output, time.perf_counter() - started
 
         # Warm code/data caches once, then use the best of three complete
         # measurements. The minimum estimates algorithmic work without letting
         # scheduler jitter change the frozen family setup.
-        encode_once()
-        return min(encode_once() for _ in range(3))
+        native_batch, _ = encode_once()
+        seconds = min(encode_once()[1] for _ in range(3))
+
+        metadata_by_mode = {
+            "raw": RAW_CHUNK_METADATA_BYTES,
+            "shared_huff0": SHARED_CHUNK_METADATA_BYTES,
+            "packed_huff0": PACKED_CHUNK_METADATA_BYTES,
+        }
+        encoded_bytes = 0
+        for native_groups in native_batch:
+            for final_kind, body, _, escapes, tail in native_groups[0]:
+                encoded_bytes += (
+                    metadata_by_mode[str(final_kind)]
+                    + len(body)
+                    + len(escapes)
+                    + len(tail)
+                )
+        return encoded_bytes, seconds
 
     def _score_mode(
         self,
@@ -356,22 +284,16 @@ class NeuralZipCodec:
         codebook_payload=None,
         sample_parts=None,
     ):
-        mode["sample_cost"] = self._mode_cost(
-            sample,
-            mode,
-            element_size,
-            codebook_payload,
-            sample_parts,
+        parts = tuple(sample_parts) if sample_parts is not None else (sample,)
+        sample_cost, sample_seconds = self._measure_direct_mode(
+            mode, element_size, parts
         )
+        mode["sample_cost"] = sample_cost
         mode["fixed_cost"] = (
             codebook_payload.metadata_bytes if codebook_payload is not None else 0
         )
-        parts = tuple(sample_parts) if sample_parts is not None else (sample,)
-        mode["sample_seconds"] = self._measure_direct_mode_seconds(
-            mode,
-            element_size,
-            parts,
-        )
+        mode["sample_cost"] += mode["fixed_cost"]
+        mode["sample_seconds"] = sample_seconds
         return mode
 
     def _build_candidate(
@@ -399,18 +321,16 @@ class NeuralZipCodec:
         if not tokens:
             return None
         try:
-            if symbol_counts is not None and kind == "shared_huff0":
-                codebook = huff0.build_codebook_from_counts(
-                    symbol_counts,
-                    prior_count=prior_count,
-                    max_bits=max_bits,
+            counts = symbol_counts
+            if counts is None or kind != "shared_huff0":
+                counts = np.bincount(
+                    np.frombuffer(tokens, dtype=np.uint8), minlength=256
                 )
-            else:
-                codebook = huff0.build_codebook(
-                    tokens,
-                    prior_count=prior_count,
-                    max_bits=max_bits,
-                )
+            codebook = huff0.build_codebook_from_counts(
+                counts,
+                prior_count=prior_count,
+                max_bits=max_bits,
+            )
         except ValueError:
             return None
         return {
@@ -525,10 +445,8 @@ class NeuralZipCodec:
             payload = self._candidate_payload(key, shared)
             if symbol_counts is not None and chunk_counts is not None:
                 shared["fixed_cost"] = payload.metadata_bytes
-                shared["sample_seconds"] = self._measure_direct_mode_seconds(
-                    shared,
-                    element_size,
-                    tuple(sample_parts),
+                _, shared["sample_seconds"] = self._measure_direct_mode(
+                    shared, element_size, tuple(sample_parts)
                 )
                 shared["full_cost"] = self._shared_histogram_cost(
                     shared,
@@ -817,7 +735,7 @@ class NeuralZipCodec:
                 total_sizes[key] = total_sizes.get(key, 0) + len(stream)
                 stream_info[key] = (element_size, is_exponent)
                 raw_step = self._stream_chunk_size(element_size)
-                shared_step = min(raw_step, huff0.max_block_size())
+                shared_step = min(raw_step, huff0.MAX_BLOCK_SIZE)
                 raw_chunks, shared_chunks = chunk_counts.get(key, (0, 0))
                 chunk_counts[key] = (
                     raw_chunks + (len(stream) + raw_step - 1) // raw_step,
@@ -1045,15 +963,7 @@ class NeuralZipCodec:
             chunks = []
             symbols = 0
             for native_chunk in native_chunks:
-                (
-                    final_kind,
-                    payload,
-                    symbol_count,
-                    token_count,
-                    escapes,
-                    tail,
-                    ngram_n,
-                ) = native_chunk
+                final_kind, payload, symbol_count, escapes, tail = native_chunk
                 final_kind = str(final_kind)
                 symbol_count = int(symbol_count)
                 if final_kind not in allowed_finals[planned_kind]:
@@ -1078,19 +988,7 @@ class NeuralZipCodec:
                         raise RuntimeError(
                             f"Packed Huff0 mode references missing codebook {codebook_id}."
                         )
-                    if int(ngram_n) != int(codebook.ngram_n):
-                        raise RuntimeError(
-                            "Mixed-stream encoder returned an n-gram width that "
-                            "disagrees with its codebook."
-                        )
-                    expected_tokens = _packed_token_count(
-                        symbol_count, tail, codebook.ngram_n
-                    )
-                    if int(token_count) != expected_tokens:
-                        raise RuntimeError(
-                            "Mixed-stream encoder returned an invalid packed token "
-                            "count."
-                        )
+                    _packed_token_count(symbol_count, tail, codebook.ngram_n)
                     chunks.append(
                         StreamChunk(
                             mode=final_kind,
@@ -1153,10 +1051,8 @@ class NeuralZipCodec:
                 codebook, decodebook = self._decode_assets(chunk)
                 if chunk.mode == "shared_huff0":
                     decoded = huff0.decompress_with_decodebook(
-                        huff0.Huff0Payload(
-                            payload=chunk.payload,
-                            symbol_count=chunk.symbol_count,
-                        ),
+                        chunk.payload,
+                        chunk.symbol_count,
                         decodebook,
                     )
                 else:
@@ -1166,15 +1062,13 @@ class NeuralZipCodec:
                         codebook.ngram_n,
                     )
                     decoded = huff0.decompress_ngram_with_decodebook(
-                        huff0.Huff0NGramPayload(
-                            payload=chunk.payload,
-                            symbol_count=token_count,
-                            escape_bytes=chunk.escape_payload,
-                            tail=chunk.tail_payload,
-                        ),
+                        chunk.payload,
+                        token_count,
                         decodebook,
                         codebook.vocab,
                         n=codebook.ngram_n,
+                        escape_bytes=chunk.escape_payload,
+                        tail=chunk.tail_payload,
                     )
             else:
                 raise ValueError(f"Unsupported stream chunk mode {chunk.mode!r}.")
@@ -1220,7 +1114,7 @@ class NeuralZipCodec:
                 decodebook_handle = None
                 if mode == "shared_huff0":
                     _, decodebook = self._decode_assets(chunk)
-                    decodebook_handle = decodebook.handle
+                    decodebook_handle = decodebook
                 native_chunks.append(
                     (
                         mode,

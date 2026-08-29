@@ -97,14 +97,7 @@ class TensorPayload:
 
 
 def _group_size(group):
-    chunks = sum(
-        _chunk_metadata_bytes(chunk.mode)
-        + len(chunk.payload)
-        + len(chunk.escape_payload)
-        + len(chunk.tail_payload)
-        for chunk in group.chunks
-    )
-    return _struct_size("Q") + chunks
+    return _struct_size("Q") + sum(chunk.compressed_bytes for chunk in group.chunks)
 
 
 def _codebook_size(codebook):

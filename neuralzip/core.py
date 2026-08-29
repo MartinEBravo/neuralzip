@@ -39,54 +39,47 @@ def _model_source(model):
     return None
 
 
-def _floating_tensors(model):
-    """Return floating parameters or tensor leaves, excluding module buffers."""
-
-    source = _model_source(model)
-    if isinstance(source, Mapping):
-        items = _named_tensors(source)
-    elif isinstance(source, torch.nn.Module):
-        items = source.named_parameters()
-    else:
-        try:
-            items = iter(model)
-        except TypeError as error:
-            raise TypeError(
-                "Expected a tensor mapping, torch.nn.Module, or adapter exposing "
-                "one through .model."
-            ) from error
-    tensors = [
-        (str(name), tensor)
-        for name, tensor in items
-        if torch.is_tensor(tensor) and tensor.is_floating_point()
-    ]
-    if not tensors:
-        raise ValueError("No floating tensors were found.")
-    return tensors
-
-
 def _model_tensors(model):
     """Include persistent floating buffers for reconstructable model encodes."""
 
     source = _model_source(model)
     if not isinstance(source, torch.nn.Module):
-        return _floating_tensors(model)
+        if isinstance(source, Mapping):
+            items = _named_tensors(source)
+        else:
+            try:
+                items = iter(model)
+            except TypeError as error:
+                raise TypeError(
+                    "Expected a tensor mapping, torch.nn.Module, or adapter "
+                    "exposing one through .model."
+                ) from error
+        tensors = [
+            (str(name), tensor)
+            for name, tensor in items
+            if torch.is_tensor(tensor) and tensor.is_floating_point()
+        ]
+    else:
+        tensors = []
+        seen = set()
+        for name, tensor in source.named_parameters():
+            if tensor.is_floating_point() and id(tensor) not in seen:
+                tensors.append((str(name), tensor))
+                seen.add(id(tensor))
 
-    tensors = []
-    seen = set()
-    for name, tensor in source.named_parameters():
-        if tensor.is_floating_point() and id(tensor) not in seen:
-            tensors.append((str(name), tensor))
-            seen.add(id(tensor))
-
-    persistent = set(source.state_dict())
-    buffers = source.named_buffers(remove_duplicate=False)
-    for name, tensor in buffers:
-        if name in persistent and tensor.is_floating_point() and id(tensor) not in seen:
-            tensors.append((str(name), tensor))
-            seen.add(id(tensor))
+        persistent = set(source.state_dict())
+        for name, tensor in source.named_buffers(remove_duplicate=False):
+            if (
+                name in persistent
+                and tensor.is_floating_point()
+                and id(tensor) not in seen
+            ):
+                tensors.append((str(name), tensor))
+                seen.add(id(tensor))
     if not tensors:
         raise ValueError("No floating tensors were found.")
+    if len({name for name, _tensor in tensors}) != len(tensors):
+        raise ValueError("Tensor names must be unique after flattening the input.")
     return tensors
 
 
@@ -134,12 +127,6 @@ def _load_pretrained_model(
     return model.eval()
 
 
-def _fit_options(options):
-    selected = dict(options)
-    selected.setdefault("ngram_values", ())
-    return selected
-
-
 class NeuralZip:
     """Single, stateless entry point for NeuralZip operations."""
 
@@ -176,7 +163,8 @@ class NeuralZip:
             model = model_or_id
 
         named_tensors = _model_tensors(model)
-        codec = NeuralZipCodec(**_fit_options(setup_options))
+        setup_options.setdefault("ngram_values", ())
+        codec = NeuralZipCodec(**setup_options)
         started = time.perf_counter()
         codec.prepare_clusters(named_tensors)
         clustering_seconds = time.perf_counter() - started

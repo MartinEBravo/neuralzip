@@ -126,14 +126,11 @@ def _freeze_native_codebooks(codec):
         codebook = mode.get("codebook")
         if codebook is None or isinstance(codebook, tuple):
             continue
-        expected_header = bytes(codebook.codebook)
         codebook_id = mode.get("codebook_id")
         payload = payload_by_id.get(codebook_id)
         if payload is None:
             raise ValueError(f"Setup is missing codebook {codebook_id!r}.")
-        if bytes(payload.codebook) != expected_header:
-            raise ValueError(f"Codebook {codebook_id} disagrees with its payload.")
-        mode["codebook"] = (SETUP_MARKER, expected_header)
+        mode["codebook"] = (SETUP_MARKER, bytes(payload.codebook))
 
 
 def _restore_live_codebooks(codec):
@@ -142,24 +139,24 @@ def _restore_live_codebooks(codec):
     }
     for mode in _unique_modes(codec):
         marker = mode.get("codebook")
-        if not isinstance(marker, tuple):
+        if marker is None:
             continue
-        if len(marker) != 2 or marker[0] != SETUP_MARKER:
+        if (
+            not isinstance(marker, tuple)
+            or len(marker) != 2
+            or marker[0] != SETUP_MARKER
+        ):
             raise ValueError("Unsupported frozen Huff0 codebook marker.")
-        _, expected_header = marker
-        codebook = huff0.build_codebook_from_header(expected_header)
-        if codebook.codebook != expected_header:
-            raise RuntimeError("Rebuilt Huff0 codebook differs from the frozen setup.")
-
         codebook_id = mode.get("codebook_id")
         payload = payload_by_id.get(codebook_id)
         if payload is None:
             raise ValueError(f"Frozen setup is missing codebook {codebook_id!r}.")
+        expected_header = bytes(marker[1])
         if bytes(payload.codebook) != bytes(expected_header):
             raise ValueError(
                 f"Frozen codebook {codebook_id} disagrees with its payload."
             )
-        mode["codebook"] = codebook
+        mode["codebook"] = huff0.build_codebook_from_header(expected_header)
     codec.load_codebooks(codec.export_codebooks())
 
 
@@ -167,8 +164,6 @@ def setup_from_codec(codec, setup_report=None):
     """Capture a prepared codec as an immutable, shareable setup value."""
 
     validate_setup(codec)
-    if setup_report is not None and not isinstance(setup_report, SetupReport):
-        raise TypeError("setup_report must be a SetupReport or None.")
     snapshot = _detached_codec_snapshot(codec)
     _freeze_native_codebooks(snapshot)
     state = pickle.dumps(snapshot, protocol=5)

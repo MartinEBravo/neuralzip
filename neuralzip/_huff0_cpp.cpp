@@ -115,8 +115,6 @@ struct NGramBlockResult {
     std::vector<std::uint8_t> payload;
     std::vector<std::uint8_t> escapes;
     std::vector<std::uint8_t> tail;
-    Py_ssize_t symbol_count = 0;
-    bool encoded = false;
 };
 
 enum class MixedMode {
@@ -137,7 +135,6 @@ struct MixedStreamSpec {
     MixedMode mode = MixedMode::Raw;
     Huff0Codebook* codebook = nullptr;
     nb::object codebook_owner;
-    std::vector<std::uint64_t> vocab;
     NGramVocabLookup vocab_lookup;
     int ngram_n = 1;
     std::size_t chunk_size = 0;
@@ -150,8 +147,6 @@ struct MixedBlockResult {
     std::vector<std::uint8_t> escapes;
     std::vector<std::uint8_t> tail;
     Py_ssize_t symbol_count = 0;
-    Py_ssize_t token_count = 0;
-    int ngram_n = 1;
     std::string error;
 };
 
@@ -254,14 +249,6 @@ void check_huf(size_t code) {
 
 nb::bytes bytes_from_vector(const std::vector<std::uint8_t>& data) {
     return nb::bytes(data.data(), data.size());
-}
-
-nb::tuple ngram_result_to_tuple(const NGramBlockResult& result) {
-    return nb::make_tuple(
-        bytes_from_vector(result.payload),
-        result.symbol_count,
-        bytes_from_vector(result.escapes),
-        bytes_from_vector(result.tail));
 }
 
 inline std::uint8_t byte_group_stream_byte(
@@ -379,20 +366,6 @@ void release_vector(std::vector<std::uint8_t>& data) {
     std::vector<std::uint8_t>().swap(data);
 }
 
-std::array<unsigned, 256> count_symbols(const std::uint8_t* data, Py_ssize_t data_len, unsigned prior_count) {
-    std::array<unsigned, 256> counts{};
-    if (prior_count > 0) {
-        counts.fill(prior_count);
-    }
-    for (Py_ssize_t index = 0; index < data_len; ++index) {
-        if (counts[data[index]] == std::numeric_limits<unsigned>::max()) {
-            throw std::runtime_error("Huff0 symbol count overflow.");
-        }
-        counts[data[index]] += 1;
-    }
-    return counts;
-}
-
 unsigned nonzero_symbol_count(const std::array<unsigned, 256>& counts) {
     unsigned nonzero = 0;
     for (unsigned count : counts) {
@@ -449,19 +422,6 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
     check_huf(header_size);
     codebook->serialized.resize(header_size);
     return codebook;
-}
-
-std::unique_ptr<Huff0Codebook> make_codebook(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    unsigned prior_count,
-    unsigned max_bits) {
-    if (data_len <= 0) {
-        throw std::runtime_error("Cannot build a Huff0 codebook from empty data.");
-    }
-
-    return make_codebook_from_counts(
-        count_symbols(data, data_len, prior_count), max_bits);
 }
 
 std::unique_ptr<Huff0Codebook> make_codebook_from_header(
@@ -952,14 +912,6 @@ std::vector<std::uint8_t> restore_ngram_tokens(
     return output;
 }
 
-std::uint64_t pack_ngram_symbol(const std::uint8_t* data, int n) {
-    std::uint64_t symbol = 0;
-    for (int index = 0; index < n; ++index) {
-        symbol |= static_cast<std::uint64_t>(data[index]) << (8 * index);
-    }
-    return symbol;
-}
-
 std::vector<std::uint64_t> vocab_from_bytes(
     const std::uint8_t* data,
     std::size_t size,
@@ -1062,46 +1014,6 @@ struct NGramTokenization {
     std::vector<std::uint8_t> tail;
 };
 
-NGramTokenization tokenize_ngrams(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    int n,
-    const std::vector<std::uint64_t>& vocab,
-    const NGramVocabLookup& lookup) {
-    if (n < 1 || n > 8) {
-        throw std::runtime_error("Huff0 n-gram tokenization supports n in [1, 8].");
-    }
-    if (vocab.empty()) {
-        throw std::runtime_error("ngram vocab is empty.");
-    }
-    if (data_len < 0) {
-        throw std::runtime_error("data length must be non-negative.");
-    }
-
-    Py_ssize_t complete_len = (data_len / n) * n;
-    Py_ssize_t token_count = complete_len / n;
-    NGramTokenization result;
-    result.tokens.reserve(static_cast<std::size_t>(token_count));
-    result.escapes.reserve(static_cast<std::size_t>(complete_len));
-    if (data_len > complete_len) {
-        result.tail.assign(data + complete_len, data + data_len);
-    }
-
-    for (Py_ssize_t token_index = 0; token_index < token_count; ++token_index) {
-        const std::uint8_t* pointer = data + token_index * n;
-        std::uint64_t symbol = pack_ngram_symbol(pointer, n);
-        const std::uint8_t token = find_ngram_token(lookup, symbol);
-        if (token != 255) {
-            result.tokens.push_back(token);
-            continue;
-        }
-
-        result.tokens.push_back(255);
-        result.escapes.insert(result.escapes.end(), pointer, pointer + n);
-    }
-    return result;
-}
-
 NGramTokenization tokenize_byte_group_stream_ngrams(
     const std::uint8_t* raw,
     int element_size,
@@ -1187,27 +1099,9 @@ NGramBlockResult encode_tokenized_ngram_block(
         return result;
     }
 
-    result.symbol_count = static_cast<Py_ssize_t>(tokens.tokens.size());
     result.escapes = std::move(tokens.escapes);
     result.tail = std::move(tokens.tail);
-    result.encoded = true;
     return result;
-}
-
-NGramBlockResult encode_ngram_block(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    int n,
-    const std::vector<std::uint64_t>& vocab,
-    const Huff0Codebook& codebook,
-    Py_ssize_t min_saving_bytes,
-    std::size_t max_output_bytes,
-    const NGramVocabLookup& lookup) {
-    return encode_tokenized_ngram_block(
-        tokenize_ngrams(data, data_len, n, vocab, lookup),
-        codebook,
-        min_saving_bytes,
-        max_output_bytes);
 }
 
 const char* mixed_mode_name(MixedMode mode) {
@@ -1239,13 +1133,12 @@ bool finish_packed_block(
     MixedBlockResult& result,
     NGramBlockResult& packed,
     std::size_t raw_size,
-    int ngram_n,
     double compression_threshold) {
     const double compressed_bytes = static_cast<double>(kPackedMetadataBytes)
         + static_cast<double>(packed.payload.size())
         + static_cast<double>(packed.escapes.size())
         + static_cast<double>(packed.tail.size());
-    if (!packed.encoded
+    if (packed.payload.empty()
         || compressed_bytes
             >= static_cast<double>(raw_size) * compression_threshold) {
         return false;
@@ -1254,8 +1147,6 @@ bool finish_packed_block(
     result.payload = std::move(packed.payload);
     result.escapes = std::move(packed.escapes);
     result.tail = std::move(packed.tail);
-    result.token_count = packed.symbol_count;
-    result.ngram_n = ngram_n;
     return true;
 }
 
@@ -1265,63 +1156,37 @@ void process_mixed_block(
     Py_ssize_t min_saving_bytes,
     double compression_threshold) {
     result.mode = MixedMode::Raw;
-    result.ngram_n = 1;
     if (spec.mode == MixedMode::Raw) {
         return;
     }
     if (spec.codebook == nullptr) {
-        throw std::runtime_error("Mixed shared/packed mode is missing a codebook.");
+        throw std::runtime_error("Mixed shared mode is missing a codebook.");
     }
-    if (spec.mode == MixedMode::SharedHuff0) {
-        constexpr Py_ssize_t kSharedMetadataBytes = 1 + 8 + 8 + 8;
-        Py_ssize_t budget = static_cast<Py_ssize_t>(
-            static_cast<double>(result.raw.size()) * compression_threshold)
-            - kSharedMetadataBytes;
-        if (budget > 0) {
-            std::vector<std::uint8_t> payload = encode_huff0_block(
-                result.raw.data(),
-                static_cast<Py_ssize_t>(result.raw.size()),
-                *spec.codebook,
-                static_cast<std::size_t>(budget));
-            if (
-                !payload.empty()
-                && payload.size() + static_cast<std::size_t>(min_saving_bytes)
-                    < result.raw.size()
-                && static_cast<double>(kSharedMetadataBytes)
-                        + static_cast<double>(payload.size())
-                    < static_cast<double>(result.raw.size())
-                        * compression_threshold) {
-                result.mode = MixedMode::SharedHuff0;
-                result.payload = std::move(payload);
-                release_vector(result.raw);
-                return;
-            }
+    constexpr Py_ssize_t kSharedMetadataBytes = 1 + 8 + 8 + 8;
+    Py_ssize_t budget = static_cast<Py_ssize_t>(
+        static_cast<double>(result.raw.size()) * compression_threshold)
+        - kSharedMetadataBytes;
+    if (budget > 0) {
+        std::vector<std::uint8_t> payload = encode_huff0_block(
+            result.raw.data(),
+            static_cast<Py_ssize_t>(result.raw.size()),
+            *spec.codebook,
+            static_cast<std::size_t>(budget));
+        if (
+            !payload.empty()
+            && payload.size() + static_cast<std::size_t>(min_saving_bytes)
+                < result.raw.size()
+            && static_cast<double>(kSharedMetadataBytes)
+                    + static_cast<double>(payload.size())
+                < static_cast<double>(result.raw.size())
+                    * compression_threshold) {
+            result.mode = MixedMode::SharedHuff0;
+            result.payload = std::move(payload);
+            release_vector(result.raw);
         }
-        // A shared post-setup mode must never build a target-local tree.
-        // result already owns the exact raw stream and starts in Raw mode.
-        return;
     }
-
-    NGramBlockResult packed = encode_ngram_block(
-        result.raw.data(),
-        static_cast<Py_ssize_t>(result.raw.size()),
-        spec.ngram_n,
-        spec.vocab,
-        *spec.codebook,
-        min_saving_bytes,
-        packed_output_budget(result.raw.size(), compression_threshold),
-        spec.vocab_lookup);
-    if (finish_packed_block(
-            result,
-            packed,
-            result.raw.size(),
-            spec.ngram_n,
-            compression_threshold)) {
-        release_vector(result.raw);
-        return;
-    }
-    // A packed post-setup mode must never build a target-local tree.
-    // result already owns the exact raw stream and starts in Raw mode.
+    // A shared post-setup mode must never build a target-local tree. Raw is
+    // already the exact fallback when the precomputed table is not worthwhile.
 }
 
 void process_mixed_packed_block(
@@ -1336,7 +1201,6 @@ void process_mixed_packed_block(
     Py_ssize_t min_saving_bytes,
     double compression_threshold) {
     result.mode = MixedMode::Raw;
-    result.ngram_n = 1;
     if (spec.codebook == nullptr) {
         throw std::runtime_error("Mixed packed mode is missing a codebook.");
     }
@@ -1358,7 +1222,6 @@ void process_mixed_packed_block(
             result,
             packed,
             length,
-            spec.ngram_n,
             compression_threshold)) {
         return;
     }
@@ -1506,17 +1369,17 @@ std::vector<MixedStreamSpec> parse_mixed_stream_specs(
             spec.codebook_owner = nb::borrow<nb::object>(codebook_source);
             spec.codebook = codebook_from_capsule(codebook_source);
             ReadOnlyBuffer vocab(vocab_source);
-            spec.vocab = with_value_errors([&]() {
+            std::vector<std::uint64_t> values = with_value_errors([&]() {
                 return vocab_from_bytes(
                     vocab.data(),
                     vocab.size(),
                     ngram_n);
             });
-            if (spec.vocab.empty()) {
+            if (values.empty()) {
                 throw nb::value_error(
                     "packed_huff0 vocabulary is empty.");
             }
-            spec.vocab_lookup = build_ngram_vocab_lookup(spec.vocab);
+            spec.vocab_lookup = build_ngram_vocab_lookup(values);
         } else {
             throw nb::value_error("Unsupported mixed Huff0 stream mode.");
         }
@@ -1556,17 +1419,12 @@ nb::list mixed_groups_to_python(
             const auto& body = result.mode == MixedMode::Raw
                 ? result.raw
                 : result.payload;
-            nb::object token_count = result.mode == MixedMode::PackedHuff0
-                ? nb::cast(result.token_count)
-                : nb::none();
             chunks.append(nb::make_tuple(
                 mixed_mode_name(result.mode),
                 bytes_from_vector(body),
                 result.symbol_count,
-                std::move(token_count),
                 bytes_from_vector(result.escapes),
-                bytes_from_vector(result.tail),
-                result.ngram_n));
+                bytes_from_vector(result.tail)));
         }
         groups.append(std::move(chunks));
     }
@@ -1654,25 +1512,6 @@ std::array<unsigned, 256> parse_symbol_counts(
         output[index] = static_cast<unsigned>(scaled + prior_count);
     }
     return output;
-}
-
-std::size_t max_block_size() {
-    return kMaxBlockSize;
-}
-
-nb::tuple build_codebook(
-    nb::handle data_source,
-    Py_ssize_t prior_count,
-    Py_ssize_t max_bits) {
-    validate_codebook_options(prior_count, max_bits);
-    ReadOnlyBuffer data(data_source);
-    return with_value_errors([&]() {
-        return codebook_to_python(make_codebook(
-            data.data(),
-            data.size(),
-            static_cast<unsigned>(prior_count),
-            static_cast<unsigned>(max_bits)));
-    });
 }
 
 nb::tuple build_codebook_from_counts(
@@ -1802,79 +1641,6 @@ nb::tuple encode_gpu_bfloat16(
         nb::tuple(positions),
         encoded.bit_length,
         encoded.max_bits);
-}
-
-nb::object encode_with_codebook(
-    nb::handle data_source,
-    nb::capsule codebook_handle,
-    Py_ssize_t min_saving_bytes,
-    Py_ssize_t max_output_bytes) {
-    if (min_saving_bytes < 0) {
-        throw nb::value_error(
-            "min_saving_bytes must be non-negative.");
-    }
-    ReadOnlyBuffer data(data_source);
-    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
-    std::vector<std::uint8_t> encoded = with_value_errors([&]() {
-        const std::size_t max_bytes = max_output_bytes < 0
-            ? std::numeric_limits<std::size_t>::max()
-            : static_cast<std::size_t>(max_output_bytes);
-        return encode_huff0_block(
-            data.data(),
-            data.size(),
-            *codebook,
-            max_bytes);
-    });
-    if (encoded.empty()
-        || encoded.size() + static_cast<std::size_t>(min_saving_bytes)
-            >= data.size()) {
-        return nb::none();
-    }
-    return nb::make_tuple(
-        bytes_from_vector(encoded),
-        static_cast<Py_ssize_t>(data.size()));
-}
-
-nb::object encode_ngram_with_codebook(
-    nb::handle data_source,
-    nb::capsule codebook_handle,
-    nb::handle vocab_source,
-    Py_ssize_t n,
-    Py_ssize_t min_saving_bytes,
-    Py_ssize_t max_output_bytes) {
-    if (n < 1 || n > 8) {
-        throw nb::value_error("n must be in [1, 8].");
-    }
-    if (min_saving_bytes < 0) {
-        throw nb::value_error(
-            "min_saving_bytes must be non-negative.");
-    }
-    ReadOnlyBuffer data(data_source);
-    ReadOnlyBuffer vocab_bytes(vocab_source);
-    Huff0Codebook* codebook = codebook_from_capsule(codebook_handle);
-    NGramBlockResult encoded = with_value_errors([&]() {
-        std::vector<std::uint64_t> vocab = vocab_from_bytes(
-            vocab_bytes.data(),
-            vocab_bytes.size(),
-            static_cast<int>(n));
-        NGramVocabLookup vocab_lookup = build_ngram_vocab_lookup(vocab);
-        const std::size_t max_bytes = max_output_bytes < 0
-            ? std::numeric_limits<std::size_t>::max()
-            : static_cast<std::size_t>(max_output_bytes);
-        return encode_ngram_block(
-            data.data(),
-            data.size(),
-            static_cast<int>(n),
-            vocab,
-            *codebook,
-            min_saving_bytes,
-            max_bytes,
-            vocab_lookup);
-    });
-    if (!encoded.encoded) {
-        return nb::none();
-    }
-    return ngram_result_to_tuple(encoded);
 }
 
 nb::bytes decompress_with_decodebook(
@@ -2508,18 +2274,7 @@ nb::list decompress_mixed_streams_many(
 NB_MODULE(_huff0_cpp, module) {
     module.doc() =
         "NeuralZip stream bridge backed by upstream Zstd Huff0.";
-
-    module.def(
-        "max_block_size",
-        &max_block_size,
-        "Return Huff0 maximum block size.");
-    module.def(
-        "build_codebook",
-        &build_codebook,
-        nb::arg("data"),
-        nb::arg("prior_count") = 0,
-        nb::arg("max_bits") = kTableLog,
-        "Build a Huff0 codebook.");
+    module.attr("MAX_BLOCK_SIZE") = kMaxBlockSize;
     module.def(
         "build_codebook_from_counts",
         &build_codebook_from_counts,
@@ -2549,14 +2304,6 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("bytes_per_thread") = 8,
         nb::arg("threads_per_block") = 512,
         "Encode little-endian BF16 bytes into the NeuralZip GPU layout.");
-    module.def(
-        "encode_with_codebook",
-        &encode_with_codebook,
-        "Encode a four-stream frame using a Huff0 codebook.");
-    module.def(
-        "encode_ngram_with_codebook",
-        &encode_ngram_with_codebook,
-        "Tokenize n-grams and encode a four-stream frame.");
     module.def(
         "decompress_with_decodebook",
         &decompress_with_decodebook,

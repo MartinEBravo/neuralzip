@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 import torch
 
+from .codec_primitives import _tensor_from_raw_bytes, _tensor_raw_bytes
+
 
 @dataclass(frozen=True, slots=True)
 class _StoredTensor:
@@ -17,42 +19,19 @@ class _StoredTensor:
     kind: str = "buffer"
     requires_grad: bool = False
 
-    def __post_init__(self):
-        shape = tuple(int(dimension) for dimension in self.shape)
-        if any(dimension < 0 for dimension in shape):
-            raise ValueError("Stored tensor dimensions cannot be negative.")
-        if not isinstance(self.data, bytes):
-            raise TypeError("Stored tensor data must be immutable bytes.")
-        if self.kind not in {"parameter", "buffer"}:
-            raise ValueError(f"Unsupported stored tensor kind {self.kind!r}.")
-        element_size = torch.empty((), dtype=self.dtype).element_size()
-        expected_bytes = math.prod(shape) * element_size
-        if len(self.data) != expected_bytes:
-            raise ValueError(
-                f"Stored tensor byte length mismatch: {len(self.data)} != "
-                f"{expected_bytes}."
-            )
-        object.__setattr__(self, "name", str(self.name))
-        object.__setattr__(self, "shape", shape)
-        object.__setattr__(self, "requires_grad", bool(self.requires_grad))
-
     @classmethod
     def from_tensor(cls, name, tensor, *, kind):
-        cpu = tensor.detach().cpu().contiguous()
         return cls(
             name=str(name),
-            shape=tuple(cpu.shape),
-            dtype=cpu.dtype,
-            data=cpu.reshape(-1).view(torch.uint8).numpy().tobytes(),
+            shape=tuple(tensor.shape),
+            dtype=tensor.dtype,
+            data=_tensor_raw_bytes(tensor),
             kind=str(kind),
             requires_grad=bool(tensor.requires_grad),
         )
 
     def tensor(self):
-        if not self.data:
-            return torch.empty(self.shape, dtype=self.dtype)
-        raw = torch.frombuffer(bytearray(self.data), dtype=torch.uint8)
-        return raw.view(self.dtype).reshape(self.shape)
+        return _tensor_from_raw_bytes(self.data, self.dtype, self.shape)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -75,92 +54,6 @@ class EncodedModel:
     config_class: type | None = field(default=None, repr=False)
     config: dict | None = field(default=None, repr=False)
     module_training: tuple[tuple[str, bool], ...] = ()
-
-    def __post_init__(self):
-        names = tuple(str(name) for name in self.names)
-        payloads = tuple(self.payloads)
-        codebooks = tuple(self.codebooks)
-        if not names or len(names) != len(payloads):
-            raise ValueError("names and payloads must have the same non-zero length.")
-        if len(set(names)) != len(names):
-            raise ValueError("Encoded tensor names must be unique.")
-        requires_grad = tuple(bool(value) for value in self.requires_grad)
-        if requires_grad and len(requires_grad) != len(names):
-            raise ValueError("requires_grad must match the encoded tensor count.")
-        if not requires_grad:
-            requires_grad = (False,) * len(names)
-        tensor_kinds = tuple(str(value) for value in self.tensor_kinds)
-        if not tensor_kinds:
-            default_kind = "mapping" if self.source_kind == "mapping" else "parameter"
-            tensor_kinds = (default_kind,) * len(names)
-        if len(tensor_kinds) != len(names) or any(
-            value not in {"mapping", "parameter", "buffer"} for value in tensor_kinds
-        ):
-            raise ValueError("tensor_kinds must describe every encoded tensor.")
-        auxiliary_state = tuple(self.auxiliary_state)
-        if any(not isinstance(value, _StoredTensor) for value in auxiliary_state):
-            raise TypeError("auxiliary_state contains an unsupported value.")
-        stored_names = names + tuple(value.name for value in auxiliary_state)
-        if len(set(stored_names)) != len(stored_names):
-            raise ValueError("Stored tensor names must be unique.")
-        state_aliases = tuple(
-            (str(alias), str(canonical)) for alias, canonical in self.state_aliases
-        )
-        alias_names = tuple(alias for alias, _ in state_aliases)
-        if len(set(alias_names)) != len(alias_names):
-            raise ValueError("State alias names must be unique.")
-        if set(alias_names).intersection(stored_names):
-            raise ValueError("A state alias cannot also store its own tensor.")
-        missing_canonicals = {
-            canonical for _, canonical in state_aliases if canonical not in stored_names
-        }
-        if missing_canonicals:
-            raise ValueError(
-                "State aliases reference missing canonical tensors: "
-                + ", ".join(sorted(missing_canonicals))
-            )
-        module_training = tuple(
-            (str(name), bool(training)) for name, training in self.module_training
-        )
-        if len({name for name, _ in module_training}) != len(module_training):
-            raise ValueError("Module training-state names must be unique.")
-        for name, payload in zip(names, payloads, strict=True):
-            if torch.is_tensor(payload) or isinstance(payload, torch.nn.Module):
-                raise TypeError("Encoded payloads cannot retain source weights.")
-            if str(getattr(payload, "name", name)) != name:
-                raise ValueError(f"Payload name does not match {name!r}.")
-        if self.source_kind not in {"mapping", "huggingface", "module"}:
-            raise ValueError(f"Unsupported source kind {self.source_kind!r}.")
-        if self.source_kind == "huggingface" and (
-            self.model_class is None or self.config_class is None or self.config is None
-        ):
-            raise ValueError("Hugging Face results require model and config metadata.")
-        if self.source_kind == "mapping" and self.model_class is not None:
-            raise ValueError("Mapping results cannot carry a model class.")
-        if self.source_kind == "mapping" and (
-            auxiliary_state or state_aliases or module_training
-        ):
-            raise ValueError("Mapping results cannot carry module state metadata.")
-
-        numeric = {
-            "raw_bytes": int(self.raw_bytes),
-            "compressed_bytes": int(self.compressed_bytes),
-            "encode_seconds": float(self.encode_seconds),
-            "mapping_seconds": float(self.mapping_seconds),
-        }
-        if any(value < 0 for value in numeric.values()):
-            raise ValueError("Encoded sizes and times cannot be negative.")
-        object.__setattr__(self, "names", names)
-        object.__setattr__(self, "payloads", payloads)
-        object.__setattr__(self, "codebooks", codebooks)
-        object.__setattr__(self, "requires_grad", requires_grad)
-        object.__setattr__(self, "tensor_kinds", tensor_kinds)
-        object.__setattr__(self, "auxiliary_state", auxiliary_state)
-        object.__setattr__(self, "state_aliases", state_aliases)
-        object.__setattr__(self, "module_training", module_training)
-        object.__setattr__(self, "config", copy.deepcopy(self.config))
-        for name, value in numeric.items():
-            object.__setattr__(self, name, value)
 
     @property
     def compression_ratio(self):
@@ -189,9 +82,9 @@ def _source_metadata(source, names):
     if not isinstance(source, torch.nn.Module):
         raise TypeError("Expected a tensor mapping or torch.nn.Module source.")
 
-    parameters = _all_named_parameters(source)
+    parameters = tuple(source.named_parameters(remove_duplicate=False))
     parameter_by_name = dict(parameters)
-    buffers = _all_named_buffers(source)
+    buffers = tuple(source.named_buffers(remove_duplicate=False))
     buffer_by_name = dict(buffers)
     tensor_kinds = []
     for name in names:
@@ -230,25 +123,9 @@ def _source_metadata(source, names):
         (str(name), bool(module.training)) for name, module in named_modules
     )
 
-    try:
-        from transformers import PreTrainedModel
-    except ImportError:  # pragma: no cover - transformers is a project dependency.
-        PreTrainedModel = ()
-    if isinstance(source, PreTrainedModel):
-        to_dict = getattr(source.config, "to_dict", None)
-        if not callable(to_dict):
-            raise TypeError("The Hugging Face config must implement to_dict().")
-        return {
-            "source_kind": "huggingface",
-            "model_class": type(source),
-            "config_class": type(source.config),
-            "config": copy.deepcopy(to_dict()),
-            "module_training": module_training,
-            "tensor_kinds": tuple(tensor_kinds),
-            "auxiliary_state": tuple(auxiliary),
-            "state_aliases": tuple(state_aliases),
-        }
-    return {
+    from transformers import PreTrainedModel
+
+    metadata = {
         "source_kind": "module",
         "model_class": type(source),
         "module_training": module_training,
@@ -256,6 +133,13 @@ def _source_metadata(source, names):
         "auxiliary_state": tuple(auxiliary),
         "state_aliases": tuple(state_aliases),
     }
+    if isinstance(source, PreTrainedModel):
+        metadata.update(
+            source_kind="huggingface",
+            config_class=type(source.config),
+            config=copy.deepcopy(source.config.to_dict()),
+        )
+    return metadata
 
 
 def make_encoded_model(
@@ -305,14 +189,6 @@ def _decode_payloads(encoded, codec):
     }
 
 
-def _all_named_parameters(module):
-    return tuple(module.named_parameters(remove_duplicate=False))
-
-
-def _all_named_buffers(module):
-    return tuple(module.named_buffers(remove_duplicate=False))
-
-
 def _set_state_tensor(module, name, tensor):
     parent_name, _, child_name = name.rpartition(".")
     parent = module.get_submodule(parent_name) if parent_name else module
@@ -326,11 +202,9 @@ def _install_state(
     requires_grad,
     state_aliases,
 ):
-    parameters = _all_named_parameters(module)
-    buffers = _all_named_buffers(module)
     tables = {
-        "parameter": dict(parameters),
-        "buffer": dict(buffers),
+        "parameter": dict(module.named_parameters(remove_duplicate=False)),
+        "buffer": dict(module.named_buffers(remove_duplicate=False)),
     }
     aliases_by_canonical = {}
     for alias, canonical in state_aliases:
@@ -417,13 +291,7 @@ def _reconstruct(
     if destination is None and model_factory is not None:
         destination = model_factory()
     elif destination is None and encoded.source_kind == "huggingface":
-        from_dict = getattr(encoded.config_class, "from_dict", None)
-        config_data = copy.deepcopy(encoded.config)
-        config = (
-            from_dict(config_data)
-            if callable(from_dict)
-            else encoded.config_class(**config_data)
-        )
+        config = encoded.config_class.from_dict(copy.deepcopy(encoded.config))
         destination = encoded.model_class(config)
     elif destination is None:
         raise TypeError(

@@ -129,18 +129,6 @@ class GPUCodebook:
     def lut_nbytes(self) -> int:
         return 2 * len(self.decode_lut)
 
-    def lookup(self, prefix: int) -> tuple[int, int]:
-        """Return ``(symbol, code_length)`` for one ``max_bits`` prefix."""
-
-        if isinstance(prefix, bool) or not isinstance(prefix, int):
-            raise TypeError("prefix must be an integer.")
-        if prefix < 0 or prefix >= len(self.decode_lut):
-            raise ValueError("prefix is outside the decode table.")
-        entry = self.decode_lut[prefix]
-        if entry == 0:
-            raise ValueError("prefix does not identify a codebook symbol.")
-        return entry & 0xFF, entry >> 8
-
 
 def unpack_restart_gaps(
     packed_gaps: bytes | bytearray | memoryview,
@@ -247,13 +235,6 @@ class GPUEncodedExponents:
     def block_count(self) -> int:
         block_bytes = self.bytes_per_thread * self.threads_per_block
         return (len(self.bitstream) + block_bytes - 1) // block_bytes
-
-    @property
-    def gaps(self) -> tuple[int, ...]:
-        return unpack_restart_gaps(
-            self.packed_gaps,
-            self.block_count * self.threads_per_block,
-        )
 
 
 @dataclass(frozen=True)

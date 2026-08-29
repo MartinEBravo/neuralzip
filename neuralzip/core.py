@@ -2,17 +2,33 @@
 
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from itertools import chain
 from os import PathLike
 
 import torch
 
+from ._setup import SetupReport, materialize_setup, setup_from_codec
 from ._setup import load_setup as load_setup_state
-from ._setup import materialize_setup, setup_from_codec
 from ._setup import save_setup as save_setup_state
-from .encoded_model import EncodedModel, decode_model, make_encoded_model
+from .encoded_model import decode_model, make_encoded_model
 from .neuralzip_codec import NeuralZipCodec
-from .operations import DecodeStats, EncodeStats, SetupReport
 from .payloads import serialized_size
+
+
+@dataclass(frozen=True)
+class DecodeStats:
+    decode_seconds: float
+
+
+@dataclass(frozen=True)
+class EncodeStats:
+    raw_bytes: int
+    compressed_bytes: int
+    compression_ratio: float
+    mapping_seconds: float
+    encode_seconds: float
+    total_seconds: float
 
 
 def _named_tensors(value, prefix=""):
@@ -30,52 +46,26 @@ def _named_tensors(value, prefix=""):
             yield from _named_tensors(child, name)
 
 
-def _model_source(model):
-    if isinstance(model, (Mapping, torch.nn.Module)):
-        return model
-    wrapped = getattr(model, "model", None)
-    if isinstance(wrapped, (Mapping, torch.nn.Module)):
-        return wrapped
-    return None
-
-
 def _model_tensors(model):
-    """Include persistent floating buffers for reconstructable model encodes."""
-
-    source = _model_source(model)
-    if not isinstance(source, torch.nn.Module):
-        if isinstance(source, Mapping):
-            items = _named_tensors(source)
-        else:
-            try:
-                items = iter(model)
-            except TypeError as error:
-                raise TypeError(
-                    "Expected a tensor mapping, torch.nn.Module, or adapter "
-                    "exposing one through .model."
-                ) from error
-        tensors = [
-            (str(name), tensor)
-            for name, tensor in items
-            if torch.is_tensor(tensor) and tensor.is_floating_point()
-        ]
+    if isinstance(model, Mapping):
+        items = _named_tensors(model)
+    elif isinstance(model, torch.nn.Module):
+        persistent = set(model.state_dict())
+        items = chain(
+            model.named_parameters(),
+            (
+                (name, tensor)
+                for name, tensor in model.named_buffers()
+                if name in persistent
+            ),
+        )
     else:
-        tensors = []
-        seen = set()
-        for name, tensor in source.named_parameters():
-            if tensor.is_floating_point() and id(tensor) not in seen:
-                tensors.append((str(name), tensor))
-                seen.add(id(tensor))
-
-        persistent = set(source.state_dict())
-        for name, tensor in source.named_buffers(remove_duplicate=False):
-            if (
-                name in persistent
-                and tensor.is_floating_point()
-                and id(tensor) not in seen
-            ):
-                tensors.append((str(name), tensor))
-                seen.add(id(tensor))
+        raise TypeError("Expected a tensor mapping or torch.nn.Module.")
+    tensors = [
+        (str(name), tensor)
+        for name, tensor in items
+        if torch.is_tensor(tensor) and tensor.is_floating_point()
+    ]
     if not tensors:
         raise ValueError("No floating tensors were found.")
     if len({name for name, _tensor in tensors}) != len(tensors):
@@ -83,59 +73,24 @@ def _model_tensors(model):
     return tensors
 
 
-def _encoded_source(model, named_tensors):
-    source = _model_source(model)
-    return source if source is not None else dict(named_tensors)
-
-
 def _load_pretrained_model(
     source,
     *,
     model_class=None,
     model_kwargs=None,
-    require_bfloat16=False,
 ):
     if model_class is None:
         from transformers import AutoModelForCausalLM
 
         model_class = AutoModelForCausalLM
-    loader = getattr(model_class, "from_pretrained", None)
-    if not callable(loader):
-        raise TypeError("model_class must provide from_pretrained().")
-
     options = dict(model_kwargs or {})
-    if "device_map" in options:
-        raise ValueError(
-            "Source weights must be loaded on CPU; pass deployment device_map "
-            "to NeuralZip.from_pretrained()."
-        )
     if "dtype" not in options and "torch_dtype" not in options:
         options["dtype"] = torch.bfloat16
-    requested_dtype = options.get("dtype", options.get("torch_dtype"))
-    if require_bfloat16 and requested_dtype not in {torch.bfloat16, "bfloat16"}:
-        raise ValueError(
-            "NeuralZip GPU inference requires BF16 source weights; omit dtype "
-            "or pass dtype=torch.bfloat16."
-        )
-    model = loader(source, **options)
-    if not isinstance(model, torch.nn.Module):
-        raise TypeError("model_class.from_pretrained() must return torch.nn.Module.")
-    if require_bfloat16 and not any(
-        parameter.dtype == torch.bfloat16 for parameter in model.parameters()
-    ):
-        raise ValueError("The loaded model has no BF16 parameters to compress.")
-    return model.eval()
+    return model_class.from_pretrained(source, **options).eval()
 
 
 class NeuralZip:
     """Single, stateless entry point for NeuralZip operations."""
-
-    def __new__(cls, *args, **kwargs):
-        del args, kwargs
-        raise TypeError(
-            "NeuralZip is not instantiated; call NeuralZip.fit(), encode(), "
-            "decode(), or from_pretrained() directly."
-        )
 
     @staticmethod
     def fit(
@@ -155,11 +110,6 @@ class NeuralZip:
                 model_kwargs=model_kwargs,
             )
         else:
-            if model_class is not None or model_kwargs is not None:
-                raise ValueError(
-                    "model_class and model_kwargs apply only when fitting a model "
-                    "identifier."
-                )
             model = model_or_id
 
         named_tensors = _model_tensors(model)
@@ -178,7 +128,7 @@ class NeuralZip:
 
     @staticmethod
     def save_setup(setup, path):
-        """Persist a trusted setup as one atomic file."""
+        """Persist a trusted setup in one file."""
 
         return save_setup_state(setup, path)
 
@@ -199,11 +149,8 @@ class NeuralZip:
     def encode(model, *, setup, threads=0, return_stats=False):
         """Encode a model or tensor mapping under an explicit setup."""
 
-        if not isinstance(return_stats, bool):
-            raise TypeError("return_stats must be a bool.")
         codec = materialize_setup(setup, threads=threads)
         named_tensors = _model_tensors(model)
-        source = _encoded_source(model, named_tensors)
 
         mapping_started = time.perf_counter()
         codec.prepare_direct_transfer_target(named_tensors)
@@ -213,7 +160,7 @@ class NeuralZip:
         encode_seconds = time.perf_counter() - encode_started
         codebooks = codec.export_codebooks()
         encoded = make_encoded_model(
-            source,
+            model,
             names=tuple(name for name, _ in named_tensors),
             payloads=payloads,
             codebooks=codebooks,
@@ -245,10 +192,6 @@ class NeuralZip:
     ):
         """Decode an encoded value without requiring its original setup."""
 
-        if not isinstance(encoded, EncodedModel):
-            raise TypeError("encoded must be an EncodedModel returned by encode().")
-        if not isinstance(return_stats, bool):
-            raise TypeError("return_stats must be a bool.")
         started = time.perf_counter()
         decoded = decode_model(
             encoded,
@@ -267,13 +210,7 @@ class NeuralZip:
         setup=None,
         model_class=None,
         device=None,
-        device_map=None,
-        max_memory=None,
-        execution_device=None,
         include_embeddings=False,
-        cpu_offload=False,
-        cpu_offload_blocks=None,
-        pin_memory=True,
         threads=0,
         setup_options=None,
         **model_kwargs,
@@ -281,29 +218,19 @@ class NeuralZip:
         """Load, compress, and return a native model ready for inference."""
 
         threads = int(threads)
-        if threads < 0:
-            raise ValueError("threads must be non-negative.")
-        if setup is not None and setup_options:
-            raise ValueError("setup_options cannot modify an explicit setup.")
         selected = None if setup is None else load_setup_state(setup)
         model = _load_pretrained_model(
             pretrained_model_name_or_path,
             model_class=model_class,
             model_kwargs=model_kwargs,
-            require_bfloat16=True,
         )
         if selected is None:
             options = dict(setup_options or {})
-            if tuple(options.get("ngram_values", ())):
-                raise ValueError(
-                    "GPU inference requires a sharing-only setup; ngram_values "
-                    "must be empty."
-                )
-            if options.get("enable_shared_codebooks", True) is not True:
-                raise ValueError("GPU inference requires enable_shared_codebooks=True.")
-            options["ngram_values"] = ()
-            options["enable_shared_codebooks"] = True
-            options["threads"] = int(threads)
+            options.update(
+                ngram_values=(),
+                enable_shared_codebooks=True,
+                threads=threads,
+            )
             selected = cls.fit(model, **options)
 
         from .gpu.pretrained import attach_gpu_model
@@ -313,29 +240,38 @@ class NeuralZip:
             selected,
             threads=threads,
             device=device,
-            device_map=device_map,
-            max_memory=max_memory,
-            execution_device=execution_device,
             include_embeddings=include_embeddings,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            pin_memory=pin_memory,
         )
         model.neuralzip_setup = selected
         return model
 
     @staticmethod
-    def save_pretrained(model, directory, **kwargs):
+    def save_pretrained(model, directory, *, tokenizer=None):
         """Persist an attached NeuralZip model without restoring BF16 weights."""
 
         from .gpu.pretrained import save_gpu_pretrained
 
-        return save_gpu_pretrained(model, directory=directory, **kwargs)
+        return save_gpu_pretrained(model, directory=directory, tokenizer=tokenizer)
 
     @staticmethod
-    def load_pretrained(pretrained_model_name_or_path, **kwargs):
+    def load_pretrained(
+        pretrained_model_name_or_path,
+        *,
+        device=None,
+        revision="main",
+        token=None,
+        cache_dir=None,
+        local_files_only=False,
+    ):
         """Load a previously persisted NeuralZip inference checkpoint."""
 
         from .gpu.pretrained import load_gpu_pretrained
 
-        return load_gpu_pretrained(pretrained_model_name_or_path, **kwargs)
+        return load_gpu_pretrained(
+            pretrained_model_name_or_path,
+            device=device,
+            revision=revision,
+            token=token,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )

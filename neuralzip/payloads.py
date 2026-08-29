@@ -3,12 +3,6 @@
 import struct
 from dataclasses import dataclass
 
-_SUPPORTED_CHUNK_MODES = {
-    "raw",
-    "shared_huff0",
-    "packed_huff0",
-}
-
 
 def _struct_size(fmt):
     return struct.calcsize("<" + fmt)
@@ -19,16 +13,11 @@ SHARED_CHUNK_METADATA_BYTES = RAW_CHUNK_METADATA_BYTES + _struct_size("q")
 PACKED_CHUNK_METADATA_BYTES = (
     RAW_CHUNK_METADATA_BYTES + _struct_size("q") + 2 * _struct_size("Q")
 )
-
-
-def _chunk_metadata_bytes(mode):
-    if mode not in _SUPPORTED_CHUNK_MODES:
-        raise ValueError(f"Unsupported archive chunk mode {mode!r}.")
-    if mode == "shared_huff0":
-        return SHARED_CHUNK_METADATA_BYTES
-    if mode == "packed_huff0":
-        return PACKED_CHUNK_METADATA_BYTES
-    return RAW_CHUNK_METADATA_BYTES
+CHUNK_METADATA_BYTES = {
+    "raw": RAW_CHUNK_METADATA_BYTES,
+    "shared_huff0": SHARED_CHUNK_METADATA_BYTES,
+    "packed_huff0": PACKED_CHUNK_METADATA_BYTES,
+}
 
 
 def _bytes_size(value):
@@ -69,7 +58,7 @@ class StreamChunk:
 
     @property
     def metadata_bytes(self):
-        return _chunk_metadata_bytes(self.mode)
+        return CHUNK_METADATA_BYTES[self.mode]
 
     @property
     def compressed_bytes(self):

@@ -1,8 +1,6 @@
 """Weight-free encoded model values returned by ``NeuralZip.encode``."""
 
-import copy
-import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import torch
@@ -16,17 +14,15 @@ class _StoredTensor:
     shape: tuple[int, ...]
     dtype: torch.dtype
     data: bytes = field(repr=False)
-    kind: str = "buffer"
     requires_grad: bool = False
 
     @classmethod
-    def from_tensor(cls, name, tensor, *, kind):
+    def from_tensor(cls, name, tensor):
         return cls(
             name=str(name),
             shape=tuple(tensor.shape),
             dtype=tensor.dtype,
             data=_tensor_raw_bytes(tensor),
-            kind=str(kind),
             requires_grad=bool(tensor.requires_grad),
         )
 
@@ -47,7 +43,6 @@ class EncodedModel:
     codebooks: tuple = field(default=(), repr=False)
     mapping_seconds: float = 0.0
     requires_grad: tuple[bool, ...] = ()
-    tensor_kinds: tuple[str, ...] = ()
     auxiliary_state: tuple[_StoredTensor, ...] = field(default=(), repr=False)
     state_aliases: tuple[tuple[str, str], ...] = ()
     model_class: type[torch.nn.Module] | None = field(default=None, repr=False)
@@ -57,9 +52,7 @@ class EncodedModel:
 
     @property
     def compression_ratio(self):
-        if self.raw_bytes:
-            return self.compressed_bytes / self.raw_bytes
-        return 0.0 if not self.compressed_bytes else math.inf
+        return self.compressed_bytes / self.raw_bytes
 
     @property
     def total_seconds(self):
@@ -77,50 +70,29 @@ def _source_metadata(source, names):
     if isinstance(source, Mapping):
         return {
             "source_kind": "mapping",
-            "tensor_kinds": ("mapping",) * len(names),
         }
-    if not isinstance(source, torch.nn.Module):
-        raise TypeError("Expected a tensor mapping or torch.nn.Module source.")
 
     parameters = tuple(source.named_parameters(remove_duplicate=False))
-    parameter_by_name = dict(parameters)
     buffers = tuple(source.named_buffers(remove_duplicate=False))
-    buffer_by_name = dict(buffers)
-    tensor_kinds = []
-    for name in names:
-        if name in parameter_by_name:
-            tensor_kinds.append("parameter")
-        elif name in buffer_by_name:
-            tensor_kinds.append("buffer")
-        else:
-            raise ValueError(f"Encoded model state has no tensor named {name!r}.")
-
     auxiliary = []
     state_aliases = []
     encoded_names = set(names)
-    for kind, items in (("parameter", parameters), ("buffer", buffers)):
+    for items in (parameters, buffers):
         groups = {}
         for name, tensor in items:
             groups.setdefault(id(tensor), []).append((name, tensor))
         for group in groups.values():
             encoded_group = [name for name, _ in group if name in encoded_names]
-            if len(encoded_group) > 1:
-                raise ValueError(
-                    "Aliased source tensors must be encoded only once: "
-                    + ", ".join(encoded_group)
-                )
             canonical = encoded_group[0] if encoded_group else group[0][0]
             if not encoded_group:
-                auxiliary.append(
-                    _StoredTensor.from_tensor(canonical, group[0][1], kind=kind)
-                )
+                auxiliary.append(_StoredTensor.from_tensor(canonical, group[0][1]))
             state_aliases.extend(
                 (name, canonical) for name, _ in group if name != canonical
             )
 
-    named_modules = source.named_modules(remove_duplicate=False)
     module_training = tuple(
-        (str(name), bool(module.training)) for name, module in named_modules
+        (str(name), bool(module.training))
+        for name, module in source.named_modules(remove_duplicate=False)
     )
 
     from transformers import PreTrainedModel
@@ -129,7 +101,6 @@ def _source_metadata(source, names):
         "source_kind": "module",
         "model_class": type(source),
         "module_training": module_training,
-        "tensor_kinds": tuple(tensor_kinds),
         "auxiliary_state": tuple(auxiliary),
         "state_aliases": tuple(state_aliases),
     }
@@ -137,7 +108,7 @@ def _source_metadata(source, names):
         metadata.update(
             source_kind="huggingface",
             config_class=type(source.config),
-            config=copy.deepcopy(source.config.to_dict()),
+            config=source.config.to_dict(),
         )
     return metadata
 
@@ -168,8 +139,8 @@ def make_encoded_model(
         names=names,
         payloads=tuple(payloads),
         codebooks=tuple(codebooks),
-        raw_bytes=int(raw_bytes) + auxiliary_bytes,
-        compressed_bytes=int(compressed_bytes) + auxiliary_bytes,
+        raw_bytes=raw_bytes + auxiliary_bytes,
+        compressed_bytes=compressed_bytes + auxiliary_bytes,
         encode_seconds=encode_seconds,
         mapping_seconds=mapping_seconds,
         requires_grad=requires_grad,
@@ -198,77 +169,40 @@ def _set_state_tensor(module, name, tensor):
 def _install_state(
     module,
     tensors,
-    tensor_kinds,
     requires_grad,
     state_aliases,
 ):
-    tables = {
-        "parameter": dict(module.named_parameters(remove_duplicate=False)),
-        "buffer": dict(module.named_buffers(remove_duplicate=False)),
-    }
-    aliases_by_canonical = {}
+    values = dict(tensors)
     for alias, canonical in state_aliases:
-        aliases_by_canonical.setdefault(canonical, []).append(alias)
+        values[alias] = values[canonical]
 
-    expected_names = {
-        "parameter": {
-            name for name, kind in tensor_kinds.items() if kind == "parameter"
-        },
-        "buffer": {name for name, kind in tensor_kinds.items() if kind == "buffer"},
+    destination_state = module.state_dict(keep_vars=True)
+    persistent = {
+        name: tensor.to(destination_state[name].device)
+        for name, tensor in values.items()
+        if name in destination_state
     }
+    module.load_state_dict(persistent, strict=True, assign=True)
+
+    buffers = dict(module.named_buffers(remove_duplicate=False))
+    for name, tensor in values.items():
+        if name not in persistent:
+            old = buffers[name]
+            _set_state_tensor(module, name, tensor.to(old.device).contiguous())
+
+    parameters = dict(module.named_parameters(remove_duplicate=False))
+    buffers = dict(module.named_buffers(remove_duplicate=False))
     for alias, canonical in state_aliases:
-        expected_names[tensor_kinds[canonical]].add(alias)
-    for kind, table in tables.items():
-        observed = set(table)
-        expected = expected_names[kind]
-        if observed != expected:
-            missing = sorted(expected - observed)
-            unexpected = sorted(observed - expected)
-            raise ValueError(
-                f"Destination {kind} schema differs from the encoded model: "
-                f"missing={missing!r}, unexpected={unexpected!r}."
-            )
+        tensor = parameters.get(canonical)
+        if tensor is None:
+            tensor = buffers[canonical]
+        _set_state_tensor(module, alias, tensor)
 
-    planned = []
-    for name, tensor in tensors.items():
-        kind = tensor_kinds[name]
-        members = (name, *aliases_by_canonical.get(name, ()))
-        old_tensors = tuple(tables[kind][member] for member in members)
-        for member, old in zip(members, old_tensors, strict=True):
-            if tuple(tensor.shape) != tuple(old.shape):
-                raise ValueError(f"Shape mismatch for {kind} {member!r}.")
-        devices = {old.device for old in old_tensors}
-        if len(devices) != 1:
-            raise ValueError(
-                f"Aliased destination {kind} tensors for {name!r} span devices."
-            )
-        restored = tensor.detach().to(device=old_tensors[0].device).contiguous()
-        if kind == "parameter":
-            restored = torch.nn.Parameter(
-                restored,
-                requires_grad=bool(requires_grad[name]),
-            )
-        else:
-            restored.requires_grad_(bool(requires_grad[name]))
-        planned.append((members, restored))
-
-    # Commit only after the complete schema, every shape, and every alias group
-    # has been validated. Assigning the same replacement to a group's members
-    # recreates source tying even if the destination constructor did not.
-    for members, tensor in planned:
-        for member in members:
-            _set_state_tensor(module, member, tensor)
-
-
-def _module_training_targets(module, states):
-    targets = []
-    for name, training in states:
-        try:
-            target = module if not name else module.get_submodule(name)
-        except AttributeError as error:
-            raise ValueError(f"Destination has no module named {name!r}.") from error
-        targets.append((target, training))
-    return targets
+    for name, requires in requires_grad.items():
+        tensor = parameters.get(name)
+        if tensor is None:
+            tensor = buffers[name]
+        tensor.requires_grad_(requires)
 
 
 def _reconstruct(
@@ -276,54 +210,38 @@ def _reconstruct(
     tensors,
     *,
     destination=None,
-    model_factory: Callable[[], torch.nn.Module] | None = None,
+    model_factory=None,
 ):
     if encoded.source_kind == "mapping":
-        if destination is not None or model_factory is not None:
-            raise ValueError("Mapping reconstruction does not accept a destination.")
         return {
             name: tensor.requires_grad_(encoded.requires_grad[index])
             for index, (name, tensor) in enumerate(tensors.items())
         }
-    if destination is not None and model_factory is not None:
-        raise ValueError("Pass destination or model_factory, not both.")
-
     if destination is None and model_factory is not None:
         destination = model_factory()
     elif destination is None and encoded.source_kind == "huggingface":
-        config = encoded.config_class.from_dict(copy.deepcopy(encoded.config))
-        destination = encoded.model_class(config)
+        destination = encoded.model_class(
+            encoded.config_class.from_dict(encoded.config)
+        )
     elif destination is None:
         raise TypeError(
             "Generic nn.Module reconstruction requires destination= or model_factory=."
         )
-    if not isinstance(destination, torch.nn.Module):
-        raise TypeError("The reconstruction destination must be a torch.nn.Module.")
-    if encoded.model_class is not None and type(destination) is not encoded.model_class:
-        raise TypeError(
-            "Destination model class differs from the encoded source: "
-            f"expected {encoded.model_class.__name__}, got "
-            f"{type(destination).__name__}."
-        )
-
-    training_targets = _module_training_targets(destination, encoded.module_training)
-
     state = dict(tensors)
-    kinds = dict(zip(encoded.names, encoded.tensor_kinds, strict=True))
     gradients = dict(zip(encoded.names, encoded.requires_grad, strict=True))
     for stored in encoded.auxiliary_state:
         state[stored.name] = stored.tensor()
-        kinds[stored.name] = stored.kind
         gradients[stored.name] = stored.requires_grad
     _install_state(
         destination,
         state,
-        kinds,
         gradients,
         encoded.state_aliases,
     )
-    for module, training in training_targets:
-        module.training = training
+    for name, training in encoded.module_training:
+        (
+            destination if not name else destination.get_submodule(name)
+        ).training = training
     return destination
 
 

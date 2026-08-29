@@ -1,22 +1,9 @@
-"""Post-setup BF16 inference from NeuralZip-compressed model weights.
+"""Single-GPU inference from NeuralZip-compressed BF16 weights."""
 
-Automatic discovery finds block-local ``nn.Linear`` and optional ``nn.Embedding``
-weights whose exponent stream uses a prepared ``shared_huff0`` codebook. A
-block pre-hook decodes them into one reusable workspace per execution device
-immediately before the block runs. Persistent checkpoints may distribute
-blocks across GPUs or keep compressed payloads in host memory.
-
-The runtime is inference-only and sequential within each device. Packed
-exponents remain an archive feature until a corresponding GPU decoder exists.
-"""
-
-from __future__ import annotations
-
-import threading
 from collections import defaultdict
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
+from itertools import pairwise
 
 import torch
 from torch import nn
@@ -24,74 +11,25 @@ from torch import nn
 from .. import huff0
 from .._setup import materialize_setup
 from . import decoder as gpu_decoder
-from .export import (
-    GPUCodebook,
-    GPUEncodedBF16,
-    encode_bfloat16_native,
-)
+from .export import GPUCodebook, GPUEncodedBF16, encode_bfloat16_native
 
-_RUNTIME_ATTRIBUTE = "neuralzip_runtime"
-
-
-def _require_non_negative_integer(name: str, value: int) -> None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer.")
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative.")
-
-
-def _has_external_dispatch(model: nn.Module) -> bool:
-    if hasattr(model, "hf_device_map"):
-        return True
-    return any(
-        getattr(module, "_hf_hook", None) is not None for module in model.modules()
-    )
+RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
 
 @dataclass(frozen=True)
 class LinearWeightBinding:
-    """One compressed two-dimensional weight view inside a block workspace."""
-
     block_name: str
     module_name: str
     tensor_name: str
     shape: tuple[int, ...]
     numel: int
     workspace_offset: int
-    group_offset: int
     requires_grad: bool
     module_kind: str = "linear"
-
-    def __post_init__(self) -> None:
-        if not self.block_name or not self.module_name or not self.tensor_name:
-            raise ValueError("Binding names must be non-empty.")
-        shape = tuple(self.shape)
-        if len(shape) != 2 or any(
-            isinstance(dimension, bool)
-            or not isinstance(dimension, int)
-            or dimension <= 0
-            for dimension in shape
-        ):
-            raise ValueError("Linear weight shape must contain two positive integers.")
-        for name, value in (
-            ("numel", self.numel),
-            ("workspace_offset", self.workspace_offset),
-            ("group_offset", self.group_offset),
-        ):
-            _require_non_negative_integer(name, value)
-        if self.numel != shape[0] * shape[1]:
-            raise ValueError("Binding numel does not match its shape.")
-        if not isinstance(self.requires_grad, bool):
-            raise TypeError("requires_grad must be a boolean.")
-        if self.module_kind not in {"linear", "embedding"}:
-            raise ValueError("module_kind must be 'linear' or 'embedding'.")
-        object.__setattr__(self, "shape", shape)
 
 
 @dataclass(frozen=True)
 class BF16WeightGroup:
-    """Weights in one transformer block that share one exponent codebook."""
-
     block_name: str
     codebook_id: int
     codebook: GPUCodebook
@@ -99,149 +37,33 @@ class BF16WeightGroup:
     bindings: tuple[LinearWeightBinding, ...]
     workspace_offset: int
 
-    def __post_init__(self) -> None:
-        if not self.block_name:
-            raise ValueError("block_name must be non-empty.")
-        _require_non_negative_integer("codebook_id", self.codebook_id)
-        _require_non_negative_integer("workspace_offset", self.workspace_offset)
-        if not isinstance(self.codebook, GPUCodebook):
-            raise TypeError("codebook must be a GPUCodebook.")
-        if not isinstance(self.encoded, GPUEncodedBF16):
-            raise TypeError("encoded must be GPUEncodedBF16.")
-        bindings = tuple(self.bindings)
-        if not bindings:
-            raise ValueError("A compressed weight group must contain bindings.")
-
-        next_group_offset = 0
-        next_workspace_offset = self.workspace_offset
-        for binding in bindings:
-            if not isinstance(binding, LinearWeightBinding):
-                raise TypeError("bindings must contain LinearWeightBinding values.")
-            if binding.block_name != self.block_name:
-                raise ValueError("Every binding must belong to the group's block.")
-            if binding.group_offset != next_group_offset:
-                raise ValueError("Group binding offsets must be contiguous.")
-            if binding.workspace_offset != next_workspace_offset:
-                raise ValueError("Workspace binding offsets must be contiguous.")
-            next_group_offset += binding.numel
-            next_workspace_offset += binding.numel
-        if next_group_offset != self.encoded.numel:
-            raise ValueError("Encoded symbol count does not match group bindings.")
-        object.__setattr__(self, "bindings", bindings)
-
     @property
-    def numel(self) -> int:
+    def numel(self):
         return self.encoded.numel
-
-    @property
-    def payload_bytes(self) -> int:
-        return len(self.encoded.exponents.bitstream) + len(self.encoded.sign_mantissa)
-
-    @property
-    def metadata_bytes(self) -> int:
-        return len(self.encoded.exponents.packed_gaps) + (
-            4 * len(self.encoded.exponents.output_positions)
-        )
 
 
 @dataclass(frozen=True)
 class NeuralZipModelExport:
-    """Immutable compressed buffers and exact candidate-weight statistics."""
-
     groups: tuple[BF16WeightGroup, ...]
-    block_order: tuple[str, ...]
-    resident_weight_names: tuple[str, ...] = ()
-    resident_raw_bytes: int = 0
-
-    def __post_init__(self) -> None:
-        groups = tuple(self.groups)
-        block_order = tuple(self.block_order)
-        resident_names = tuple(self.resident_weight_names)
-        _require_non_negative_integer("resident_raw_bytes", self.resident_raw_bytes)
-        if len(block_order) != len(set(block_order)):
-            raise ValueError("block_order must not contain duplicates.")
-        if any(not name for name in block_order):
-            raise ValueError("block_order entries must be non-empty.")
-        if len(resident_names) != len(set(resident_names)):
-            raise ValueError("resident_weight_names must not contain duplicates.")
-
-        known_blocks = set(block_order)
-        tensor_names = set()
-        codebooks = {}
-        expected_offsets = defaultdict(int)
-        last_block_index = -1
-        for group in groups:
-            if not isinstance(group, BF16WeightGroup):
-                raise TypeError("groups must contain BF16WeightGroup values.")
-            if group.block_name not in known_blocks:
-                raise ValueError("A group references a block outside block_order.")
-            block_index = block_order.index(group.block_name)
-            if block_index < last_block_index:
-                raise ValueError("Groups must follow block_order.")
-            last_block_index = block_index
-            if group.workspace_offset != expected_offsets[group.block_name]:
-                raise ValueError("Groups in a block must occupy contiguous workspace.")
-            expected_offsets[group.block_name] += group.numel
-            previous = codebooks.setdefault(group.codebook_id, group.codebook)
-            if previous != group.codebook:
-                raise ValueError("One codebook_id maps to inconsistent GPU codebooks.")
-            for binding in group.bindings:
-                if binding.tensor_name in tensor_names:
-                    raise ValueError("A tensor cannot appear in multiple groups.")
-                tensor_names.add(binding.tensor_name)
-        if tensor_names.intersection(resident_names):
-            raise ValueError("A compressed tensor cannot also be marked resident.")
-
-        object.__setattr__(self, "groups", groups)
-        object.__setattr__(self, "block_order", block_order)
-        object.__setattr__(self, "resident_weight_names", resident_names)
 
     @property
-    def bindings(self) -> tuple[LinearWeightBinding, ...]:
+    def block_order(self):
+        return tuple(dict.fromkeys(group.block_name for group in self.groups))
+
+    @property
+    def bindings(self):
         return tuple(binding for group in self.groups for binding in group.bindings)
 
     @property
-    def payload_bytes(self) -> int:
-        return sum(group.payload_bytes for group in self.groups)
-
-    @property
-    def metadata_bytes(self) -> int:
-        return sum(group.metadata_bytes for group in self.groups)
-
-    @property
-    def codebook_bytes(self) -> int:
-        unique = {}
-        for group in self.groups:
-            unique.setdefault(group.codebook_id, group.codebook)
-        return sum(codebook.lut_nbytes for codebook in unique.values())
-
-    @property
-    def compressed_bytes(self) -> int:
-        """Compressed streams and LUTs, excluding launch-time allocations."""
-
-        return self.payload_bytes + self.metadata_bytes + self.codebook_bytes
-
-    @property
-    def launch_descriptor_bytes(self) -> int:
-        """Exact batched-launch pointer and integer descriptor bytes."""
-
-        blocks = sum(group.encoded.exponents.block_count for group in self.groups)
-        return 56 * len(self.groups) + 8 * blocks
-
-    @property
-    def workspace_numel(self) -> int:
+    def workspace_numel(self):
         return max(
             (group.workspace_offset + group.numel for group in self.groups),
             default=0,
         )
 
-    @property
-    def workspace_bytes(self) -> int:
-        return self.workspace_numel * 2
-
 
 @dataclass(frozen=True)
-class _LinearCandidate:
+class _Candidate:
     block_name: str
     module_name: str
     tensor_name: str
@@ -260,242 +82,149 @@ class _UploadedGroup:
     output: torch.Tensor
 
 
-def _join_name(parent: str, child: str) -> str:
-    if not parent:
-        return child
-    return f"{parent}.{child}" if child else parent
+def _join(parent, child):
+    return f"{parent}.{child}" if parent and child else parent or child
 
 
-def _gpu_candidates(
-    model: nn.Module,
-    *,
-    include_embeddings: bool,
-) -> tuple[tuple[str, ...], tuple[_LinearCandidate, ...]]:
-    if not isinstance(include_embeddings, bool):
-        raise TypeError("include_embeddings must be a boolean.")
+def _gpu_candidates(model, include_embeddings):
+    """Find direct ModuleList children and their linear-like weights."""
 
-    block_candidates = []
-    for parent_name, parent in model.named_modules(remove_duplicate=False):
-        if not isinstance(parent, nn.ModuleList):
-            continue
-        for child_name, child in parent._modules.items():
-            if child is not None:
-                block_candidates.append((_join_name(parent_name, child_name), child))
-
-    candidate_names = {name for name, _module in block_candidates}
+    possible_blocks = [
+        (_join(parent_name, child_name), child)
+        for parent_name, parent in model.named_modules(remove_duplicate=False)
+        if isinstance(parent, nn.ModuleList)
+        for child_name, child in parent._modules.items()
+        if child is not None
+    ]
+    names = {name for name, _ in possible_blocks}
     blocks = []
-    for name, module in block_candidates:
+    for name, module in possible_blocks:
         ancestor = name
         while "." in ancestor:
             ancestor = ancestor.rsplit(".", 1)[0]
-            if ancestor in candidate_names:
+            if ancestor in names:
                 break
         else:
             blocks.append((name, module))
     if not blocks:
-        raise ValueError("No direct ModuleList block children were found in the model.")
+        raise ValueError("The model has no ModuleList transformer blocks.")
 
     candidates = []
     for block_name, block in blocks:
         for relative_name, module in block.named_modules(remove_duplicate=False):
             if isinstance(module, nn.Linear):
-                module_kind = "linear"
+                kind = "linear"
             elif include_embeddings and isinstance(module, nn.Embedding):
-                module_kind = "embedding"
+                kind = "embedding"
             else:
                 continue
+            module_name = _join(block_name, relative_name)
             parameter = module._parameters.get("weight")
-            if not isinstance(parameter, nn.Parameter):
-                raise TypeError(
-                    f"Module {_join_name(block_name, relative_name)!r} has no weight."
+            if isinstance(parameter, nn.Parameter):
+                candidates.append(
+                    _Candidate(
+                        block_name,
+                        module_name,
+                        f"{module_name}.weight",
+                        parameter,
+                        kind,
+                    )
                 )
-            module_name = _join_name(block_name, relative_name)
-            candidates.append(
-                _LinearCandidate(
-                    block_name=block_name,
-                    module_name=module_name,
-                    tensor_name=f"{module_name}.weight",
-                    parameter=parameter,
-                    module_kind=module_kind,
-                )
-            )
-    return tuple(name for name, _module in blocks), tuple(candidates)
+    return tuple(name for name, _ in blocks), tuple(candidates)
 
 
-def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
-    cpu = tensor.detach().to(device="cpu").contiguous()
-    return cpu.reshape(-1).view(torch.uint8).numpy().tobytes()
+def _raw_bytes(tensor):
+    tensor = tensor.detach().to(device="cpu").contiguous()
+    return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
 
 
-def _parameter_occurrences(model: nn.Module) -> dict[int, int]:
+def _assemble_export(model, block_order, candidates, codec):
     occurrences = defaultdict(int)
     for _name, parameter in model.named_parameters(remove_duplicate=False):
         occurrences[id(parameter)] += 1
-    return dict(occurrences)
 
-
-def _assemble_gpu_export(
-    model: nn.Module,
-    block_order: tuple[str, ...],
-    candidates: tuple[_LinearCandidate, ...],
-    codec,
-) -> NeuralZipModelExport:
-    """Build one GPU export from the materialized, target-mapped codec."""
-
-    occurrences = _parameter_occurrences(model)
-    payload_by_id = {
+    payloads = {
         int(payload.codebook_id): payload for payload in codec.export_codebooks()
     }
     codebooks = {}
-    grouped_candidates = defaultdict(list)
-    resident_names = []
-    resident_parameter_bytes = {}
-
-    def keep_resident(candidate: _LinearCandidate) -> None:
-        resident_names.append(candidate.tensor_name)
-        resident_parameter_bytes.setdefault(
-            id(candidate.parameter),
-            candidate.parameter.numel() * candidate.parameter.element_size(),
-        )
-
+    grouped = defaultdict(list)
     for candidate in candidates:
         parameter = candidate.parameter
         if (
             occurrences[id(parameter)] != 1
             or parameter.dtype != torch.bfloat16
-            or parameter.numel() == 0
+            or not parameter.numel()
             or not parameter.is_contiguous()
         ):
-            keep_resident(candidate)
             continue
-
-        mode = codec._mode_for_tensor_stream(
-            candidate.tensor_name,
-            parameter,
-            1,
-        )
-        kind = str(mode.get("kind"))
+        mode = codec._mode_for_tensor_stream(candidate.tensor_name, parameter, 1)
+        kind = mode.get("kind")
         if kind == "raw":
-            keep_resident(candidate)
             continue
-        if kind == "packed_huff0":
-            raise ValueError(
-                "GPU inference does not yet decode packed exponents; "
-                f"{candidate.tensor_name} uses packed_huff0. Fit or transfer "
-                "a sharing-only setup."
-            )
         if kind != "shared_huff0":
             raise ValueError(
-                "GPU inference requires raw or shared_huff0 exponent modes; "
+                "GPU inference needs a sharing-only setup; "
                 f"{candidate.tensor_name} uses {kind!r}."
             )
-
-        codebook_id = mode.get("codebook_id")
-        if isinstance(codebook_id, bool) or not isinstance(codebook_id, int):
-            raise TypeError(
-                f"Shared exponent mode for {candidate.tensor_name} has no codebook_id."
-            )
-
-        payload = payload_by_id.get(codebook_id)
-        if payload is None:
-            raise ValueError(f"Missing codebook payload {codebook_id}.")
-        if (
-            payload.mode != "shared_huff0"
-            or payload.dtype != "bfloat16"
-            or int(payload.stream_id) != 1
-        ):
-            raise ValueError(
-                f"Codebook {codebook_id} is not a shared BF16 exponent codebook."
-            )
+        codebook_id = int(mode["codebook_id"])
+        payload = payloads[codebook_id]
         if codebook_id not in codebooks:
             table = huff0.export_code_table(payload.codebook)
-            codebook = GPUCodebook.from_codes(
+            codebooks[codebook_id] = GPUCodebook.from_codes(
                 table.code_lengths,
                 table.code_values,
             )
-            if codebook.max_bits != table.max_bits:
-                raise RuntimeError("Exported Huff0 maximum code length changed.")
-            codebooks[codebook_id] = codebook
-        grouped_candidates[(candidate.block_name, codebook_id)].append(candidate)
+        grouped[(candidate.block_name, codebook_id)].append(candidate)
 
     block_index = {name: index for index, name in enumerate(block_order)}
-    groups = []
     workspace_offsets = defaultdict(int)
+    groups = []
     for (block_name, codebook_id), members in sorted(
-        grouped_candidates.items(),
+        grouped.items(),
         key=lambda item: (block_index[item[0][0]], item[0][1]),
     ):
-        members.sort(key=lambda candidate: candidate.module_name)
+        members.sort(key=lambda member: member.module_name)
         workspace_offset = workspace_offsets[block_name]
         group_offset = 0
         bindings = []
         raw_parts = []
-        for candidate in members:
-            parameter = candidate.parameter
+        for member in members:
+            parameter = member.parameter
             bindings.append(
                 LinearWeightBinding(
-                    block_name=block_name,
-                    module_name=candidate.module_name,
-                    tensor_name=candidate.tensor_name,
-                    shape=tuple(parameter.shape),
-                    numel=parameter.numel(),
-                    workspace_offset=workspace_offset + group_offset,
-                    group_offset=group_offset,
-                    requires_grad=bool(parameter.requires_grad),
-                    module_kind=candidate.module_kind,
+                    block_name,
+                    member.module_name,
+                    member.tensor_name,
+                    tuple(parameter.shape),
+                    parameter.numel(),
+                    workspace_offset + group_offset,
+                    bool(parameter.requires_grad),
+                    member.module_kind,
                 )
             )
-            raw = _tensor_raw_bytes(parameter)
-            expected_bytes = parameter.numel() * parameter.element_size()
-            if len(raw) != expected_bytes:
-                raise RuntimeError(
-                    f"Encoded weight {candidate.tensor_name} has {len(raw)} raw "
-                    f"bytes; expected {expected_bytes}."
-                )
-            raw_parts.append(raw)
+            raw_parts.append(_raw_bytes(parameter))
             group_offset += parameter.numel()
 
-        payload = payload_by_id[codebook_id]
-        encoded = encode_bfloat16_native(
-            b"".join(raw_parts),
-            payload.codebook,
-        )
-        if encoded.exponents.symbol_count != group_offset:
-            raise RuntimeError("GPU encoder returned the wrong BF16 element count.")
         groups.append(
             BF16WeightGroup(
-                block_name=block_name,
-                codebook_id=codebook_id,
-                codebook=codebooks[codebook_id],
-                encoded=encoded,
-                bindings=tuple(bindings),
-                workspace_offset=workspace_offset,
+                block_name,
+                codebook_id,
+                codebooks[codebook_id],
+                encode_bfloat16_native(
+                    b"".join(raw_parts),
+                    payloads[codebook_id].codebook,
+                ),
+                tuple(bindings),
+                workspace_offset,
             )
         )
         workspace_offsets[block_name] += group_offset
 
-    compressed_blocks = {group.block_name for group in groups}
-    return NeuralZipModelExport(
-        groups=tuple(groups),
-        block_order=tuple(name for name in block_order if name in compressed_blocks),
-        resident_weight_names=tuple(sorted(resident_names)),
-        resident_raw_bytes=sum(resident_parameter_bytes.values()),
-    )
+    return NeuralZipModelExport(tuple(groups))
 
 
-def export_model_for_gpu(
-    model: nn.Module,
-    setup,
-    *,
-    threads: int = 0,
-    include_embeddings: bool = False,
-) -> NeuralZipModelExport:
-    """Export compatible block-local BF16 weights without mutating ``model``."""
-
-    if not isinstance(model, nn.Module):
-        raise TypeError("model must be a torch.nn.Module.")
-    if setup is None:
-        raise TypeError("setup is required.")
+def export_model_for_gpu(model, setup, *, threads=0, include_embeddings=False):
+    """Create the immutable sharing-only BF16 export used by the runtime."""
 
     codec = materialize_setup(setup, threads=threads)
     named_tensors = tuple(
@@ -503,706 +232,177 @@ def export_model_for_gpu(
         for name, parameter in model.named_parameters()
         if parameter.is_floating_point()
     )
-    if not named_tensors:
-        raise ValueError("No floating parameters were found.")
     codec.prepare_direct_transfer_target(named_tensors)
-    block_order, candidates = _gpu_candidates(
-        model,
-        include_embeddings=include_embeddings,
-    )
-    return _assemble_gpu_export(
-        model,
-        block_order,
-        candidates,
-        codec,
-    )
+    blocks, candidates = _gpu_candidates(model, include_embeddings)
+    return _assemble_export(model, blocks, candidates, codec)
 
 
-def _bytes_tensor(
-    data: bytes,
-    *,
-    device: torch.device | None = None,
-    pin_memory: bool = False,
-) -> torch.Tensor:
-    tensor = (
-        torch.frombuffer(bytearray(data), dtype=torch.uint8).clone()
-        if data
-        else torch.empty(0, dtype=torch.uint8)
-    )
-    if pin_memory:
-        tensor = tensor.pin_memory()
-    return tensor.to(device=device) if device is not None else tensor
+def _bytes_tensor(data, device):
+    if not data:
+        return torch.empty(0, dtype=torch.uint8, device=device)
+    return torch.frombuffer(bytearray(data), dtype=torch.uint8).to(device=device)
 
 
-def _upload_group(
-    group: BF16WeightGroup,
-    lut: torch.Tensor,
-    workspace: torch.Tensor,
-    *,
-    device: torch.device,
-    offload_payload: bool = False,
-    pin_memory: bool = True,
-) -> _UploadedGroup:
-    payload_options = (
-        {"pin_memory": pin_memory} if offload_payload else {"device": device}
-    )
-    positions = torch.tensor(
-        group.encoded.exponents.output_positions,
-        dtype=torch.int32,
-        device=device,
-    )
-    return _UploadedGroup(
-        group=group,
-        lut=lut,
-        encoded_exponents=_bytes_tensor(
-            group.encoded.exponents.bitstream,
-            **payload_options,
-        ),
-        sign_mantissa=_bytes_tensor(
-            group.encoded.sign_mantissa,
-            **payload_options,
-        ),
-        packed_gaps=_bytes_tensor(
-            group.encoded.exponents.packed_gaps,
-            device=device,
-        ),
-        output_positions=positions,
-        output=workspace[group.workspace_offset : group.workspace_offset + group.numel],
-    )
-
-
-def _resolve_device(model: nn.Module, device) -> torch.device:
-    states = tuple(model.parameters()) + tuple(model.buffers())
-    state_devices = {value.device for value in states}
-    if device is None:
-        if len(state_devices) > 1:
-            raise ValueError("Model parameters and buffers must use one device.")
-        return next(iter(state_devices), torch.device("cpu"))
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        cuda_devices = {
-            state_device
-            for state_device in state_devices
-            if state_device.type == "cuda"
-        }
-        if len(cuda_devices) == 1 and len(cuda_devices) == len(state_devices):
-            resolved = next(iter(cuda_devices))
-        else:
-            resolved = torch.device("cuda", torch.cuda.current_device())
-    if any(state_device != resolved for state_device in state_devices):
-        raise ValueError(
-            "Move the complete model to the inference device before attaching "
-            "NeuralZip."
-        )
-    return resolved
-
-
-def _resolve_block_devices(
-    model: nn.Module,
-    exported: NeuralZipModelExport,
-    *,
-    device,
-    block_devices: Mapping[str, object] | None,
-) -> dict[str, torch.device]:
-    if device is not None and block_devices is not None:
-        raise ValueError("Pass either device or block_devices, not both.")
-    if block_devices is not None:
-        if not isinstance(block_devices, Mapping):
-            raise TypeError(
-                "block_devices must be a mapping of block names to devices."
-            )
-        missing = set(exported.block_order) - set(block_devices)
-        extra = set(block_devices) - set(exported.block_order)
-        if missing or extra:
-            raise ValueError(
-                "block_devices must cover exactly the compressed blocks; "
-                f"missing={sorted(missing)!r}, extra={sorted(extra)!r}."
-            )
-        resolved = {
-            name: torch.device(block_devices[name]) for name in exported.block_order
-        }
-        if any(value.type == "meta" for value in resolved.values()):
-            raise ValueError("Compressed blocks cannot execute on the meta device.")
-        return resolved
-
-    if device is not None:
-        resolved = _resolve_device(model, device)
-        return {name: resolved for name in exported.block_order}
-
-    model_states = tuple(model.parameters()) + tuple(model.buffers())
-    model_devices = {
-        value.device for value in model_states if value.device.type != "meta"
-    }
-    discovered = {}
-    for block_name in exported.block_order:
-        block = model.get_submodule(block_name)
-        states = tuple(block.parameters()) + tuple(block.buffers())
-        devices = {value.device for value in states if value.device.type != "meta"}
-        if not devices and len(model_devices) == 1:
-            devices = set(model_devices)
-        if len(devices) != 1:
-            raise ValueError(
-                f"Cannot infer one execution device for block {block_name!r}; "
-                "pass block_devices explicitly."
-            )
-        discovered[block_name] = devices.pop()
-    return discovered
-
-
-def _offloaded_blocks(
-    exported: NeuralZipModelExport,
-    *,
-    cpu_offload: bool,
-    cpu_offload_blocks: int | None,
-    cpu_offload_block_names: tuple[str, ...] | None = None,
-) -> frozenset[str]:
-    if not isinstance(cpu_offload, bool):
-        raise TypeError("cpu_offload must be a boolean.")
-    if cpu_offload_blocks is not None:
-        _require_non_negative_integer("cpu_offload_blocks", cpu_offload_blocks)
-        if not cpu_offload:
-            raise ValueError("cpu_offload_blocks requires cpu_offload=True.")
-    if not cpu_offload:
-        selected = set()
-    else:
-        count = (
-            len(exported.block_order)
-            if cpu_offload_blocks is None
-            else min(cpu_offload_blocks, len(exported.block_order))
-        )
-        selected = set(exported.block_order[:count])
-    if cpu_offload_block_names is not None:
-        if not isinstance(cpu_offload_block_names, tuple) or any(
-            not isinstance(name, str) for name in cpu_offload_block_names
-        ):
-            raise TypeError("cpu_offload_block_names must be a tuple of block names.")
-        unknown = set(cpu_offload_block_names) - set(exported.block_order)
-        if unknown:
-            raise ValueError(
-                f"Unknown CPU-offloaded NeuralZip blocks: {sorted(unknown)!r}."
-            )
-        selected.update(cpu_offload_block_names)
-    return frozenset(selected)
+def _binding_module(model, binding):
+    module = model.get_submodule(binding.module_name)
+    expected = nn.Embedding if binding.module_kind == "embedding" else nn.Linear
+    if not isinstance(module, expected):
+        raise TypeError(f"{binding.module_name!r} is not an {expected.__name__}.")
+    return module
 
 
 class NeuralZipRuntime:
-    """Attached sequential runtime for one compressed model instance."""
+    """Sequential runtime attached to one model on one CUDA device."""
 
-    def __init__(
-        self,
-        model: nn.Module,
-        exported: NeuralZipModelExport,
-        *,
-        block_devices: Mapping[str, torch.device],
-        precompressed: bool = False,
-        cpu_offload: bool = False,
-        cpu_offload_blocks: int | None = None,
-        cpu_offload_block_names: tuple[str, ...] | None = None,
-        pin_memory: bool = True,
-    ):
+    def __init__(self, model, exported, device):
         self.model = model
         self.export = exported
-        self.block_devices = {
-            name: torch.device(block_devices[name]) for name in exported.block_order
-        }
-        self.devices = tuple(dict.fromkeys(self.block_devices.values()))
-        self.device = self.devices[0] if len(self.devices) == 1 else None
+        self.device = torch.device(device)
         self._decoder = gpu_decoder.default_decoder()
-        self._state_lock = threading.Lock()
-        self._forward_claims = threading.local()
-        self._active_block = None
-        self._cuda_streams = {}
         self._hook_handles = []
-        self._allow_state_dict = False
-        self._restored = False
-        self._precompressed = bool(precompressed)
-        if not isinstance(pin_memory, bool):
-            raise TypeError("pin_memory must be a boolean.")
-        self._offloaded_blocks = _offloaded_blocks(
-            exported,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            cpu_offload_block_names=cpu_offload_block_names,
+        self.workspace = torch.empty(
+            exported.workspace_numel,
+            dtype=torch.bfloat16,
+            device=self.device,
         )
-        self._pin_memory = pin_memory
 
-        self.workspaces = {
-            device: torch.empty(
-                exported.workspace_numel,
-                dtype=torch.bfloat16,
-                device=device,
-            )
-            for device in self.devices
-        }
-        lut_by_id = {}
-        for group in exported.groups:
-            group_device = self.block_devices[group.block_name]
-            key = (group_device, group.codebook_id)
-            if key not in lut_by_id:
-                lut_by_id[key] = torch.tensor(
-                    group.codebook.decode_lut,
-                    dtype=torch.uint16,
-                    device=group_device,
-                )
-        self._uploaded_groups = tuple(
-            _upload_group(
-                group,
-                lut_by_id[(self.block_devices[group.block_name], group.codebook_id)],
-                self.workspaces[self.block_devices[group.block_name]],
-                device=self.block_devices[group.block_name],
-                offload_payload=group.block_name in self._offloaded_blocks,
-                pin_memory=(
-                    pin_memory and self.block_devices[group.block_name].type == "cuda"
-                ),
+        luts = {
+            group.codebook_id: torch.tensor(
+                group.codebook.decode_lut,
+                dtype=torch.uint16,
+                device=self.device,
             )
             for group in exported.groups
-        )
-        groups_by_block = defaultdict(list)
-        for uploaded in self._uploaded_groups:
-            groups_by_block[uploaded.group.block_name].append(uploaded)
+        }
+        uploaded = []
+        for group in exported.groups:
+            positions = group.encoded.exponents.output_positions
+            uploaded.append(
+                _UploadedGroup(
+                    group,
+                    luts[group.codebook_id],
+                    _bytes_tensor(group.encoded.exponents.bitstream, self.device),
+                    _bytes_tensor(group.encoded.sign_mantissa, self.device),
+                    _bytes_tensor(group.encoded.exponents.packed_gaps, self.device),
+                    torch.tensor(positions, dtype=torch.int32, device=self.device),
+                    self.workspace[
+                        group.workspace_offset : group.workspace_offset + group.numel
+                    ],
+                )
+            )
+        self._uploaded_groups = tuple(uploaded)
+        by_block = defaultdict(list)
+        for group in uploaded:
+            by_block[group.group.block_name].append(group)
         self._groups_by_block = {
-            name: tuple(groups_by_block[name]) for name in exported.block_order
+            name: tuple(by_block[name]) for name in exported.block_order
         }
         self._prepared_batches = {
-            block_name: self._prepare_uploaded_batch(uploaded_groups)
-            for block_name, uploaded_groups in self._groups_by_block.items()
-            if block_name not in self._offloaded_blocks
+            name: self._decoder.prepare_batch(
+                tuple(self._decode_group(group) for group in groups)
+            )
+            for name, groups in self._groups_by_block.items()
         }
-
-        tensors_by_device = defaultdict(list)
-        for workspace in self.workspaces.values():
-            if workspace.is_cuda:
-                tensors_by_device[workspace.device].append(workspace)
-        for uploaded in self._uploaded_groups:
-            for tensor in (
-                uploaded.lut,
-                uploaded.encoded_exponents,
-                uploaded.sign_mantissa,
-                uploaded.packed_gaps,
-                uploaded.output_positions,
-                uploaded.output,
-            ):
-                if tensor.is_cuda:
-                    tensors_by_device[tensor.device].append(tensor)
-        for prepared in self._prepared_batches.values():
-            for tensor in prepared.descriptor_tensors:
-                tensors_by_device[tensor.device].append(tensor)
-        self._cuda_tensors_by_device = {}
-        self._attach_events = {}
-        for state_device, tensors in tensors_by_device.items():
-            unique = {}
-            for tensor in tensors:
-                unique.setdefault(id(tensor), tensor)
-            self._cuda_tensors_by_device[state_device] = tuple(unique.values())
-            event = torch.cuda.Event()
-            event.record(torch.cuda.current_stream(device=state_device))
-            self._attach_events[state_device] = event
+        torch.cuda.synchronize(self.device)
 
     @classmethod
-    def _prepare_runtime(
-        cls,
-        model: nn.Module,
-        exported: NeuralZipModelExport,
-        *,
-        device=None,
-        block_devices: Mapping[str, object] | None = None,
-        precompressed: bool = False,
-        cpu_offload: bool = False,
-        cpu_offload_blocks: int | None = None,
-        cpu_offload_block_names: tuple[str, ...] | None = None,
-        pin_memory: bool = True,
-    ) -> NeuralZipRuntime:
-        """Allocate and preflight runtime state without mutating ``model``."""
-
-        if hasattr(model, _RUNTIME_ATTRIBUTE):
+    def attach(cls, model, exported, *, device=None):
+        if hasattr(model, RUNTIME_ATTRIBUTE):
             raise RuntimeError("This model already has a NeuralZip runtime.")
         if not exported.groups:
-            raise ValueError(
-                "The GPU export contains no eligible shared BF16 linear weights."
-            )
-        if model.training:
-            raise ValueError("Call model.eval() before attaching NeuralZip inference.")
-        resolved_block_devices = _resolve_block_devices(
-            model,
-            exported,
-            device=device,
-            block_devices=block_devices,
-        )
-        if any(value.type != "cuda" for value in resolved_block_devices.values()):
-            raise ValueError("The NeuralZip decoder requires CUDA block devices.")
+            raise ValueError("The setup produced no GPU-compressible weights.")
+        if device is None:
+            current = next(model.parameters()).device
+            device = current if current.type == "cuda" else "cuda"
+        device = torch.device(device)
+        if device.type != "cuda":
+            raise ValueError("NeuralZip GPU inference requires a CUDA device.")
 
-        # All compressed buffers and the reusable workspace are allocated
-        # before the first model parameter is removed.
-        runtime = cls(
-            model,
-            exported,
-            block_devices=resolved_block_devices,
-            precompressed=precompressed,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            cpu_offload_block_names=cpu_offload_block_names,
-            pin_memory=pin_memory,
-        )
-        runtime._preflight_decoder()
-        return runtime
-
-    @classmethod
-    def attach(
-        cls,
-        model: nn.Module,
-        exported: NeuralZipModelExport,
-        *,
-        device=None,
-        block_devices: Mapping[str, object] | None = None,
-        precompressed: bool = False,
-        cpu_offload: bool = False,
-        cpu_offload_blocks: int | None = None,
-        cpu_offload_block_names: tuple[str, ...] | None = None,
-        pin_memory: bool = True,
-    ) -> NeuralZipRuntime:
-        runtime = cls._prepare_runtime(
-            model,
-            exported,
-            device=device,
-            block_devices=block_devices,
-            precompressed=precompressed,
-            cpu_offload=cpu_offload,
-            cpu_offload_blocks=cpu_offload_blocks,
-            cpu_offload_block_names=cpu_offload_block_names,
-            pin_memory=pin_memory,
-        )
+        for binding in exported.bindings:
+            module = _binding_module(model, binding)
+            module._parameters.pop("weight", None)
+            module.__dict__.pop("weight", None)
+        model.to(device).eval()
+        runtime = cls(model, exported, device)
         runtime._install()
         return runtime
 
-    def _preflight_decoder(self) -> None:
-        if self._prepared_batches:
-            self._decoder.preflight(tuple(self._prepared_batches.values()))
+    def _decode_group(self, uploaded):
+        positions = uploaded.group.encoded.exponents.output_positions
+        max_block_elements = max(
+            (right - left for left, right in pairwise(positions)),
+            default=0,
+        )
+        return gpu_decoder.BF16DecodeGroup(
+            uploaded.lut,
+            uploaded.encoded_exponents,
+            uploaded.sign_mantissa,
+            uploaded.packed_gaps,
+            uploaded.output_positions,
+            uploaded.output,
+            uploaded.group.codebook.max_bits,
+            max_block_elements,
+        )
+
+    def _install(self):
+        for binding in self.export.bindings:
+            view = self.workspace[
+                binding.workspace_offset : binding.workspace_offset + binding.numel
+            ].view(binding.shape)
+            _binding_module(self.model, binding).__dict__["weight"] = view
         for block_name in self.export.block_order:
-            if block_name not in self._offloaded_blocks:
-                continue
-            transient = self._prepare_uploaded_batch(self._groups_by_block[block_name])
-            self._decoder.preflight((transient,))
-
-    def _binding_module(self, binding: LinearWeightBinding) -> nn.Module:
-        module = self.model.get_submodule(binding.module_name)
-        expected = nn.Embedding if binding.module_kind == "embedding" else nn.Linear
-        if not isinstance(module, expected):
-            raise TypeError(
-                f"{binding.module_name} is no longer an {expected.__name__}."
-            )
-        return module
-
-    def _install_weight_views(self) -> None:
-        for binding in self.export.bindings:
-            begin = binding.workspace_offset
-            workspace = self.workspaces[self.block_devices[binding.block_name]]
-            view = workspace[begin : begin + binding.numel].view(binding.shape)
-            self._binding_module(binding).__dict__["weight"] = view
-
-    def _remove_weight_views(self) -> None:
-        for binding in self.export.bindings:
-            self._binding_module(binding).__dict__.pop("weight", None)
-
-    def _release_device_state(self) -> None:
-        """Drop every runtime-owned tensor after a successful restore."""
-
-        self._uploaded_groups = ()
-        self._groups_by_block = {}
-        self._prepared_batches = {}
-        self._cuda_tensors_by_device = {}
-        self._attach_events = {}
-        self._cuda_streams = {}
-        self.workspaces = {}
-        self._decoder = None
-
-    def _install(self) -> None:
-        original_parameters = []
-        handles = []
-        try:
-            for binding in self.export.bindings:
-                module = self._binding_module(binding)
-                parameter = module._parameters.get("weight")
-                if self._precompressed:
-                    if parameter is not None or "weight" in module.__dict__:
-                        raise RuntimeError(
-                            f"{binding.tensor_name} must be absent before attaching "
-                            "a precompressed NeuralZip checkpoint."
-                        )
-                    continue
-                if not isinstance(parameter, nn.Parameter):
-                    raise TypeError(f"{binding.tensor_name} changed after GPU export.")
-                if (
-                    parameter.dtype != torch.bfloat16
-                    or tuple(parameter.shape) != binding.shape
-                    or parameter.device != self.block_devices[binding.block_name]
-                ):
-                    raise RuntimeError(
-                        f"{binding.tensor_name} is incompatible with its GPU export."
-                    )
-                original_parameters.append((module, parameter))
-
-            for module, _parameter in original_parameters:
-                module._parameters.pop("weight")
-            self._install_weight_views()
-
-            model_pre = self.model.register_forward_pre_hook(
-                self._model_pre_hook,
+            handle = self.model.get_submodule(block_name).register_forward_pre_hook(
+                partial(self._decode_block, block_name),
                 prepend=True,
             )
-            model_post = self.model.register_forward_hook(
-                self._model_post_hook,
-                always_call=True,
-            )
-            handles.extend((model_pre, model_post))
-            handles.append(
-                self.model.register_state_dict_pre_hook(self._state_dict_pre_hook)
-            )
+            self._hook_handles.append(handle)
+        setattr(self.model, RUNTIME_ATTRIBUTE, self)
 
-            for block_name in self.export.block_order:
-                block = self.model.get_submodule(block_name)
-                pre = block.register_forward_pre_hook(
-                    partial(self._block_pre_hook, block_name),
-                    prepend=True,
-                )
-                handles.append(pre)
-            self._hook_handles = handles
-            setattr(self.model, _RUNTIME_ATTRIBUTE, self)
-        except Exception:
-            for handle in handles:
-                handle.remove()
-            self._remove_weight_views()
-            for module, parameter in original_parameters:
-                if "weight" not in module._parameters:
-                    module.register_parameter("weight", parameter)
-            raise
+    def _decode_block(self, block_name, _module=None, _args=None):
+        self._decoder.decode_batch(self._prepared_batches[block_name])
 
-    def _check_stream(self, device: torch.device) -> None:
-        if device.type != "cuda":
-            return
-        stream = torch.cuda.current_stream(device=device)
-        current = int(stream.cuda_stream)
-        previous = self._cuda_streams.get(device)
-        if previous is None:
-            event = self._attach_events.get(device)
-            if event is not None:
-                stream.wait_event(event)
-            for tensor in self._cuda_tensors_by_device.get(device, ()):
-                tensor.record_stream(stream)
-            self._cuda_streams[device] = current
-        elif current != previous:
-            raise RuntimeError("NeuralZip supports one CUDA stream per runtime device.")
+    def resident_state_dict(self):
+        """Return state excluding compressed weights, which are not Parameters."""
 
-    def _decode_descriptor(
-        self,
-        uploaded: _UploadedGroup,
-    ) -> gpu_decoder.BF16DecodeGroup:
-        encoded_exponents = uploaded.encoded_exponents
-        sign_mantissa = uploaded.sign_mantissa
-        if not encoded_exponents.is_cuda:
-            target_device = uploaded.output.device
-            encoded_exponents = encoded_exponents.to(
-                device=target_device,
-                non_blocking=self._pin_memory,
-            )
-            sign_mantissa = sign_mantissa.to(
-                device=target_device,
-                non_blocking=self._pin_memory,
-            )
-        return gpu_decoder.BF16DecodeGroup(
-            lut=uploaded.lut,
-            encoded_exponents=encoded_exponents,
-            sign_mantissa=sign_mantissa,
-            packed_gaps=uploaded.packed_gaps,
-            output_positions=uploaded.output_positions,
-            output=uploaded.output,
-            max_bits=uploaded.group.codebook.max_bits,
-        )
+        return self.model.state_dict()
 
-    def _prepare_uploaded_batch(self, uploaded_groups: tuple[_UploadedGroup, ...]):
-        descriptors = tuple(
-            self._decode_descriptor(uploaded) for uploaded in uploaded_groups
-        )
-        return self._decoder.prepare_batch(descriptors)
+    def materialize(self):
+        """Decode independent tensors for every compressed weight."""
 
-    def _decode_block(self, block_name: str) -> None:
-        prepared = self._prepared_batches.get(block_name)
-        if prepared is None:
-            prepared = self._prepare_uploaded_batch(self._groups_by_block[block_name])
-        self._decoder.decode_batch(prepared)
-
-    def _model_pre_hook(self, _module, _args) -> None:
-        claims = getattr(self._forward_claims, "stack", None)
-        if claims is None:
-            claims = []
-            self._forward_claims.stack = claims
-        claims.append(False)
-        if self.model.training:
-            raise RuntimeError(
-                "NeuralZip is inference-only; keep the attached model in "
-                "evaluation mode."
-            )
-        if torch.is_grad_enabled():
-            raise RuntimeError(
-                "NeuralZip is inference-only; run it under torch.no_grad() "
-                "or torch.inference_mode()."
-            )
-        with self._state_lock:
-            if self._restored:
-                raise RuntimeError("NeuralZip runtime has already been restored.")
-            if self._active_block is not None:
-                raise RuntimeError(
-                    "Concurrent or re-entrant NeuralZip inference is unsupported."
-                )
-            for device in self.devices:
-                self._check_stream(device)
-            self._active_block = "<forward>"
-            claims[-1] = True
-
-    def _model_post_hook(self, _module, _args, _output) -> None:
-        claims = getattr(self._forward_claims, "stack", None)
-        claimed = bool(claims and claims.pop())
-        if not claimed:
-            return
-        with self._state_lock:
-            if self._active_block == "<forward>":
-                self._active_block = None
-
-    def _state_dict_pre_hook(self, _module, _prefix, _keep_vars) -> None:
-        if self._allow_state_dict:
-            return
-        raise RuntimeError(
-            "Call model.neuralzip_runtime.restore() before state_dict() or "
-            "save_pretrained(); attached compressed weights are not registered "
-            "Parameters."
-        )
-
-    def resident_state_dict(self) -> dict[str, torch.Tensor]:
-        """Return registered state while intentionally omitting compressed views."""
-
-        with self._state_lock:
-            if self._restored:
-                raise RuntimeError("NeuralZip runtime has already been restored.")
-            if self._active_block is not None:
-                raise RuntimeError("Cannot serialize during an active model forward.")
-            if _has_external_dispatch(self.model):
-                raise RuntimeError(
-                    "Cannot re-save an attached model while Accelerate placement or "
-                    "offload hooks are active; copy the original NeuralZip checkpoint."
-                )
-            self._allow_state_dict = True
-            try:
-                return self.model.state_dict()
-            finally:
-                self._allow_state_dict = False
-
-    def _block_pre_hook(self, block_name, _module, _args) -> None:
-        if self._active_block != "<forward>":
-            raise RuntimeError(
-                "Invoke the attached root model rather than a compressed block "
-                "directly."
-            )
-        self._decode_block(block_name)
-
-    def _materialize_tensors(self) -> dict[str, torch.Tensor]:
         tensors = {}
         with torch.no_grad():
             for block_name in self.export.block_order:
                 self._decode_block(block_name)
                 for uploaded in self._groups_by_block[block_name]:
                     for binding in uploaded.group.bindings:
-                        begin = binding.workspace_offset
-                        workspace = self.workspaces[
-                            self.block_devices[binding.block_name]
-                        ]
                         tensors[binding.tensor_name] = (
-                            workspace[begin : begin + binding.numel]
+                            self.workspace[
+                                binding.workspace_offset : binding.workspace_offset
+                                + binding.numel
+                            ]
                             .view(binding.shape)
                             .clone()
                         )
         return tensors
 
-    def materialize(self) -> dict[str, torch.Tensor]:
-        """Decode independent tensors for every compressed linear weight."""
+    def restore(self):
+        """Replace compressed views with ordinary BF16 Parameters."""
 
-        marker = "<materialize>"
-        with self._state_lock:
-            if self._restored:
-                raise RuntimeError("NeuralZip runtime has already been restored.")
-            if self._active_block is not None:
-                raise RuntimeError("Cannot materialize during an active block forward.")
-            for device in self.devices:
-                self._check_stream(device)
-            self._active_block = marker
-        try:
-            return self._materialize_tensors()
-        finally:
-            with self._state_lock:
-                if self._active_block == marker:
-                    self._active_block = None
-
-    def restore(self) -> nn.Module:
-        """Materialize parameters, remove hooks, and return the ordinary model."""
-
-        marker = "<restore>"
-        with self._state_lock:
-            if self._restored:
-                raise RuntimeError("NeuralZip runtime has already been restored.")
-            if self._active_block is not None:
-                raise RuntimeError("Cannot restore during an active block forward.")
-            if _has_external_dispatch(self.model):
-                raise RuntimeError(
-                    "Cannot restore registered Parameters while Accelerate placement "
-                    "or offload hooks are active; use materialize() or load on one "
-                    "direct device first."
-                )
-            for device in self.devices:
-                self._check_stream(device)
-            self._active_block = marker
-        try:
-            tensors = self._materialize_tensors()
-            parameters = []
-            for binding in self.export.bindings:
-                tensor = tensors[binding.tensor_name]
-                parameters.append(
-                    (
-                        self._binding_module(binding),
-                        nn.Parameter(tensor, requires_grad=binding.requires_grad),
-                    )
-                )
-
-            registered_modules = []
-            try:
-                self._remove_weight_views()
-                for module, parameter in parameters:
-                    module.register_parameter("weight", parameter)
-                    registered_modules.append(module)
-            except Exception:
-                for module in registered_modules:
-                    module._parameters.pop("weight", None)
-                self._install_weight_views()
-                raise
-
-            for handle in self._hook_handles:
-                handle.remove()
-            self._hook_handles = []
-            with self._state_lock:
-                self._restored = True
-                self._active_block = None
-            if getattr(self.model, _RUNTIME_ATTRIBUTE, None) is self:
-                delattr(self.model, _RUNTIME_ATTRIBUTE)
-            self._release_device_state()
-            return self.model
-        except Exception:
-            with self._state_lock:
-                if self._active_block == marker:
-                    self._active_block = None
-            raise
+        tensors = self.materialize()
+        for handle in self._hook_handles:
+            handle.remove()
+        for binding in self.export.bindings:
+            module = _binding_module(self.model, binding)
+            module.__dict__.pop("weight", None)
+            module.register_parameter(
+                "weight",
+                nn.Parameter(
+                    tensors[binding.tensor_name],
+                    requires_grad=binding.requires_grad,
+                ),
+            )
+        delattr(self.model, RUNTIME_ATTRIBUTE)
+        return self.model
 
 
-__all__ = [
-    "BF16WeightGroup",
-    "LinearWeightBinding",
-    "NeuralZipModelExport",
-    "NeuralZipRuntime",
-    "export_model_for_gpu",
-]
+__all__ = ["NeuralZipRuntime"]

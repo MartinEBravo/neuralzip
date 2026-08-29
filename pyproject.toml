@@ -16,13 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-diffusion = [
-    "diffusers",
-]
-gpu = [
-    "accelerate>=1",
-    "cupy-cuda12x>=13",
-]
+gpu = ["cupy-cuda12x>=13"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"

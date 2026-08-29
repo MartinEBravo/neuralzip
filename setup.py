@@ -21,7 +21,6 @@ ZSTD_URL = f"https://codeload.github.com/facebook/zstd/tar.gz/{ZSTD_REVISION}"
 ZSTD_SHA256 = "4c8e7f2ab048339cf523e0ad62c119d4e4d49f4abf94028dffd5897706b1b68c"
 ZSTD_ARCHIVE_ENV = "NEURALZIP_ZSTD_ARCHIVE"
 ZSTD_FILES = (
-    "lib/common/debug.c",
     "lib/common/entropy_common.c",
     "lib/common/error_private.c",
     "lib/common/fse_decompress.c",

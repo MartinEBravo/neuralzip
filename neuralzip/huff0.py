@@ -48,11 +48,6 @@ def _immutable_bytes(value):
     return value if isinstance(value, bytes) else bytes(value)
 
 
-def _native_variant(name, *, frame_4x):
-    suffix = "_4x" if frame_4x else ""
-    return getattr(_huff0_cpp, f"{name}{suffix}")
-
-
 def _payload(result):
     if result is None:
         return None
@@ -307,14 +302,17 @@ def encode_with_codebook(
     *,
     min_saving_bytes=0,
     max_output_bytes=None,
+    _frame_4x=False,
 ):
-    return _encode_with_codebook(
-        data,
-        codebook,
-        min_saving_bytes=min_saving_bytes,
-        max_output_bytes=max_output_bytes,
-        frame_4x=False,
+    max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
+    result = _huff0_cpp.encode_with_codebook(
+        _bytes(data),
+        codebook.handle,
+        int(min_saving_bytes),
+        max_bytes,
+        bool(_frame_4x),
     )
+    return _payload(result)
 
 
 def encode_with_codebook_4x(
@@ -325,31 +323,13 @@ def encode_with_codebook_4x(
     max_output_bytes=None,
 ):
     """Encode with a precomputed codebook using Huff0's four-stream frame."""
-    return _encode_with_codebook(
+    return encode_with_codebook(
         data,
         codebook,
         min_saving_bytes=min_saving_bytes,
         max_output_bytes=max_output_bytes,
-        frame_4x=True,
+        _frame_4x=True,
     )
-
-
-def _encode_with_codebook(
-    data,
-    codebook,
-    *,
-    min_saving_bytes,
-    max_output_bytes,
-    frame_4x,
-):
-    max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
-    result = _native_variant("encode_with_codebook", frame_4x=frame_4x)(
-        _bytes(data),
-        codebook.handle,
-        min_saving_bytes=int(min_saving_bytes),
-        max_output_bytes=max_bytes,
-    )
-    return _payload(result)
 
 
 def encode_ngram_with_codebook(
@@ -360,16 +340,19 @@ def encode_ngram_with_codebook(
     n,
     min_saving_bytes=0,
     max_output_bytes=None,
+    _frame_4x=False,
 ):
-    return _encode_ngram_with_codebook(
-        data,
-        codebook,
-        vocab,
-        n=n,
-        min_saving_bytes=min_saving_bytes,
-        max_output_bytes=max_output_bytes,
-        frame_4x=False,
+    max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
+    result = _huff0_cpp.encode_ngram_with_codebook(
+        _bytes(data),
+        codebook.handle,
+        _bytes(vocab),
+        int(n),
+        int(min_saving_bytes),
+        max_bytes,
+        bool(_frame_4x),
     )
+    return _ngram_payload(result)
 
 
 def encode_ngram_with_codebook_4x(
@@ -382,75 +365,44 @@ def encode_ngram_with_codebook_4x(
     max_output_bytes=None,
 ):
     """Tokenize n-grams and encode token ids as one Huff0 four-stream frame."""
-    return _encode_ngram_with_codebook(
+    return encode_ngram_with_codebook(
         data,
         codebook,
         vocab,
         n=n,
         min_saving_bytes=min_saving_bytes,
         max_output_bytes=max_output_bytes,
-        frame_4x=True,
+        _frame_4x=True,
     )
-
-
-def _encode_ngram_with_codebook(
-    data,
-    codebook,
-    vocab,
-    *,
-    n,
-    min_saving_bytes,
-    max_output_bytes,
-    frame_4x,
-):
-    max_bytes = -1 if max_output_bytes is None else int(max_output_bytes)
-    result = _native_variant("encode_ngram_with_codebook", frame_4x=frame_4x)(
-        _bytes(data),
-        codebook.handle,
-        _bytes(vocab),
-        int(n),
-        min_saving_bytes=int(min_saving_bytes),
-        max_output_bytes=max_bytes,
-    )
-    return _ngram_payload(result)
 
 
 def decompress_block(payload, symbol_count):
     return _huff0_cpp.decompress_block(_immutable_bytes(payload), int(symbol_count))
 
 
-def decompress_with_decodebook(payload, decodebook):
-    return _decompress_with_decodebook(payload, decodebook, frame_4x=False)
+def decompress_with_decodebook(payload, decodebook, *, _frame_4x=False):
+    return _huff0_cpp.decompress_with_decodebook(
+        _immutable_bytes(payload.payload),
+        decodebook.handle,
+        payload.symbol_count,
+        bool(_frame_4x),
+    )
 
 
 def decompress_with_decodebook_4x(payload, decodebook):
     """Decode a payload produced by ``encode_with_codebook_4x``."""
-    return _decompress_with_decodebook(payload, decodebook, frame_4x=True)
+    return decompress_with_decodebook(payload, decodebook, _frame_4x=True)
 
 
-def _decompress_with_decodebook(payload, decodebook, *, frame_4x):
-    return _native_variant("decompress_with_decodebook", frame_4x=frame_4x)(
-        _immutable_bytes(payload.payload),
-        decodebook.handle,
-        payload.symbol_count,
-    )
-
-
-def decompress_ngram_with_decodebook(payload, decodebook, vocab, *, n):
-    return _decompress_ngram_with_decodebook(
-        payload, decodebook, vocab, n=n, frame_4x=False
-    )
-
-
-def decompress_ngram_with_decodebook_4x(payload, decodebook, vocab, *, n):
-    """Decode four Huff0 token streams and restore their packed n-grams."""
-    return _decompress_ngram_with_decodebook(
-        payload, decodebook, vocab, n=n, frame_4x=True
-    )
-
-
-def _decompress_ngram_with_decodebook(payload, decodebook, vocab, *, n, frame_4x):
-    return _native_variant("decompress_ngram_with_decodebook", frame_4x=frame_4x)(
+def decompress_ngram_with_decodebook(
+    payload,
+    decodebook,
+    vocab,
+    *,
+    n,
+    _frame_4x=False,
+):
+    return _huff0_cpp.decompress_ngram_with_decodebook(
         _immutable_bytes(payload.payload),
         decodebook.handle,
         payload.symbol_count,
@@ -458,4 +410,16 @@ def _decompress_ngram_with_decodebook(payload, decodebook, vocab, *, n, frame_4x
         int(n),
         _immutable_bytes(payload.escape_bytes),
         _immutable_bytes(payload.tail),
+        bool(_frame_4x),
+    )
+
+
+def decompress_ngram_with_decodebook_4x(payload, decodebook, vocab, *, n):
+    """Decode four Huff0 token streams and restore their packed n-grams."""
+    return decompress_ngram_with_decodebook(
+        payload,
+        decodebook,
+        vocab,
+        n=n,
+        _frame_4x=True,
     )

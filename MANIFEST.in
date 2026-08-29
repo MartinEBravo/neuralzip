@@ -1,5 +1,0 @@
-include neuralzip/*.cpp
-include neuralzip/gpu/cuda/*.cu
-include third_party/dfloat11/LICENSE
-include third_party/zstd/LICENSE
-include third_party/zstd/UPSTREAM

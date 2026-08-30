@@ -17,9 +17,6 @@ class Huff0CodeTable:
     code_values: tuple[int, ...]
     max_bits: int
 
-def _codebook(result):
-    return Huff0Codebook(*result)
-
 def _normalize_mixed_stream_modes(stream_modes):
     native_modes = []
     for mode in stream_modes:
@@ -69,7 +66,7 @@ def decompress_mixed_streams_many(tensor_specs, *, threads=0):
 
 def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
     """Build a codebook from a complete byte-symbol histogram."""
-    return _codebook(
+    return Huff0Codebook(
         _huff0_cpp.build_codebook_from_counts(
             tuple(int(count) for count in symbol_counts),
             prior_count=int(prior_count),
@@ -79,7 +76,7 @@ def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
 
 def build_codebook_from_header(codebook):
     """Restore an encoder handle directly from a serialized Huff0 header."""
-    return _codebook(_huff0_cpp.build_codebook_from_header(codebook))
+    return Huff0Codebook(_huff0_cpp.build_codebook_from_header(codebook))
 
 def build_decodebook(codebook):
     return _huff0_cpp.build_decodebook(codebook)

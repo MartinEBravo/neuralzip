@@ -1,21 +1,18 @@
-"""Single-GPU inference from NeuralZip-compressed BF16 weights."""
-
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import pairwise
-
 import torch
 from torch import nn
-
-from .. import _huff0_cpp, huff0
-from .._setup import materialize_setup
-from . import decoder as gpu_decoder
+from neuralzip import _huff0_cpp, huff0
+from neuralzip._setup import materialize_setup
+from neuralzip.gpu import decoder as gpu_decoder
 
 RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 BYTES_PER_THREAD = gpu_decoder.BYTES_PER_THREAD
 THREADS_PER_BLOCK = gpu_decoder.THREADS_PER_BLOCK
 MAX_CODE_BITS = 12
+
 
 @dataclass(frozen=True)
 class GPUCodebook:
@@ -55,6 +52,7 @@ class GPUCodebook:
         object.__setattr__(self, "max_bits", max_bits)
         object.__setattr__(self, "decode_lut", tuple(lut))
 
+
 @dataclass(frozen=True)
 class GPUEncodedExponents:
     bitstream: bytes
@@ -67,7 +65,9 @@ class GPUEncodedExponents:
         bitstream = bytes(self.bitstream)
         gaps = bytes(self.packed_gaps)
         positions = tuple(self.output_positions)
-        blocks = (len(bitstream) + BYTES_PER_THREAD * THREADS_PER_BLOCK - 1) // (BYTES_PER_THREAD * THREADS_PER_BLOCK)
+        blocks = (len(bitstream) + BYTES_PER_THREAD * THREADS_PER_BLOCK - 1) // (
+            BYTES_PER_THREAD * THREADS_PER_BLOCK
+        )
         if len(bitstream) != (self.bit_length + 7) // 8:
             raise ValueError("Exponent bit length does not match its payload.")
         if self.bit_length < 0 or self.symbol_count < 0:
@@ -84,6 +84,7 @@ class GPUEncodedExponents:
         object.__setattr__(self, "packed_gaps", gaps)
         object.__setattr__(self, "output_positions", positions)
 
+
 @dataclass(frozen=True)
 class GPUEncodedBF16:
     sign_mantissa: bytes
@@ -99,12 +100,15 @@ class GPUEncodedBF16:
     def numel(self):
         return len(self.sign_mantissa)
 
+
 def encode_bfloat16_native(raw_bfloat16, codebook_header):
-    encoded, sign_mantissa, gaps, positions, bit_length, _max_bits = _huff0_cpp.encode_gpu_bfloat16(
-        bytes(raw_bfloat16),
-        bytes(codebook_header),
-        bytes_per_thread=BYTES_PER_THREAD,
-        threads_per_block=THREADS_PER_BLOCK,
+    encoded, sign_mantissa, gaps, positions, bit_length, _max_bits = (
+        _huff0_cpp.encode_gpu_bfloat16(
+            bytes(raw_bfloat16),
+            bytes(codebook_header),
+            bytes_per_thread=BYTES_PER_THREAD,
+            threads_per_block=THREADS_PER_BLOCK,
+        )
     )
     return GPUEncodedBF16(
         sign_mantissa,
@@ -117,6 +121,7 @@ def encode_bfloat16_native(raw_bfloat16, codebook_header):
         ),
     )
 
+
 @dataclass(frozen=True)
 class LinearWeightBinding:
     module_name: str
@@ -127,6 +132,7 @@ class LinearWeightBinding:
     requires_grad: bool
     module_kind: str = "linear"
 
+
 @dataclass(frozen=True)
 class BF16WeightGroup:
     block_name: str
@@ -135,6 +141,7 @@ class BF16WeightGroup:
     encoded: GPUEncodedBF16
     bindings: tuple[LinearWeightBinding, ...]
     workspace_offset: int
+
 
 @dataclass(frozen=True)
 class NeuralZipModelExport:
@@ -155,6 +162,7 @@ class NeuralZipModelExport:
             default=0,
         )
 
+
 @dataclass(frozen=True)
 class _Candidate:
     block_name: str
@@ -162,6 +170,7 @@ class _Candidate:
     tensor_name: str
     parameter: nn.Parameter = field(repr=False, compare=False)
     module_kind: str = "linear"
+
 
 @dataclass(frozen=True)
 class _UploadedGroup:
@@ -175,8 +184,10 @@ class _UploadedGroup:
     max_bits: int
     max_block_elements: int
 
+
 def _join(parent, child):
     return f"{parent}.{child}" if parent and child else parent or child
+
 
 def _gpu_candidates(model, include_embeddings):
     """Find direct ModuleList children and their linear-like weights."""
@@ -224,12 +235,15 @@ def _gpu_candidates(model, include_embeddings):
                 )
     return tuple(name for name, _ in blocks), tuple(candidates)
 
+
 def _assemble_export(model, block_order, candidates, codec):
     occurrences = defaultdict(int)
     for _name, parameter in model.named_parameters(remove_duplicate=False):
         occurrences[id(parameter)] += 1
 
-    payloads = {int(payload.codebook_id): payload for payload in codec.export_codebooks()}
+    payloads = {
+        int(payload.codebook_id): payload for payload in codec.export_codebooks()
+    }
     codebooks = {}
     grouped = defaultdict(list)
     for candidate in candidates:
@@ -246,7 +260,9 @@ def _assemble_export(model, block_order, candidates, codec):
         if kind == "raw":
             continue
         if kind != "shared_huff0":
-            raise ValueError(f"GPU inference needs a sharing-only setup; {candidate.tensor_name} uses {kind!r}.")
+            raise ValueError(
+                f"GPU inference needs a sharing-only setup; {candidate.tensor_name} uses {kind!r}."
+            )
         codebook_id = int(mode["codebook_id"])
         payload = payloads[codebook_id]
         if codebook_id not in codebooks:
@@ -303,21 +319,26 @@ def _assemble_export(model, block_order, candidates, codec):
 
     return NeuralZipModelExport(tuple(groups))
 
+
 def export_model_for_gpu(model, setup, *, threads=0, include_embeddings=False):
     """Create the immutable sharing-only BF16 export used by the runtime."""
 
     codec = materialize_setup(setup, threads=threads)
     named_tensors = tuple(
-        (str(name), parameter) for name, parameter in model.named_parameters() if parameter.is_floating_point()
+        (str(name), parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.is_floating_point()
     )
     codec.prepare_direct_transfer_target(named_tensors)
     blocks, candidates = _gpu_candidates(model, include_embeddings)
     return _assemble_export(model, blocks, candidates, codec)
 
+
 def _bytes_tensor(data, device):
     if not data:
         return torch.empty(0, dtype=torch.uint8, device=device)
     return torch.frombuffer(bytearray(data), dtype=torch.uint8).to(device=device)
+
 
 def _binding_module(model, binding):
     module = model.get_submodule(binding.module_name)
@@ -325,6 +346,7 @@ def _binding_module(model, binding):
     if not isinstance(module, expected):
         raise TypeError(f"{binding.module_name!r} is not an {expected.__name__}.")
     return module
+
 
 class NeuralZipRuntime:
     """Sequential runtime attached to one model on one CUDA device."""
@@ -360,7 +382,10 @@ class NeuralZipRuntime:
                     _bytes_tensor(group.encoded.sign_mantissa, self.device),
                     _bytes_tensor(group.encoded.exponents.packed_gaps, self.device),
                     torch.tensor(positions, dtype=torch.int32, device=self.device),
-                    self.workspace[group.workspace_offset : group.workspace_offset + group.encoded.numel],
+                    self.workspace[
+                        group.workspace_offset : group.workspace_offset
+                        + group.encoded.numel
+                    ],
                     group.codebook.max_bits,
                     max(
                         (right - left for left, right in pairwise(positions)),
@@ -371,9 +396,12 @@ class NeuralZipRuntime:
         by_block = defaultdict(list)
         for group in uploaded:
             by_block[group.group.block_name].append(group)
-        self._groups_by_block = {name: tuple(by_block[name]) for name in exported.block_order}
+        self._groups_by_block = {
+            name: tuple(by_block[name]) for name in exported.block_order
+        }
         self._prepared_batches = {
-            name: self._decoder.prepare_batch(groups) for name, groups in self._groups_by_block.items()
+            name: self._decoder.prepare_batch(groups)
+            for name, groups in self._groups_by_block.items()
         }
         torch.cuda.synchronize(self.device)
 
@@ -401,9 +429,9 @@ class NeuralZipRuntime:
 
     def _install(self):
         for binding in self.export.bindings:
-            view = self.workspace[binding.workspace_offset : binding.workspace_offset + binding.numel].view(
-                binding.shape
-            )
+            view = self.workspace[
+                binding.workspace_offset : binding.workspace_offset + binding.numel
+            ].view(binding.shape)
             _binding_module(self.model, binding).__dict__["weight"] = view
         for block_name in self.export.block_order:
             handle = self.model.get_submodule(block_name).register_forward_pre_hook(
@@ -431,7 +459,10 @@ class NeuralZipRuntime:
                 for uploaded in self._groups_by_block[block_name]:
                     for binding in uploaded.group.bindings:
                         tensors[binding.tensor_name] = (
-                            self.workspace[binding.workspace_offset : binding.workspace_offset + binding.numel]
+                            self.workspace[
+                                binding.workspace_offset : binding.workspace_offset
+                                + binding.numel
+                            ]
                             .view(binding.shape)
                             .clone()
                         )
@@ -455,5 +486,6 @@ class NeuralZipRuntime:
             )
         delattr(self.model, RUNTIME_ATTRIBUTE)
         return self.model
+
 
 __all__ = ["NeuralZipRuntime"]

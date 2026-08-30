@@ -1,18 +1,13 @@
-"""NeuralZip codec and its reusable setup state."""
-
-from ._codec_setup import _floating_tensors, _SetupMixin
-from ._codec_storage import _StorageMixin
-from .codec_primitives import _byte_group_dtype_config, dtype_name
+from neuralzip._codec_setup import _floating_tensors, _SetupMixin
+from neuralzip._codec_storage import _StorageMixin
+from neuralzip.codec_primitives import DTYPES
 
 _TRANSFER_NAME_FALLBACKS = {
-    # Qwen ties the output head to the input embedding in some family members.
     "lm_head.weight": ("model.embed_tokens.weight",),
 }
 
 
 class NeuralZipCodec(_SetupMixin, _StorageMixin):
-    """JS-clustered Huffman with deterministic packed-exponent selection."""
-
     def __init__(
         self,
         *,
@@ -39,7 +34,9 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         self.threads = int(threads)
         self.prior_count = int(prior_count)
         self.exponent_prior_count = int(exponent_prior_count)
-        self.cluster_map = {str(name): str(value) for name, value in (cluster_map or {}).items()}
+        self.cluster_map = {
+            str(name): str(value) for name, value in (cluster_map or {}).items()
+        }
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
@@ -65,19 +62,23 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         return tuple(self._codebook_payloads)
 
     def load_codebooks(self, codebooks):
-        self._codebook_payload_by_id = {int(codebook.codebook_id): codebook for codebook in codebooks}
+        self._codebook_payload_by_id = {
+            int(codebook.codebook_id): codebook for codebook in codebooks
+        }
         self._decode_codebooks = {}
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
-        return str(name), dtype_name(tensor.dtype), int(stream_id)
+        return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
 
     def prepare_direct_transfer_target(self, named_tensors):
         """Map target names, dtypes and streams to a reusable source setup."""
         if not self._clusters_prepared:
             raise RuntimeError("Source clusters must be prepared before transfer.")
         if not self._mode_by_tensor_stream:
-            raise RuntimeError("Source codebooks and modes must be built before transfer.")
+            raise RuntimeError(
+                "Source codebooks and modes must be built before transfer."
+            )
 
         transfer_modes = {}
         target_tensors = 0
@@ -87,25 +88,32 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         fallback_assignments = {}
 
         for name, tensor in _floating_tensors(named_tensors):
-            config = _byte_group_dtype_config(tensor.dtype)
+            config = DTYPES[tensor.dtype]
             stream_ids = tuple(range(int(config["element_size"])))
             tensor_name = str(name)
-            dtype = dtype_name(tensor.dtype)
+            dtype = config["name"]
             candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
             source_name = next(
                 (
                     candidate
                     for candidate in candidates
-                    if all((candidate, dtype, stream_id) in self._mode_by_tensor_stream for stream_id in stream_ids)
+                    if all(
+                        (candidate, dtype, stream_id) in self._mode_by_tensor_stream
+                        for stream_id in stream_ids
+                    )
                 ),
                 None,
             )
             if source_name is None:
-                raise ValueError(f"Direct transfer has no compatible source tensor for {tensor_name}:{dtype}.")
+                raise ValueError(
+                    f"Direct transfer has no compatible source tensor for {tensor_name}:{dtype}."
+                )
 
             for stream_id in stream_ids:
                 plan_key = (tensor_name, dtype, stream_id)
-                transfer_modes[plan_key] = self._mode_by_tensor_stream[(source_name, dtype, stream_id)]
+                transfer_modes[plan_key] = self._mode_by_tensor_stream[
+                    (source_name, dtype, stream_id)
+                ]
                 if source_name != tensor_name:
                     fallback_assignments[f"{tensor_name}:{dtype}:stream{stream_id}"] = (
                         f"{source_name}:{dtype}:stream{stream_id}"
@@ -143,4 +151,6 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
 
     def _mode_for_tensor_stream(self, name, tensor, stream_id):
         """Return the prepared mode for one concrete tensor byte stream."""
-        return self._transfer_mode_by_tensor_stream[self._transfer_plan_key(name, tensor, stream_id)]
+        return self._transfer_mode_by_tensor_stream[
+            self._transfer_plan_key(name, tensor, stream_id)
+        ]

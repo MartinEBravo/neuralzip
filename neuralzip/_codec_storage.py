@@ -1,15 +1,7 @@
-"""Native tensor encoding and decoding for :class:`NeuralZipCodec`."""
-
 import torch
-
-from . import huff0
-from .codec_primitives import (
-    DTYPE_BY_NAME,
-    _byte_group_dtype_config,
-    _tensor_from_raw_bytes,
-    dtype_name,
-)
-from .payloads import ByteGroupPayload, StreamChunk, TensorPayload
+from neuralzip import huff0
+from neuralzip.codec_primitives import DTYPES, _tensor_from_raw_bytes
+from neuralzip.payloads import ByteGroupPayload, StreamChunk, TensorPayload
 
 
 class _StorageMixin:
@@ -32,8 +24,12 @@ class _StorageMixin:
             compression_threshold=self.compression_threshold,
         )
         return [
-            self._tensor_payload_from_native_mixed(name, tensor, config, tensor_modes, native_groups)
-            for (name, tensor, config, tensor_modes), native_groups in zip(tensor_specs, native_batch, strict=True)
+            self._tensor_payload_from_native_mixed(
+                name, tensor, config, tensor_modes, native_groups
+            )
+            for (name, tensor, config, tensor_modes), native_groups in zip(
+                tensor_specs, native_batch, strict=True
+            )
         ]
 
     def compress_tensors(self, named_tensors):
@@ -51,7 +47,7 @@ class _StorageMixin:
                 batch_bytes = 0
 
         for name, tensor in named_tensors:
-            config = _byte_group_dtype_config(tensor.dtype)
+            config = DTYPES[tensor.dtype]
             raw_bytes = int(tensor.numel()) * int(config["element_size"])
             if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
                 flush_batch()
@@ -61,7 +57,8 @@ class _StorageMixin:
                 tensor_modes = ({"kind": "raw"},) * stream_count
             else:
                 tensor_modes = tuple(
-                    self._mode_for_tensor_stream(name, original, stream_id) for stream_id in range(stream_count)
+                    self._mode_for_tensor_stream(name, original, stream_id)
+                    for stream_id in range(stream_count)
                 )
             batch.append((name, original, config, tensor_modes))
             batch_bytes += raw_bytes
@@ -70,10 +67,14 @@ class _StorageMixin:
         flush_batch()
         return tuple(outputs)
 
-    def _tensor_payload_from_native_mixed(self, name, tensor, config, tensor_modes, native_groups):
+    def _tensor_payload_from_native_mixed(
+        self, name, tensor, config, tensor_modes, native_groups
+    ):
         """Assemble the stable archive objects returned by the native engine."""
         groups = []
-        for planned_mode, native_chunks in zip(tensor_modes, native_groups, strict=True):
+        for planned_mode, native_chunks in zip(
+            tensor_modes, native_groups, strict=True
+        ):
             chunks = []
             for native_chunk in native_chunks:
                 final_kind, payload, symbol_count, escapes, tail = native_chunk
@@ -83,7 +84,11 @@ class _StorageMixin:
                         mode=final_kind,
                         symbol_count=int(symbol_count),
                         payload=payload,
-                        codebook_id=(planned_mode.get("codebook_id") if final_kind != "raw" else None),
+                        codebook_id=(
+                            planned_mode.get("codebook_id")
+                            if final_kind != "raw"
+                            else None
+                        ),
                         escape_payload=escapes,
                         tail_payload=tail,
                     )
@@ -93,7 +98,7 @@ class _StorageMixin:
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=dtype_name(tensor.dtype),
+            dtype=config["name"],
             element_size=int(config["element_size"]),
             numel=int(tensor.numel()),
             groups=tuple(groups),
@@ -110,8 +115,8 @@ class _StorageMixin:
 
     def _native_decode_spec(self, compressed):
         """Translate one stable payload into the native mixed-stream ABI."""
-        dtype = DTYPE_BY_NAME[compressed.dtype]
-        config = _byte_group_dtype_config(dtype)
+        dtype = getattr(torch, compressed.dtype)
+        config = DTYPES[dtype]
         native_groups = []
         for group in compressed.groups:
             native_chunks = []
@@ -157,7 +162,9 @@ class _StorageMixin:
         )
         return [
             _tensor_from_raw_bytes(raw, dtype, compressed.shape)
-            for compressed, (_, dtype), raw in zip(payloads, prepared, raw_buffers, strict=True)
+            for compressed, (_, dtype), raw in zip(
+                payloads, prepared, raw_buffers, strict=True
+            )
         ]
 
     def decompress_tensors(self, payloads):

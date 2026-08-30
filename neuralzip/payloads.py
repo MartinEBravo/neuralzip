@@ -1,8 +1,5 @@
-"""Immutable payload records and their canonical byte accounting."""
-
 from dataclasses import dataclass
 
-# Canonical layout uses standard little-endian widths: B=1, I/i=4, Q/q=8.
 RAW_CHUNK_METADATA_BYTES = 17
 SHARED_CHUNK_METADATA_BYTES = 25
 PACKED_CHUNK_METADATA_BYTES = 41
@@ -12,11 +9,14 @@ CHUNK_METADATA_BYTES = {
     "packed_huff0": PACKED_CHUNK_METADATA_BYTES,
 }
 
+
 def _bytes_size(value):
     return 8 + len(value)
 
+
 def _text_size(value):
     return 4 + len(str(value).encode("utf-8"))
+
 
 @dataclass(frozen=True)
 class CodebookPayload:
@@ -31,6 +31,7 @@ class CodebookPayload:
     @property
     def metadata_bytes(self):
         return _codebook_size(self)
+
 
 @dataclass(frozen=True)
 class StreamChunk:
@@ -53,9 +54,11 @@ class StreamChunk:
     def compressed_bytes(self):
         return self.metadata_bytes + self.payload_bytes
 
+
 @dataclass(frozen=True)
 class ByteGroupPayload:
     chunks: tuple
+
 
 @dataclass(frozen=True)
 class TensorPayload:
@@ -71,8 +74,10 @@ class TensorPayload:
     def raw_bytes(self):
         return self.numel * self.element_size
 
+
 def _group_size(group):
     return 8 + sum(chunk.compressed_bytes for chunk in group.chunks)
+
 
 def _codebook_size(codebook):
     return (
@@ -85,6 +90,7 @@ def _codebook_size(codebook):
         + _bytes_size(codebook.vocab)
     )
 
+
 def _tensor_size(tensor):
     return (
         _text_size(tensor.name)
@@ -94,6 +100,7 @@ def _tensor_size(tensor):
         + 8
         + sum(_group_size(group) for group in tensor.groups)
     )
+
 
 def serialized_size(codebooks, tensors):
     """Return the complete encoded size under NeuralZip's canonical layout."""

@@ -1,24 +1,21 @@
-"""Stateless public operations for fitting, encoding, and inference."""
-
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import chain
 from os import PathLike
-
 import torch
-
-from ._setup import SetupReport, materialize_setup, setup_from_codec
-from ._setup import load_setup as load_setup_state
-from ._setup import save_setup as save_setup_state
-from .encoded_model import decode_model, make_encoded_model
-from .neuralzip_codec import NeuralZipCodec
-from .payloads import serialized_size
+from neuralzip._setup import SetupReport, materialize_setup, setup_from_codec
+from neuralzip._setup import load_setup as load_setup_state
+from neuralzip._setup import save_setup as save_setup_state
+from neuralzip.encoded_model import decode_model, make_encoded_model
+from neuralzip.neuralzip_codec import NeuralZipCodec
+from neuralzip.payloads import serialized_size
 
 
 @dataclass(frozen=True)
 class DecodeStats:
     decode_seconds: float
+
 
 @dataclass(frozen=True)
 class EncodeStats:
@@ -28,6 +25,7 @@ class EncodeStats:
     mapping_seconds: float
     encode_seconds: float
     total_seconds: float
+
 
 def _named_tensors(value, prefix=""):
     if torch.is_tensor(value):
@@ -43,6 +41,7 @@ def _named_tensors(value, prefix=""):
             name = str(index) if not prefix else f"{prefix}.{index}"
             yield from _named_tensors(child, name)
 
+
 def _model_tensors(model):
     if isinstance(model, Mapping):
         items = _named_tensors(model)
@@ -50,16 +49,25 @@ def _model_tensors(model):
         persistent = set(model.state_dict())
         items = chain(
             model.named_parameters(),
-            ((name, tensor) for name, tensor in model.named_buffers() if name in persistent),
+            (
+                (name, tensor)
+                for name, tensor in model.named_buffers()
+                if name in persistent
+            ),
         )
     else:
         raise TypeError("Expected a tensor mapping or torch.nn.Module.")
-    tensors = [(str(name), tensor) for name, tensor in items if torch.is_tensor(tensor) and tensor.is_floating_point()]
+    tensors = [
+        (str(name), tensor)
+        for name, tensor in items
+        if torch.is_tensor(tensor) and tensor.is_floating_point()
+    ]
     if not tensors:
         raise ValueError("No floating tensors were found.")
     if len({name for name, _tensor in tensors}) != len(tensors):
         raise ValueError("Tensor names must be unique after flattening the input.")
     return tensors
+
 
 def _load_pretrained_model(source, *, model_class=None, model_kwargs=None):
     if model_class is None:
@@ -70,6 +78,7 @@ def _load_pretrained_model(source, *, model_class=None, model_kwargs=None):
     if "dtype" not in options and "torch_dtype" not in options:
         options["dtype"] = torch.bfloat16
     return model_class.from_pretrained(source, **options).eval()
+
 
 class NeuralZip:
     """Single, stateless entry point for NeuralZip operations."""
@@ -201,7 +210,7 @@ class NeuralZip:
             )
             selected = cls.fit(model, **options)
 
-        from .gpu.pretrained import attach_gpu_model
+        from neuralzip.gpu.pretrained import attach_gpu_model
 
         model = attach_gpu_model(
             model,
@@ -216,7 +225,7 @@ class NeuralZip:
     @staticmethod
     def save_pretrained(model, directory, *, tokenizer=None):
         """Persist an attached NeuralZip model without restoring BF16 weights."""
-        from .gpu.pretrained import save_gpu_pretrained
+        from neuralzip.gpu.pretrained import save_gpu_pretrained
 
         return save_gpu_pretrained(model, directory=directory, tokenizer=tokenizer)
 
@@ -231,7 +240,7 @@ class NeuralZip:
         local_files_only=False,
     ):
         """Load a previously persisted NeuralZip inference checkpoint."""
-        from .gpu.pretrained import load_gpu_pretrained
+        from neuralzip.gpu.pretrained import load_gpu_pretrained
 
         return load_gpu_pretrained(
             pretrained_model_name_or_path,

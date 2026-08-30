@@ -1,5 +1,3 @@
-"""NeuralZip's public API."""
-
-from .core import NeuralZip
+from neuralzip.core import NeuralZip
 
 __all__ = ["NeuralZip"]

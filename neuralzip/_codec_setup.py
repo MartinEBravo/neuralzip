@@ -1,15 +1,10 @@
-"""Clustering, codebook construction and mode selection."""
-
-import time
-
 import numpy as np
+import time
 import torch
-
-from . import huff0
-from .codec_primitives import (
-    _byte_group_dtype_config,
+from neuralzip import huff0
+from neuralzip.codec_primitives import (
+    DTYPES,
     _byte_group_reordered_bytes,
-    dtype_name,
     estimate_mode,
     exponent_distribution,
     jensen_shannon_distance,
@@ -18,7 +13,7 @@ from .codec_primitives import (
     tokenize_ngrams,
     topk_vocab,
 )
-from .payloads import (
+from neuralzip.payloads import (
     PACKED_CHUNK_METADATA_BYTES,
     RAW_CHUNK_METADATA_BYTES,
     SHARED_CHUNK_METADATA_BYTES,
@@ -52,13 +47,21 @@ class _SetupMixin:
 
             if best_index is None or best_distance > self.cluster_js_threshold:
                 cluster_id = f"js_{len(clusters):03d}"
-                clusters.append({"cluster_id": cluster_id, "centroid": distribution, "weight": weight})
+                clusters.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "centroid": distribution,
+                        "weight": weight,
+                    }
+                )
                 computed[name] = cluster_id
                 continue
 
             cluster = clusters[best_index]
             total_weight = cluster["weight"] + weight
-            cluster["centroid"] = (cluster["centroid"] * cluster["weight"] + distribution * weight) / total_weight
+            cluster["centroid"] = (
+                cluster["centroid"] * cluster["weight"] + distribution * weight
+            ) / total_weight
             cluster["weight"] = total_weight
             computed[name] = cluster["cluster_id"]
         self._computed_cluster_map = computed
@@ -66,7 +69,7 @@ class _SetupMixin:
 
     def _codebook_key(self, name, tensor, stream_id):
         cluster_id = self.cluster_map.get(name, self._computed_cluster_map.get(name))
-        return cluster_id, dtype_name(tensor.dtype), int(stream_id)
+        return cluster_id, DTYPES[tensor.dtype]["name"], int(stream_id)
 
     @staticmethod
     def _bounded_stream_sample(stream, max_bytes, segments=8):
@@ -80,7 +83,9 @@ class _SetupMixin:
         segment_size = max(1, max_bytes // segment_count)
         last_start = len(stream) - segment_size
         starts = np.linspace(0, last_start, segment_count, dtype=np.int64)
-        sample = b"".join(stream[int(start) : int(start) + segment_size] for start in starts)
+        sample = b"".join(
+            stream[int(start) : int(start) + segment_size] for start in starts
+        )
         return sample[:max_bytes]
 
     def _measure_direct_mode(self, mode, element_size, sample_parts):
@@ -95,7 +100,15 @@ class _SetupMixin:
                 continue
             interleaved = bytearray(len(part) * element_size)
             interleaved[0::element_size] = part
-            tensor_specs.append((interleaved, element_size, 0, self._stream_chunk_size(element_size), stream_modes))
+            tensor_specs.append(
+                (
+                    interleaved,
+                    element_size,
+                    0,
+                    self._stream_chunk_size(element_size),
+                    stream_modes,
+                )
+            )
         if not tensor_specs:
             return 0, 0.0
 
@@ -119,13 +132,22 @@ class _SetupMixin:
         encoded_bytes = 0
         for native_groups in native_batch:
             for final_kind, body, _, escapes, tail in native_groups[0]:
-                encoded_bytes += metadata_by_mode[str(final_kind)] + len(body) + len(escapes) + len(tail)
+                encoded_bytes += (
+                    metadata_by_mode[str(final_kind)]
+                    + len(body)
+                    + len(escapes)
+                    + len(tail)
+                )
         return encoded_bytes, seconds
 
     def _score_mode(self, mode, element_size, codebook_payload=None, sample_parts=()):
-        sample_cost, sample_seconds = self._measure_direct_mode(mode, element_size, tuple(sample_parts))
+        sample_cost, sample_seconds = self._measure_direct_mode(
+            mode, element_size, tuple(sample_parts)
+        )
         mode["sample_cost"] = sample_cost
-        mode["fixed_cost"] = codebook_payload.metadata_bytes if codebook_payload is not None else 0
+        mode["fixed_cost"] = (
+            codebook_payload.metadata_bytes if codebook_payload is not None else 0
+        )
         mode["sample_cost"] += mode["fixed_cost"]
         mode["sample_seconds"] = sample_seconds
         return mode
@@ -154,10 +176,17 @@ class _SetupMixin:
         if counts is None or kind != "shared_huff0":
             counts = np.bincount(np.frombuffer(tokens, dtype=np.uint8), minlength=256)
         try:
-            codebook = huff0.build_codebook_from_counts(counts, prior_count=prior_count, max_bits=max_bits)
+            codebook = huff0.build_codebook_from_counts(
+                counts, prior_count=prior_count, max_bits=max_bits
+            )
         except (RuntimeError, ValueError):
             return None
-        return {"kind": kind, "ngram_n": int(ngram_n), "vocab": vocab, "codebook": codebook}
+        return {
+            "kind": kind,
+            "ngram_n": int(ngram_n),
+            "vocab": vocab,
+            "codebook": codebook,
+        }
 
     def _candidate_payload(self, key, mode, codebook_id=-1):
         _, dtype, stream_id = key
@@ -183,12 +212,21 @@ class _SetupMixin:
         """Bound shared size from exact counts plus Huff0's 10-byte 4X overhead."""
         table = huff0.export_code_table(mode["codebook"].codebook, max_bits=12)
         symbol_bits = sum(
-            int(count) * int(length) for count, length in zip(symbol_counts, table.code_lengths, strict=True)
+            int(count) * int(length)
+            for count, length in zip(symbol_counts, table.code_lengths, strict=True)
         )
         symbol_bytes = (symbol_bits + 7) // 8
-        shared_chunks = symbol_bytes + 10 * int(shared_chunk_count) + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
-        fallback_chunks = int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
-        return int(codebook_payload.metadata_bytes) + min(shared_chunks, fallback_chunks)
+        shared_chunks = (
+            symbol_bytes
+            + 10 * int(shared_chunk_count)
+            + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
+        )
+        fallback_chunks = (
+            int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
+        )
+        return int(codebook_payload.metadata_bytes) + min(
+            shared_chunks, fallback_chunks
+        )
 
     def _evaluate_modes(
         self,
@@ -204,7 +242,9 @@ class _SetupMixin:
     ):
         raw_mode = {"kind": "raw", "fixed_cost": 0}
         self._score_mode(raw_mode, element_size, sample_parts=sample_parts)
-        raw_mode["full_cost"] = int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
+        raw_mode["full_cost"] = (
+            int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
+        )
         prior_count = self.exponent_prior_count if is_exponent else self.prior_count
 
         shared = None
@@ -220,7 +260,9 @@ class _SetupMixin:
             payload = self._candidate_payload(key, shared)
             if symbol_counts is not None:
                 shared["fixed_cost"] = payload.metadata_bytes
-                _, shared["sample_seconds"] = self._measure_direct_mode(shared, element_size, tuple(sample_parts))
+                _, shared["sample_seconds"] = self._measure_direct_mode(
+                    shared, element_size, tuple(sample_parts)
+                )
                 shared["full_cost"] = self._shared_histogram_cost(
                     shared,
                     symbol_counts,
@@ -243,14 +285,18 @@ class _SetupMixin:
         packed_candidates = []
         if is_exponent:
             for n in self.ngram_values:
-                packed = self._build_candidate(sample, kind="packed_huff0", prior_count=prior_count, ngram_n=n)
+                packed = self._build_candidate(
+                    sample, kind="packed_huff0", prior_count=prior_count, ngram_n=n
+                )
                 if packed is None:
                     continue
                 payload = self._candidate_payload(key, packed)
                 self._score_mode(packed, element_size, payload, sample_parts)
                 packed_candidates.append(packed)
 
-        packed_scores = (estimate_mode(candidate, scale) for candidate in packed_candidates)
+        packed_scores = (
+            estimate_mode(candidate, scale) for candidate in packed_candidates
+        )
         improving = [score for score in packed_scores if score[1] < base_cost]
         packed = None
         if improving:
@@ -282,15 +328,19 @@ class _SetupMixin:
             return selected
         codebook_id = len(self._codebook_payloads)
         selected["codebook_id"] = codebook_id
-        self._codebook_payloads.append(self._candidate_payload(key, selected, codebook_id=codebook_id))
+        self._codebook_payloads.append(
+            self._candidate_payload(key, selected, codebook_id=codebook_id)
+        )
         return selected
 
     def _prepare_tensor_modes(self, named_tensors, mode_by_key):
         for name, tensor in _floating_tensors(named_tensors):
-            config = _byte_group_dtype_config(tensor.dtype)
+            config = DTYPES[tensor.dtype]
             for stream_id in range(int(config["element_size"])):
                 selected = mode_by_key[self._codebook_key(name, tensor, stream_id)]
-                self._mode_by_tensor_stream[self._transfer_plan_key(name, tensor, stream_id)] = selected
+                self._mode_by_tensor_stream[
+                    self._transfer_plan_key(name, tensor, stream_id)
+                ] = selected
 
     def _collect_codebook_samples(self, named_tensors):
         """Collect bounded timing probes and complete exponent histograms."""
@@ -302,7 +352,7 @@ class _SetupMixin:
         chunk_counts = {}
         for name, tensor in _floating_tensors(named_tensors):
             original = tensor.detach().cpu().contiguous()
-            config = _byte_group_dtype_config(original.dtype)
+            config = DTYPES[original.dtype]
             reordered = _byte_group_reordered_bytes(original, config)
             element_size = int(config["element_size"])
             exponent_stream = element_size - 1 if config["bit_reorder"] else -1
@@ -320,9 +370,9 @@ class _SetupMixin:
                     shared_chunks + (len(stream) + shared_step - 1) // shared_step,
                 )
                 if is_exponent:
-                    counts = np.bincount(np.frombuffer(stream, dtype=np.uint8), minlength=256).astype(
-                        np.uint64, copy=False
-                    )
+                    counts = np.bincount(
+                        np.frombuffer(stream, dtype=np.uint8), minlength=256
+                    ).astype(np.uint64, copy=False)
                     if key in exponent_counts:
                         exponent_counts[key] += counts
                     else:
@@ -339,9 +389,13 @@ class _SetupMixin:
 
     def build_codebooks_and_select_modes(self, named_tensors):
         if not self._clusters_prepared:
-            raise RuntimeError("Clusters must be prepared before building NeuralZip codebooks.")
+            raise RuntimeError(
+                "Clusters must be prepared before building NeuralZip codebooks."
+            )
         named_tensors = list(named_tensors)
-        sample_parts, total_sizes, stream_info, exponent_counts, chunk_counts = self._collect_codebook_samples(named_tensors)
+        sample_parts, total_sizes, stream_info, exponent_counts, chunk_counts = (
+            self._collect_codebook_samples(named_tensors)
+        )
 
         evaluations = []
         for key in sorted(sample_parts):
@@ -360,11 +414,17 @@ class _SetupMixin:
                 )
             )
 
-        exponent_bytes = sum(row["total_size"] for row in evaluations if row["is_exponent"])
+        exponent_bytes = sum(
+            row["total_size"] for row in evaluations if row["is_exponent"]
+        )
         source_budget = int(exponent_bytes * self.packed_source_budget_ratio)
-        time_selected = select_packed_time_budget(evaluations, packed_time_budget_ratio=self.packed_time_budget_ratio)
+        time_selected = select_packed_time_budget(
+            evaluations, packed_time_budget_ratio=self.packed_time_budget_ratio
+        )
         opportunities = [
-            row for row in evaluations if row["opportunity"] is not None and row["key"] in time_selected
+            row
+            for row in evaluations
+            if row["opportunity"] is not None and row["key"] in time_selected
         ]
         opportunities.sort(
             key=lambda row: (
@@ -384,6 +444,10 @@ class _SetupMixin:
 
         mode_by_key = {}
         for row in evaluations:
-            selected = row["opportunity"]["mode"] if row["key"] in selected_packed else row["base"]
+            selected = (
+                row["opportunity"]["mode"]
+                if row["key"] in selected_packed
+                else row["base"]
+            )
             mode_by_key[row["key"]] = self._finalize_mode(row["key"], selected)
         self._prepare_tensor_modes(named_tensors, mode_by_key)

@@ -1,11 +1,7 @@
-"""Weight-free encoded model values returned by ``NeuralZip.encode``."""
-
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-
 import torch
-
-from .codec_primitives import _tensor_from_raw_bytes, _tensor_raw_bytes
+from neuralzip.codec_primitives import _tensor_from_raw_bytes, _tensor_raw_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +24,7 @@ class _StoredTensor:
 
     def tensor(self):
         return _tensor_from_raw_bytes(self.data, self.dtype, self.shape)
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class EncodedModel:
@@ -64,6 +61,7 @@ class EncodedModel:
             f"encode_seconds={self.encode_seconds:.4f})"
         )
 
+
 def _source_metadata(source, names):
     if isinstance(source, Mapping):
         return {"source_kind": "mapping"}
@@ -82,10 +80,13 @@ def _source_metadata(source, names):
             canonical = encoded_group[0] if encoded_group else group[0][0]
             if not encoded_group:
                 auxiliary.append(_StoredTensor.from_tensor(canonical, group[0][1]))
-            state_aliases.extend((name, canonical) for name, _ in group if name != canonical)
+            state_aliases.extend(
+                (name, canonical) for name, _ in group if name != canonical
+            )
 
     module_training = tuple(
-        (str(name), bool(module.training)) for name, module in source.named_modules(remove_duplicate=False)
+        (str(name), bool(module.training))
+        for name, module in source.named_modules(remove_duplicate=False)
     )
 
     from transformers import PreTrainedModel
@@ -105,6 +106,7 @@ def _source_metadata(source, names):
         )
     return metadata
 
+
 def make_encoded_model(
     source,
     *,
@@ -119,9 +121,13 @@ def make_encoded_model(
 ):
     """Build an EncodedModel without retaining ``source`` or its weights."""
     names = tuple(names)
-    requires_grad = tuple(requires_grad) if requires_grad is not None else (False,) * len(names)
+    requires_grad = (
+        tuple(requires_grad) if requires_grad is not None else (False,) * len(names)
+    )
     source_metadata = _source_metadata(source, names)
-    auxiliary_bytes = sum(len(value.data) for value in source_metadata.get("auxiliary_state", ()))
+    auxiliary_bytes = sum(
+        len(value.data) for value in source_metadata.get("auxiliary_state", ())
+    )
     return EncodedModel(
         names=names,
         payloads=tuple(payloads),
@@ -134,17 +140,23 @@ def make_encoded_model(
         **source_metadata,
     )
 
+
 def _decode_payloads(encoded, codec):
     codec.load_codebooks(encoded.codebooks)
     decoded = tuple(codec.decompress_tensors(encoded.payloads))
 
     if len(decoded) != len(encoded.names):
         raise RuntimeError("Decoder returned a different number of tensors.")
-    return {name: tensor.detach().contiguous() for name, tensor in zip(encoded.names, decoded, strict=True)}
+    return {
+        name: tensor.detach().contiguous()
+        for name, tensor in zip(encoded.names, decoded, strict=True)
+    }
+
 
 def _set_state_tensor(module, name, tensor):
     parent_name, _, child_name = name.rpartition(".")
     setattr(module.get_submodule(parent_name), child_name, tensor)
+
 
 def _install_state(module, tensors, requires_grad, state_aliases):
     values = dict(tensors)
@@ -153,7 +165,9 @@ def _install_state(module, tensors, requires_grad, state_aliases):
 
     destination_state = module.state_dict(keep_vars=True)
     persistent = {
-        name: tensor.to(destination_state[name].device) for name, tensor in values.items() if name in destination_state
+        name: tensor.to(destination_state[name].device)
+        for name, tensor in values.items()
+        if name in destination_state
     }
     module.load_state_dict(persistent, strict=True, assign=True)
 
@@ -177,6 +191,7 @@ def _install_state(module, tensors, requires_grad, state_aliases):
             tensor = buffers[name]
         tensor.requires_grad_(requires)
 
+
 def _reconstruct(encoded, tensors, *, destination=None, model_factory=None):
     if encoded.source_kind == "mapping":
         return {
@@ -186,9 +201,13 @@ def _reconstruct(encoded, tensors, *, destination=None, model_factory=None):
     if destination is None and model_factory is not None:
         destination = model_factory()
     elif destination is None and encoded.source_kind == "huggingface":
-        destination = encoded.model_class(encoded.config_class.from_dict(encoded.config))
+        destination = encoded.model_class(
+            encoded.config_class.from_dict(encoded.config)
+        )
     elif destination is None:
-        raise TypeError("Generic nn.Module reconstruction requires destination= or model_factory=.")
+        raise TypeError(
+            "Generic nn.Module reconstruction requires destination= or model_factory=."
+        )
     state = dict(tensors)
     gradients = dict(zip(encoded.names, encoded.requires_grad, strict=True))
     for stored in encoded.auxiliary_state:
@@ -199,6 +218,7 @@ def _reconstruct(encoded, tensors, *, destination=None, model_factory=None):
         destination.get_submodule(name).training = training
     return destination
 
+
 def decode_model(encoded, codec, *, destination=None, model_factory=None):
     """Decode payloads and reconstruct their original input category."""
     return _reconstruct(
@@ -207,5 +227,6 @@ def decode_model(encoded, codec, *, destination=None, model_factory=None):
         destination=destination,
         model_factory=model_factory,
     )
+
 
 __all__ = ["EncodedModel"]

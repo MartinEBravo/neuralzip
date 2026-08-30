@@ -1,36 +1,39 @@
-"""Dtype, byte-layout, clustering, and mode-selection primitives."""
-
 import math
-
 import numpy as np
 import torch
 
-DTYPE_BY_NAME = {
-    "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "float32": torch.float32,
+DTYPES = {
+    torch.float16: {
+        "name": "float16",
+        "numpy": np.dtype("<u2"),
+        "element_size": 2,
+        "bit_reorder": 0,
+        "mantissa_bits": 10,
+        "exponent_mask": 0x1F,
+    },
+    torch.bfloat16: {
+        "name": "bfloat16",
+        "numpy": np.dtype("<u2"),
+        "element_size": 2,
+        "bit_reorder": 1,
+        "mantissa_bits": 7,
+        "exponent_mask": 0xFF,
+    },
+    torch.float32: {
+        "name": "float32",
+        "numpy": np.dtype("<u4"),
+        "element_size": 4,
+        "bit_reorder": 1,
+        "mantissa_bits": 23,
+        "exponent_mask": 0xFF,
+    },
 }
 
-BYTE_GROUP_DTYPE_CONFIG = {
-    torch.float32: {"element_size": 4, "bit_reorder": 1},
-    torch.bfloat16: {"element_size": 2, "bit_reorder": 1},
-    torch.float16: {"element_size": 2, "bit_reorder": 0},
-}
-
-_FLOAT_EXPONENT_LAYOUTS = {
-    torch.float16: (np.dtype("<u2"), 10, 0x1F),
-    torch.bfloat16: (np.dtype("<u2"), 7, 0xFF),
-    torch.float32: (np.dtype("<u4"), 23, 0xFF),
-}
-
-def dtype_name(dtype):
-    """Return the stable, unqualified name used in NeuralZip payloads."""
-
-    return str(dtype).replace("torch.", "")
 
 def _tensor_raw_bytes(tensor):
     tensor = tensor.detach().cpu().contiguous()
     return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
+
 
 def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
     # Native decoders return an owning bytearray that PyTorch can wrap
@@ -39,41 +42,58 @@ def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
     shape = tuple(int(dimension) for dimension in shape)
     expected_bytes = math.prod(shape) * torch.empty((), dtype=dtype).element_size()
     if len(owner) != expected_bytes:
-        raise ValueError(f"Decoded tensor byte length mismatch: {len(owner)} != {expected_bytes}.")
+        raise ValueError(
+            f"Decoded tensor byte length mismatch: {len(owner)} != {expected_bytes}."
+        )
     if not owner:
         return torch.empty(shape, dtype=dtype)
     return torch.frombuffer(owner, dtype=torch.uint8).view(dtype).reshape(shape)
 
-def _byte_group_dtype_config(dtype):
-    return BYTE_GROUP_DTYPE_CONFIG[dtype]
 
 def _transform_exponent_layout(raw_bytes, dtype, *, restore):
-    storage_dtype, mantissa_bits, exponent_mask = _FLOAT_EXPONENT_LAYOUTS[dtype]
+    config = DTYPES[dtype]
+    storage_dtype = config["numpy"]
+    mantissa_bits = config["mantissa_bits"]
+    exponent_mask = config["exponent_mask"]
     unsigned = storage_dtype.type
     exponent_bits = int(exponent_mask).bit_length()
     values = np.frombuffer(raw_bytes, dtype=storage_dtype).copy()
     mantissa = values & unsigned((1 << mantissa_bits) - 1)
     if restore:
-        sign = (values << unsigned(exponent_bits)) & unsigned(1 << (mantissa_bits + exponent_bits))
+        sign = (values << unsigned(exponent_bits)) & unsigned(
+            1 << (mantissa_bits + exponent_bits)
+        )
         exponent = (values >> unsigned(1)) & unsigned(exponent_mask << mantissa_bits)
     else:
         sign = (values >> unsigned(exponent_bits)) & unsigned(1 << mantissa_bits)
-        exponent = (values << unsigned(1)) & unsigned(exponent_mask << (mantissa_bits + 1))
+        exponent = (values << unsigned(1)) & unsigned(
+            exponent_mask << (mantissa_bits + 1)
+        )
     return (sign | exponent | mantissa).astype(storage_dtype, copy=False).tobytes()
+
 
 def _byte_group_reordered_bytes(tensor, config):
     raw_bytes = _tensor_raw_bytes(tensor)
-    return _transform_exponent_layout(raw_bytes, tensor.dtype, restore=False) if config["bit_reorder"] else raw_bytes
+    return (
+        _transform_exponent_layout(raw_bytes, tensor.dtype, restore=False)
+        if config["bit_reorder"]
+        else raw_bytes
+    )
+
 
 def exponent_distribution(tensor):
     """Return the normalized exponent histogram of a floating tensor."""
 
-    storage_dtype, mantissa_bits, exponent_mask = _FLOAT_EXPONENT_LAYOUTS[tensor.dtype]
+    config = DTYPES[tensor.dtype]
+    storage_dtype = config["numpy"]
+    mantissa_bits = config["mantissa_bits"]
+    exponent_mask = config["exponent_mask"]
     bits = np.frombuffer(_tensor_raw_bytes(tensor), dtype=storage_dtype)
     exponent = (bits >> mantissa_bits) & exponent_mask
     counts = np.bincount(exponent, minlength=256).astype(np.float64)
     total = counts.sum()
     return counts / total if total else counts
+
 
 def jensen_shannon_distance(left, right):
     """Return the base-2 Jensen--Shannon distance between distributions."""
@@ -83,9 +103,14 @@ def jensen_shannon_distance(left, right):
     middle = 0.5 * (left + right)
     left_mask = left > 0
     right_mask = right > 0
-    divergence = 0.5 * np.sum(left[left_mask] * np.log2(left[left_mask] / middle[left_mask]))
-    divergence += 0.5 * np.sum(right[right_mask] * np.log2(right[right_mask] / middle[right_mask]))
+    divergence = 0.5 * np.sum(
+        left[left_mask] * np.log2(left[left_mask] / middle[left_mask])
+    )
+    divergence += 0.5 * np.sum(
+        right[right_mask] * np.log2(right[right_mask] / middle[right_mask])
+    )
     return float(np.sqrt(max(float(divergence), 0.0)))
+
 
 _KIND_PRIORITY = {
     "shared_huff0": 0,
@@ -93,9 +118,11 @@ _KIND_PRIORITY = {
     "raw": 2,
 }
 
+
 def _priority(mode):
     kind = str(mode.get("kind", ""))
     return _KIND_PRIORITY.get(kind, len(_KIND_PRIORITY)), kind
+
 
 def estimate_mode(mode, scale):
     fixed = float(mode.get("fixed_cost", 0))
@@ -103,6 +130,7 @@ def estimate_mode(mode, scale):
     if size is None:
         size = fixed + max(0.0, float(mode["sample_cost"]) - fixed) * scale
     return mode, float(size), float(mode["sample_seconds"]) * scale
+
 
 def select_fastest_within_ratio(scored, *, ratio_tolerance=0.0):
     """Select the fastest mode within a size tolerance of the smallest."""
@@ -123,11 +151,14 @@ def select_fastest_within_ratio(scored, *, ratio_tolerance=0.0):
         ),
     )
 
+
 def select_packed_time_budget(evaluations, *, packed_time_budget_ratio):
     """Choose packed opportunities within the global setup-time budget."""
 
     rows = tuple(evaluations)
-    budget_seconds = float(packed_time_budget_ratio) * sum(float(row["base_seconds"]) for row in rows)
+    budget_seconds = float(packed_time_budget_ratio) * sum(
+        float(row["base_seconds"]) for row in rows
+    )
 
     opportunities = []
     for row in rows:
@@ -150,7 +181,9 @@ def select_packed_time_budget(evaluations, *, packed_time_budget_ratio):
             used_seconds += extra_seconds
     return frozenset(selected_keys)
 
+
 ESCAPE_SYMBOL = 255
+
 
 def _validate_ngram(n):
     n = int(n)
@@ -158,8 +191,10 @@ def _validate_ngram(n):
         raise ValueError("Packed exponent n-grams require n in [2, 8].")
     return n
 
+
 def _symbol_dtype(n):
     return np.dtype("<u4" if n <= 4 else "<u8")
+
 
 def _pack_ngram_symbols(data, n):
     n = _validate_ngram(n)
@@ -175,6 +210,7 @@ def _pack_ngram_symbols(data, n):
         packed |= values[:, offset].astype(dtype) << (8 * offset)
     return packed, data[complete_length:]
 
+
 def topk_vocab(data, n, top_k=254):
     """Return a sorted vocabulary of the most frequent n-grams."""
 
@@ -189,6 +225,7 @@ def topk_vocab(data, n, top_k=254):
     order = np.argsort(counts, kind="stable")[::-1]
     selected = np.sort(symbols[order[:top_k]]).astype(_symbol_dtype(n), copy=False)
     return selected.tobytes()
+
 
 def tokenize_ngrams(data, n, vocab):
     """Tokenize n-grams with byte IDs and a lossless escape stream."""
@@ -207,6 +244,8 @@ def tokenize_ngrams(data, n, vocab):
     hits = (positions < vocab_values.size) & (vocab_values[safe_positions] == packed)
     tokens = np.full(packed.size, ESCAPE_SYMBOL, dtype=np.uint8)
     tokens[hits] = positions[hits].astype(np.uint8)
-    source = np.frombuffer(bytes(data)[: packed.size * n], dtype=np.uint8).reshape(-1, n)
+    source = np.frombuffer(bytes(data)[: packed.size * n], dtype=np.uint8).reshape(
+        -1, n
+    )
     escapes = source[~hits].reshape(-1).tobytes() if np.any(~hits) else b""
     return tokens.tobytes(), escapes, tail

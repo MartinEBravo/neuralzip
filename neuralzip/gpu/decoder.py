@@ -1,9 +1,6 @@
-"""CuPy launcher for NeuralZip's batched BF16 CUDA decoder."""
-
 import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
-
 import numpy as np
 import torch
 
@@ -20,6 +17,7 @@ DESCRIPTOR_NAMES = (
     "output",
 )
 
+
 @dataclass(frozen=True)
 class PreparedBF16Batch:
     descriptor_tensors: tuple[torch.Tensor, ...] = field(repr=False)
@@ -29,6 +27,7 @@ class PreparedBF16Batch:
     kernel_args: tuple[object, ...] = field(repr=False)
     outputs: tuple[torch.Tensor, ...] = field(repr=False)
 
+
 @dataclass
 class _Kernel:
     module: object
@@ -37,8 +36,10 @@ class _Kernel:
     optin_shared_memory: int | None = None
     configured_shared_memory: int = 0
 
+
 def _device_property(properties, name):
     return int(properties.get(name, properties.get(name.encode("ascii"), 0)))
+
 
 class CuPyBF16Decoder:
     def __init__(self, kernel_path=KERNEL_PATH):
@@ -52,7 +53,9 @@ class CuPyBF16Decoder:
             try:
                 self._cupy = importlib.import_module("cupy")
             except ImportError as error:
-                raise ImportError("NeuralZip GPU inference requires a CuPy wheel matching CUDA.") from error
+                raise ImportError(
+                    "NeuralZip GPU inference requires a CuPy wheel matching CUDA."
+                ) from error
         return self._cupy
 
     def _kernel(self, device_index):
@@ -75,9 +78,12 @@ class CuPyBF16Decoder:
             return
         if kernel.default_shared_memory is None:
             properties = self.cupy.cuda.runtime.getDeviceProperties(device_index)
-            kernel.default_shared_memory = _device_property(properties, "sharedMemPerBlock")
+            kernel.default_shared_memory = _device_property(
+                properties, "sharedMemPerBlock"
+            )
             kernel.optin_shared_memory = (
-                _device_property(properties, "sharedMemPerBlockOptin") or kernel.default_shared_memory
+                _device_property(properties, "sharedMemPerBlockOptin")
+                or kernel.default_shared_memory
             )
         if required <= kernel.default_shared_memory:
             return
@@ -112,7 +118,9 @@ class CuPyBF16Decoder:
         def integers(values):
             return torch.tensor(tuple(values), dtype=torch.int32, device=device)
 
-        group_ids = [group_id for group_id, grid in enumerate(grids) for _ in range(grid)]
+        group_ids = [
+            group_id for group_id, grid in enumerate(grids) for _ in range(grid)
+        ]
         local_ids = [local_id for grid in grids for local_id in range(grid)]
 
         descriptors = tuple(pointers(name) for name in DESCRIPTOR_NAMES)
@@ -122,7 +130,9 @@ class CuPyBF16Decoder:
             integers(group_ids),
             integers(local_ids),
         )
-        shared_memory = 4 * ((THREADS_PER_BLOCK + 31) // 32) + 2 * max(group.max_block_elements for group in groups)
+        shared_memory = 4 * ((THREADS_PER_BLOCK + 31) // 32) + 2 * max(
+            group.max_block_elements for group in groups
+        )
         return PreparedBF16Batch(
             descriptor_tensors=descriptors,
             device=device,
@@ -148,7 +158,9 @@ class CuPyBF16Decoder:
             )
         return prepared.outputs
 
+
 _DECODER = CuPyBF16Decoder()
+
 
 def default_decoder():
     return _DECODER

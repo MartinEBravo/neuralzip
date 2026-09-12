@@ -13,8 +13,8 @@ from neuralzip.payloads import (
     TensorPayload,
     serialized_size,
 )
-from neuralzip.setup import _model_tensors, load_setup, materialize_setup
-from neuralzip.utils import DTYPES
+from neuralzip.setup import load_setup, materialize_setup
+from neuralzip.utils import DTYPES, _model_tensors
 
 FORMAT_VERSION = 1
 

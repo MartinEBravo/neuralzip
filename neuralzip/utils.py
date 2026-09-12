@@ -1,5 +1,7 @@
 import math
 import time
+from collections.abc import Mapping
+from itertools import chain
 
 import numpy as np
 import torch
@@ -30,6 +32,46 @@ DTYPES = {
         "exponent_mask": 0xFF,
     },
 }
+
+
+def _named_tensors(value, prefix=""):
+    if torch.is_tensor(value):
+        yield prefix, value
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            name = str(key) if not prefix else f"{prefix}.{key}"
+            yield from _named_tensors(child, name)
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            name = str(index) if not prefix else f"{prefix}.{index}"
+            yield from _named_tensors(child, name)
+
+
+def _model_tensors(model):
+    if isinstance(model, Mapping):
+        items = _named_tensors(model)
+    elif isinstance(model, torch.nn.Module):
+        persistent = set(model.state_dict())
+        items = chain(
+            model.named_parameters(),
+            (
+                (name, tensor)
+                for name, tensor in model.named_buffers()
+                if name in persistent
+            ),
+        )
+    else:
+        raise TypeError("Expected a tensor mapping or torch.nn.Module.")
+    tensors = [
+        (str(name), tensor)
+        for name, tensor in items
+        if torch.is_tensor(tensor) and tensor.is_floating_point()
+    ]
+    if not tensors:
+        raise ValueError("No floating tensors were found.")
+    if len({name for name, _ in tensors}) != len(tensors):
+        raise ValueError("Tensor names must be unique.")
+    return tensors
 
 
 def _tensor_raw_bytes(tensor):

@@ -1,16 +1,12 @@
 import copy
 import pickle
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from itertools import chain
 from pathlib import Path
-
-import torch
 
 from neuralzip import huff0
 from neuralzip.codec.codec import BF16_NAME, EXPONENT_STREAM, NeuralZipCodec
 from neuralzip.payloads import CodebookPayload
-from neuralzip.utils import time_call
+from neuralzip.utils import _model_tensors, time_call
 
 
 @dataclass(frozen=True)
@@ -119,46 +115,6 @@ def materialize_setup(value=None, *, threads=None, gpu=False):
     if gpu:
         _add_global_codebook(codec)
     return codec
-
-
-def _named_tensors(value, prefix=""):
-    if torch.is_tensor(value):
-        yield prefix, value
-    elif isinstance(value, Mapping):
-        for key, child in value.items():
-            name = str(key) if not prefix else f"{prefix}.{key}"
-            yield from _named_tensors(child, name)
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            name = str(index) if not prefix else f"{prefix}.{index}"
-            yield from _named_tensors(child, name)
-
-
-def _model_tensors(model):
-    if isinstance(model, Mapping):
-        items = _named_tensors(model)
-    elif isinstance(model, torch.nn.Module):
-        persistent = set(model.state_dict())
-        items = chain(
-            model.named_parameters(),
-            (
-                (name, tensor)
-                for name, tensor in model.named_buffers()
-                if name in persistent
-            ),
-        )
-    else:
-        raise TypeError("Expected a tensor mapping or torch.nn.Module.")
-    tensors = [
-        (str(name), tensor)
-        for name, tensor in items
-        if torch.is_tensor(tensor) and tensor.is_floating_point()
-    ]
-    if not tensors:
-        raise ValueError("No floating tensors were found.")
-    if len({name for name, _ in tensors}) != len(tensors):
-        raise ValueError("Tensor names must be unique.")
-    return tensors
 
 
 def build_setup(model, **setup_options):

@@ -27,7 +27,7 @@ wheel.exclude = ["neuralzip/native/*"]
 sdist.include = [
     "CMakeLists.txt",
     "neuralzip/native/*.cpp",
-    "neuralzip/native/*.inc",
+    "neuralzip/native/*.h",
     "neuralzip/gpu/cuda/*.cu",
     "neuralzip/codebooks/*.huff0",
     "third_party/dfloat11/LICENSE",

@@ -23,15 +23,15 @@ namespace {
 
 namespace nb = nanobind;
 
-#include "common.inc"
-#include "codebooks.inc"
-#include "gpu_layout.inc"
-#include "ngrams.inc"
-#include "mixed_encode.inc"
-#include "binding_helpers.inc"
-#include "direct_storage.inc"
-#include "encode_queue.inc"
-#include "decode_queue.inc"
+#include "common.h"
+#include "codebooks.h"
+#include "gpu_layout.h"
+#include "ngrams.h"
+#include "mixed_encode.h"
+#include "binding_helpers.h"
+#include "direct_storage.h"
+#include "encode_queue.h"
+#include "decode_queue.h"
 
 }  // namespace
 

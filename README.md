@@ -101,6 +101,21 @@ setup.save("qwen-family.setup.pkl")
 print(setup.setup_seconds)
 ```
 
+`neuralzip.setup(reference)` delegates to `NeuralZipSetup().build(reference)`:
+
+```python
+from neuralzip.setup import NeuralZipSetup
+
+setup = NeuralZipSetup(ngram_values=()).build(reference)
+setup.save("qwen-family.setup.pkl")
+setup = NeuralZipSetup.load("qwen-family.setup.pkl")
+```
+
+The constructor only configures defaults. `build()` learns the setup, replaces
+any previous learned state, and returns the same instance. Saved setups contain
+configuration, codebooks, assignments, and timing results, not training samples
+or native handles. Setup files from earlier schemas must be rebuilt.
+
 The setup analyzes every floating parameter and persistent floating buffer in
 FP16, BF16, or FP32. It clusters exponent distributions with Jensen--Shannon
 distance, builds reusable Huffman codebooks, measures the real native encoder,

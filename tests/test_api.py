@@ -21,12 +21,15 @@ def test_setup(monkeypatch):
     options = {"option1": 1, "option2": 2}
     expected = object()
 
-    def fake_build_setup(received_model, **received_options):
-        assert received_model is model
-        assert received_options == options
-        return expected
+    class FakeSetup:
+        def __init__(self, **received_options):
+            assert received_options == options
 
-    monkeypatch.setattr(api, "build_setup", fake_build_setup)
+        def build(self, received_model):
+            assert received_model is model
+            return expected
+
+    monkeypatch.setattr(api, "NeuralZipSetup", FakeSetup)
 
     result = api.neuralzip.setup(model, **options)
     assert result is expected

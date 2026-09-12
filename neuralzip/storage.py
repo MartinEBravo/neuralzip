@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import torch
 
 from neuralzip import huff0
-from neuralzip.codec.codec import NeuralZipCodec
+from neuralzip.compressor import NeuralZipCompressor
 from neuralzip.payloads import (
     CHUNK_METADATA_BYTES,
     ByteGroupPayload,
@@ -13,7 +13,7 @@ from neuralzip.payloads import (
     TensorPayload,
     serialized_size,
 )
-from neuralzip.setup import load_setup, materialize_setup
+from neuralzip.setup import NeuralZipSetup
 from neuralzip.utils import DTYPES, _model_tensors
 
 FORMAT_VERSION = 1
@@ -49,7 +49,9 @@ class NeuralZipStats:
 
 
 def setup_seconds(setup):
-    return 0.0 if setup is None else float(load_setup(setup).setup_seconds or 0.0)
+    return (
+        0.0 if setup is None else float(NeuralZipSetup.load(setup).setup_seconds or 0.0)
+    )
 
 
 def storage_stats(setup, sizes, encoding_seconds):
@@ -264,7 +266,7 @@ def _direct_storage_bytes(codebooks, tensors, blob_bytes):
     }
 
 
-def _direct_bf16_storage(codec, named_tensors):
+def _direct_bf16_storage(compressor, named_tensors):
     specs = []
     tensor_info = []
     codebook_ids = set()
@@ -275,7 +277,7 @@ def _direct_bf16_storage(codec, named_tensors):
         config = DTYPES[original.dtype]
         if original.numel():
             modes = tuple(
-                codec._mode_for_tensor_stream(name, original, stream)
+                compressor._mode_for_tensor_stream(name, original, stream)
                 for stream in range(2)
             )
         else:
@@ -291,7 +293,7 @@ def _direct_bf16_storage(codec, named_tensors):
         specs.append(
             (
                 original.reshape(-1).view(torch.uint8).numpy(),
-                codec._stream_chunk_size(2),
+                compressor._stream_chunk_size(2),
                 modes[1],
             )
         )
@@ -308,7 +310,7 @@ def _direct_bf16_storage(codec, named_tensors):
 
     codebooks = tuple(
         value
-        for value in codec.export_codebooks()
+        for value in compressor.export_codebooks()
         if int(value.codebook_id) in codebook_ids
     )
     prefix = bytearray()
@@ -333,9 +335,9 @@ def _direct_bf16_storage(codec, named_tensors):
     packed, native_groups = huff0.compress_bf16_storage(
         specs,
         prefix,
-        min_saving_bytes=codec.min_saving_bytes,
-        threads=codec.threads,
-        compression_threshold=codec.compression_threshold,
+        min_saving_bytes=compressor.min_saving_bytes,
+        threads=compressor.threads,
+        compression_threshold=compressor.compression_threshold,
     )
     tensors = []
     for info, groups in zip(tensor_info, native_groups, strict=True):
@@ -377,14 +379,14 @@ def _direct_bf16_storage(codec, named_tensors):
 def encode_storage(named_tensors, setup):
     """Run the full precomputed codec and return its persistent representation."""
     named_tensors = tuple(named_tensors)
-    codec = materialize_setup(setup, gpu=True)
-    codec.prepare_storage_transfer_target(named_tensors)
+    compressor = NeuralZipCompressor(setup, gpu=True)
+    compressor.prepare_storage_transfer_target(named_tensors)
     started = time.perf_counter()
-    direct = _direct_bf16_storage(codec, named_tensors)
+    direct = _direct_bf16_storage(compressor, named_tensors)
     if direct is not None:
         blob, metadata, sizes = direct
         return blob, metadata, sizes, time.perf_counter() - started
-    payloads = codec.compress_tensors(named_tensors)
+    payloads = compressor.compress_tensors(named_tensors)
     encoding_seconds = time.perf_counter() - started
     used_codebooks = {
         chunk.codebook_id
@@ -395,7 +397,7 @@ def encode_storage(named_tensors, setup):
     }
     codebooks = tuple(
         value
-        for value in codec.export_codebooks()
+        for value in compressor.export_codebooks()
         if value.codebook_id in used_codebooks
     )
     blob, metadata = pack_storage(codebooks, payloads)
@@ -405,9 +407,9 @@ def encode_storage(named_tensors, setup):
 def decode_storage(blob, metadata):
     """Decode a persistent full-storage representation to named CPU tensors."""
     codebooks, payloads = unpack_storage(blob, metadata)
-    codec = NeuralZipCodec()
-    codec.load_codebooks(codebooks)
-    tensors = codec.decompress_tensors(payloads)
+    compressor = NeuralZipCompressor()
+    compressor.load_codebooks(codebooks)
+    tensors = compressor.decompress_tensors(payloads)
     return {
         payload.name: tensor for payload, tensor in zip(payloads, tensors, strict=True)
     }

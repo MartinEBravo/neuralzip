@@ -1,5 +1,5 @@
 from neuralzip.gpu.pretrained import enable
-from neuralzip.setup import build_setup
+from neuralzip.setup import NeuralZipSetup
 
 
 class _NeuralZip:
@@ -7,7 +7,7 @@ class _NeuralZip:
         return enable(setup, device=device)
 
     def setup(self, model, **options):
-        return build_setup(model, **options)
+        return NeuralZipSetup(**options).build(model)
 
 
 neuralzip = _NeuralZip()

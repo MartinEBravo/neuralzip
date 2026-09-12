@@ -7,8 +7,8 @@ import torch
 from torch import nn
 
 from neuralzip import _huff0_cpp
+from neuralzip.compressor import NeuralZipCompressor
 from neuralzip.gpu import decoder as gpu_decoder
-from neuralzip.setup import materialize_setup
 
 RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
@@ -191,15 +191,15 @@ def _unique_candidates(model, candidates):
     )
 
 
-def _assemble_export(block_order, candidates, codec):
+def _assemble_export(block_order, candidates, compressor):
     payloads = {
-        int(payload.codebook_id): payload for payload in codec.export_codebooks()
+        int(payload.codebook_id): payload for payload in compressor.export_codebooks()
     }
     codebooks = {}
     grouped = defaultdict(list)
     for candidate in candidates:
         parameter = candidate.parameter
-        mode = codec._mode_for_tensor_stream(candidate.tensor_name, parameter, 1)
+        mode = compressor._mode_for_tensor_stream(candidate.tensor_name, parameter, 1)
         kind = mode.get("kind")
         if kind == "raw":
             continue
@@ -284,12 +284,12 @@ def export_model_for_gpu(model, setup):
     )
     if not candidates:
         return NeuralZipModelExport(())
-    codec = materialize_setup(setup, gpu=True)
+    compressor = NeuralZipCompressor(setup, gpu=True)
     named_tensors = tuple(
         (candidate.tensor_name, candidate.parameter) for candidate in candidates
     )
-    codec.prepare_gpu_transfer_target(named_tensors)
-    return _assemble_export(blocks, candidates, codec)
+    compressor.prepare_gpu_transfer_target(named_tensors)
+    return _assemble_export(blocks, candidates, compressor)
 
 
 def _bytes_tensor(data, device):

@@ -1,11 +1,165 @@
+from pathlib import Path
+
 import torch
 
 from neuralzip import huff0
-from neuralzip.payloads import ByteGroupPayload, StreamChunk, TensorPayload
-from neuralzip.utils import DTYPES, _tensor_from_raw_bytes
+from neuralzip.payloads import (
+    ByteGroupPayload,
+    CodebookPayload,
+    StreamChunk,
+    TensorPayload,
+)
+from neuralzip.setup import NeuralZipSetup
+from neuralzip.utils import DTYPES, _floating_tensors, _tensor_from_raw_bytes
+
+BF16_NAME = "bfloat16"
+EXPONENT_STREAM = 1
+
+_TRANSFER_NAME_FALLBACKS = {
+    "lm_head.weight": ("model.embed_tokens.weight",),
+}
 
 
-class _StorageMixin:
+class NeuralZipCompressor:
+    """Encode and decode using detached setup data and private runtime handles."""
+
+    def __init__(self, setup=None, *, threads=None, gpu=False):
+        setup = NeuralZipSetup() if setup is None else NeuralZipSetup.load(setup)
+        self.min_saving_bytes = int(setup.min_saving_bytes)
+        self.chunk_size = int(setup.chunk_size)
+        self.compression_threshold = float(setup.compression_threshold)
+        self.threads = int(setup.threads if threads is None else threads)
+        self.direct_batch_bytes = int(setup.direct_batch_bytes)
+
+        self._codebook_payloads = list(setup.codebooks)
+        modes = {
+            int(payload.codebook_id): {
+                "kind": payload.mode,
+                "ngram_n": int(payload.ngram_n),
+                "vocab": payload.vocab,
+                "codebook_id": int(payload.codebook_id),
+                "codebook": huff0.build_codebook_from_header(payload.codebook),
+            }
+            for payload in self._codebook_payloads
+        }
+        self._mode_by_tensor_stream = {
+            key: {"kind": "raw"} if codebook_id is None else modes[int(codebook_id)]
+            for key, codebook_id in setup.tensor_codebooks.items()
+        }
+        self._global_modes = {
+            key: {"kind": "raw"} if codebook_id is None else modes[int(codebook_id)]
+            for key, codebook_id in setup.global_codebooks.items()
+        }
+        self._transfer_mode_by_tensor_stream = {}
+        if gpu:
+            self._add_global_codebook()
+        self.load_codebooks(self._codebook_payloads)
+
+    def _add_global_codebook(self):
+        key = (BF16_NAME, EXPONENT_STREAM)
+        if key in self._global_modes:
+            return
+        header = (
+            Path(__file__).with_name("codebooks").joinpath("bf16.huff0").read_bytes()
+        )
+        codebook_id = (
+            max(
+                (int(payload.codebook_id) for payload in self._codebook_payloads),
+                default=-1,
+            )
+            + 1
+        )
+        self._codebook_payloads.append(
+            CodebookPayload(codebook_id, EXPONENT_STREAM, BF16_NAME, codebook=header)
+        )
+        self._global_modes[key] = {
+            "kind": "shared_huff0",
+            "codebook_id": codebook_id,
+            "codebook": huff0.build_codebook_from_header(header),
+        }
+
+    def _stream_chunk_size(self, element_size):
+        return max(1, self.chunk_size // int(element_size))
+
+    def export_codebooks(self):
+        return tuple(self._codebook_payloads)
+
+    def load_codebooks(self, codebooks):
+        self._codebook_payload_by_id = {
+            int(codebook.codebook_id): codebook for codebook in codebooks
+        }
+        self._decode_codebooks = {}
+
+    @staticmethod
+    def _transfer_plan_key(name, tensor, stream_id):
+        return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
+
+    def prepare_gpu_transfer_target(self, named_tensors):
+        """Project a full setup onto the sharing-only BF16 GPU encoder."""
+        global_mode = self._global_modes[(BF16_NAME, EXPONENT_STREAM)]
+        transfer_modes = {}
+
+        for name, tensor in _floating_tensors(named_tensors):
+            tensor_name = str(name)
+            key = (tensor_name, BF16_NAME, EXPONENT_STREAM)
+            candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
+            source_name = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if (
+                        candidate,
+                        BF16_NAME,
+                        EXPONENT_STREAM,
+                    )
+                    in self._mode_by_tensor_stream
+                ),
+                None,
+            )
+            source_mode = (
+                self._mode_by_tensor_stream[(source_name, BF16_NAME, EXPONENT_STREAM)]
+                if source_name is not None
+                else None
+            )
+            if source_mode is not None and source_mode.get("kind") == "shared_huff0":
+                transfer_modes[key] = source_mode
+            else:
+                transfer_modes[key] = global_mode
+
+        self._transfer_mode_by_tensor_stream = transfer_modes
+
+    def prepare_storage_transfer_target(self, named_tensors):
+        """Map a target onto the full storage codec with lossless fallbacks."""
+        transfer_modes = {}
+        for name, tensor in _floating_tensors(named_tensors):
+            config = DTYPES[tensor.dtype]
+            tensor_name = str(name)
+            dtype = config["name"]
+            candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
+            for stream_id in range(int(config["element_size"])):
+                source_key = next(
+                    (
+                        (candidate, dtype, stream_id)
+                        for candidate in candidates
+                        if (candidate, dtype, stream_id) in self._mode_by_tensor_stream
+                    ),
+                    None,
+                )
+                target_key = (tensor_name, dtype, stream_id)
+                if source_key is not None:
+                    transfer_modes[target_key] = self._mode_by_tensor_stream[source_key]
+                else:
+                    transfer_modes[target_key] = self._global_modes.get(
+                        (dtype, stream_id), {"kind": "raw"}
+                    )
+        self._transfer_mode_by_tensor_stream = transfer_modes
+
+    def _mode_for_tensor_stream(self, name, tensor, stream_id):
+        """Return the prepared mode for one concrete tensor byte stream."""
+        return self._transfer_mode_by_tensor_stream[
+            self._transfer_plan_key(name, tensor, stream_id)
+        ]
+
     def _compress_direct_native_batch(self, tensor_specs):
         """Encode one input-size-windowed tensor batch through one job queue."""
         native_specs = [

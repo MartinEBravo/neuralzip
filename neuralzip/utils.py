@@ -74,6 +74,12 @@ def _model_tensors(model):
     return tensors
 
 
+def _floating_tensors(named_tensors):
+    for name, tensor in sorted(named_tensors, key=lambda item: item[0]):
+        if torch.is_tensor(tensor) and tensor.is_floating_point() and tensor.numel():
+            yield name, tensor
+
+
 def _tensor_raw_bytes(tensor):
     tensor = tensor.detach().cpu().contiguous()
     return tensor.reshape(-1).view(torch.uint8).numpy().tobytes()

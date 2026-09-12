@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from neuralzip.dtypes import DTYPES
+
 RAW_CHUNK_METADATA_BYTES = 17
 SHARED_CHUNK_METADATA_BYTES = 25
 PACKED_CHUNK_METADATA_BYTES = 41
@@ -75,10 +77,6 @@ class TensorPayload:
         return self.numel * self.element_size
 
 
-def _group_size(group):
-    return 8 + sum(chunk.compressed_bytes for chunk in group.chunks)
-
-
 def _codebook_size(codebook):
     return (
         8
@@ -91,26 +89,51 @@ def _codebook_size(codebook):
     )
 
 
-def _tensor_size(tensor):
-    return (
-        _text_size(tensor.name)
-        + _text_size(tensor.dtype)
-        + 24
-        + len(tensor.shape) * 8
-        + 8
-        + sum(_group_size(group) for group in tensor.groups)
+def storage_bytes(codebooks, tensors, blob_bytes):
+    """Count the blob and canonical metadata, not the surrounding file format."""
+    specs = {spec.name: spec for spec in DTYPES.values()}
+    raw_bytes = exponent_raw_bytes = exponent_compressed_bytes = 0
+    exponent_defined = True
+    exponent_streams = set()
+    structural_bytes = 4 + 2 + _text_size("neuralzip") + 8 + 8
+    structural_bytes += sum(
+        value.metadata_bytes - len(value.codebook) - len(value.vocab)
+        for value in codebooks
     )
-
-
-def serialized_size(codebooks, tensors):
-    """Return the complete encoded size under NeuralZip's canonical layout."""
-
-    return (
-        4
-        + 2
-        + _text_size("neuralzip")
-        + 8
-        + sum(_codebook_size(codebook) for codebook in codebooks)
-        + 8
-        + sum(_tensor_size(tensor) for tensor in tensors)
+    for tensor in tensors:
+        spec = specs[tensor["dtype"]]
+        numel = tensor["numel"]
+        raw_bytes += numel * tensor["element_size"]
+        if numel and spec.exponent_stream is None:
+            exponent_defined = False
+        if spec.exponent_stream is not None:
+            exponent_raw_bytes += numel
+            exponent_streams.add((spec.name, spec.exponent_stream))
+        structural_bytes += (
+            _text_size(tensor["name"])
+            + _text_size(tensor["dtype"])
+            + 24
+            + 8 * len(tensor["shape"])
+            + 8
+        )
+        for stream, group in enumerate(tensor["groups"]):
+            metadata_bytes = sum(CHUNK_METADATA_BYTES[chunk["mode"]] for chunk in group)
+            structural_bytes += 8 + metadata_bytes
+            if stream == spec.exponent_stream:
+                exponent_compressed_bytes += metadata_bytes + sum(
+                    chunk["payload"][1] + chunk["escapes"][1] + chunk["tail"][1]
+                    for chunk in group
+                )
+    exponent_compressed_bytes += sum(
+        value.metadata_bytes
+        for value in codebooks
+        if (value.dtype, value.stream_id) in exponent_streams
     )
+    return {
+        "raw_bytes": int(raw_bytes),
+        "compressed_bytes": int(blob_bytes + structural_bytes),
+        "exponent_raw_bytes": int(exponent_raw_bytes) if exponent_defined else None,
+        "exponent_compressed_bytes": (
+            int(exponent_compressed_bytes) if exponent_defined else None
+        ),
+    }

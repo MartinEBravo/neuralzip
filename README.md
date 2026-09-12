@@ -5,12 +5,12 @@ wrapper. Activate it once for the current Python process, then keep using the
 ordinary `from_pretrained()` and `save_pretrained()` APIs; the wrapper performs
 the encode automatically.
 
-It is a research implementation for sequential compressed BF16 inference on
+It is a research implementation for sequential compressed floating-point inference on
 one NVIDIA GPU. Eligible weights are stored as lossless compressed streams and
 reconstructed only when their transformer block runs.
 
-- Bitwise-exact BF16 weights during inference.
-- A bundled global BF16 codebook for immediate use.
+- Bitwise-exact weights in their loaded dtype during inference.
+- Optional precomputed global codebooks, declared per format in `dtypes.py`.
 - Full reusable setups with Jensen--Shannon clustering, measured Huffman mode
   selection, and packed exponent n-grams.
 - Standard Hugging Face directories and Safetensors shards.
@@ -56,7 +56,7 @@ neuralzip()
 
 model_id = "Qwen/Qwen2.5-0.5B"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto")
 
 generator = pipeline(
     "text-generation",
@@ -70,17 +70,25 @@ stats = model.neuralzip_stats
 print(stats.representation)  # "gpu" before save, "storage" after save
 print(f"Encode: {stats.encoding_seconds:.3f} s")
 print(f"Ratio: {stats.compression_ratio:.3f}")
-print(f"Exponent ratio: {stats.exponent_ratio:.3f}")
+print("Exponent ratio:", stats.exponent_ratio)
+print("Compressed-stream ratio:", stats.stream_ratio)
 ```
 
 For an ordinary checkpoint, Hugging Face loads the model and NeuralZip then
-compresses its eligible BF16 weights in memory. This path uses the bundled
-global BF16 codebook: it does not analyze the model or construct a setup.
+compresses eligible weights in memory, preserving the dtype chosen by HF.
+Without a setup, this path uses any available global codebooks declared in
+`dtypes.py`; it does not analyze the model or construct a setup. Missing global
+files are skipped. Weights without a compatible codebook remain uncompressed:
+if no weights are exported, there is no compressed GPU runtime and the GPU
+representation ratio is 1.0. Build and supply a setup to compress those weights.
 The wrapper stores setup time, encode time, raw and compressed payload bytes,
 and total and exponent-only ratios in `model.neuralzip_stats`. Its
 `representation` field distinguishes the in-memory GPU layout from the storage
 layout written by `save_pretrained()`. Byte counts use NeuralZip's canonical
 binary layout, excluding filesystem and Safetensors/JSON container overhead.
+Exponent ratio is `None` when the model's layouts do not expose pure exponent
+byte streams; stream ratio describes the lanes actually compressed and is
+`None` when none are selected.
 
 ## Reusable family setup
 
@@ -88,13 +96,12 @@ Build a family-specific setup once from an ordinary reference model, before
 activating NeuralZip:
 
 ```python
-import torch
 from transformers import AutoModelForCausalLM
 from neuralzip import neuralzip
 
 reference = AutoModelForCausalLM.from_pretrained(
     "Qwen/Qwen2.5-0.5B",
-    dtype=torch.bfloat16,
+    dtype="auto",
 )
 setup = neuralzip.setup(reference)
 setup.save("qwen-family.setup.pkl")
@@ -116,8 +123,8 @@ any previous learned state, and returns the same instance. Saved setups contain
 configuration, codebooks, assignments, and timing results, not training samples
 or native handles. Setup files from earlier schemas must be rebuilt.
 
-The setup analyzes every floating parameter and persistent floating buffer in
-FP16, BF16, or FP32. It clusters exponent distributions with Jensen--Shannon
+The setup analyzes floating parameters and persistent floating buffers in the
+formats registered in `dtypes.py`. It clusters exponent distributions with Jensen--Shannon
 distance, builds reusable Huffman codebooks, measures the real native encoder,
 and selects among raw, shared-Huffman, and packed exponent n-gram modes. Select
 the resulting object or file once in each inference process, then use
@@ -128,11 +135,12 @@ neuralzip("qwen-family.setup.pkl")  # neuralzip(setup) also works
 model = AutoModelForCausalLM.from_pretrained("account/related-qwen-model")
 ```
 
-For GPU inference, the wrapper uses the setup's compatible shared-Huffman BF16
-exponent modes. Tensors absent from the setup, or assigned a storage-only mode,
-use the bundled global codebook. This lets one setup transfer across related
-models without fitting again. Setup files use pickle and must come from a
-trusted source.
+For GPU inference, the wrapper uses one compatible shared-Huffman byte stream
+per group, preferring a pure exponent stream when the layout provides one.
+Tensors absent from the setup, or assigned a storage-only mode, use an available
+global codebook or remain uncompressed. This lets a compatible setup transfer
+across related models without fitting again. Setup files use pickle and must
+come from a trusted source.
 
 ## Save and load
 
@@ -161,26 +169,30 @@ loaded_model = AutoModelForCausalLM.from_pretrained(
 
 A compressed checkpoint contains the codebooks and metadata needed to restore
 every tensor bit-for-bit. NeuralZip detects the format, decodes the storage
-representation, and converts eligible BF16 linear weights to its GPU runtime
+representation, and converts eligible linear weights to its GPU runtime
 layout. This never runs setup or rebuilds storage codebooks. The conversion is
 necessary because packed storage streams and the blockwise CUDA decoder use
 different layouts. `model.neuralzip_stats` retains the original storage encode
 measurements and adds `decoding_seconds` for the restoration itself.
 `runtime_encoding_seconds` records the subsequent conversion to the GPU layout.
+With no explicit dtype, or `dtype="auto"`, a compressed checkpoint restores
+each tensor's stored dtype and bits, including mixed-dtype state. An explicit
+`dtype` requests HF's normal conversion and can change the original precision.
 
 Call `neuralzip()` once at the start of every new process before loading either
 ordinary or compressed models.
 
-The setup file is needed only when compressing additional ordinary checkpoints.
-A saved NeuralZip checkpoint already contains its required codebooks.
+No setup file is needed to restore a saved checkpoint's weights: its required
+codebooks are included. Compressing them again for GPU inference uses the active setup or
+available globals; otherwise they stay resident and uncompressed.
 
 ## How it works
 
 1. `neuralzip()` installs the transparent Transformers integration for the
    current process and selects the active setup and CUDA device.
-2. An ordinary BF16 checkpoint is loaded through Transformers. The wrapper then
-   separates eligible weights into exponent and sign-mantissa streams and
-   encodes them automatically with the active precomputed setup.
+2. An ordinary checkpoint is loaded through Transformers. The wrapper then
+   separates eligible weights into the byte streams described by their dtype
+   and encodes a compatible stream with an available precomputed codebook.
 3. During inference, the active transformer block is reconstructed bit-for-bit
    in a reusable GPU workspace immediately before execution.
 4. `save_pretrained()` runs the full storage codec and stores its streams and
@@ -194,9 +206,9 @@ under Apache-2.0.
 
 ## Research limitations
 
-- One NVIDIA CUDA device with BF16 support.
+- One NVIDIA CUDA device supporting the model's arithmetic and decode layout.
 - Sequential, inference-only execution.
-- Eligible BF16 `nn.Linear` weights are compressed; other state remains
+- Eligible block-local linear weights in registered formats are compressed; other state remains
   resident.
 - Models without compatible block-local linear weights still use the lossless
   storage format, but load as ordinary models without a compressed GPU runtime.
@@ -206,6 +218,8 @@ under Apache-2.0.
   `torch.compile`.
 - Weights use a temporary workspace; this is not a fused compressed
   matrix-multiplication kernel.
+- Decode shared-memory requirements depend on the layout and encoded stream;
+  groups exceeding the device limit are rejected before removing model weights.
 - Compressed checkpoints require Safetensors.
 - Loading a compressed checkpoint still constructs its architecture on CPU,
   so peak host memory is higher than the final resident model.

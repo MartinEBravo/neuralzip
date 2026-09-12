@@ -6,32 +6,7 @@ from itertools import chain
 import numpy as np
 import torch
 
-DTYPES = {
-    torch.float16: {
-        "name": "float16",
-        "numpy": np.dtype("<u2"),
-        "element_size": 2,
-        "bit_reorder": 0,
-        "mantissa_bits": 10,
-        "exponent_mask": 0x1F,
-    },
-    torch.bfloat16: {
-        "name": "bfloat16",
-        "numpy": np.dtype("<u2"),
-        "element_size": 2,
-        "bit_reorder": 1,
-        "mantissa_bits": 7,
-        "exponent_mask": 0xFF,
-    },
-    torch.float32: {
-        "name": "float32",
-        "numpy": np.dtype("<u4"),
-        "element_size": 4,
-        "bit_reorder": 1,
-        "mantissa_bits": 23,
-        "exponent_mask": 0xFF,
-    },
-}
+from neuralzip.dtypes import DTYPES
 
 
 def _named_tensors(value, prefix=""):
@@ -100,46 +75,11 @@ def _tensor_from_raw_bytes(raw_bytes, dtype, shape):
     return torch.frombuffer(owner, dtype=torch.uint8).view(dtype).reshape(shape)
 
 
-def _transform_exponent_layout(raw_bytes, dtype, *, restore):
-    config = DTYPES[dtype]
-    storage_dtype = config["numpy"]
-    mantissa_bits = config["mantissa_bits"]
-    exponent_mask = config["exponent_mask"]
-    unsigned = storage_dtype.type
-    exponent_bits = int(exponent_mask).bit_length()
-    values = np.frombuffer(raw_bytes, dtype=storage_dtype).copy()
-    mantissa = values & unsigned((1 << mantissa_bits) - 1)
-    if restore:
-        sign = (values << unsigned(exponent_bits)) & unsigned(
-            1 << (mantissa_bits + exponent_bits)
-        )
-        exponent = (values >> unsigned(1)) & unsigned(exponent_mask << mantissa_bits)
-    else:
-        sign = (values >> unsigned(exponent_bits)) & unsigned(1 << mantissa_bits)
-        exponent = (values << unsigned(1)) & unsigned(
-            exponent_mask << (mantissa_bits + 1)
-        )
-    return (sign | exponent | mantissa).astype(storage_dtype, copy=False).tobytes()
-
-
-def _byte_group_reordered_bytes(tensor, config):
-    raw_bytes = _tensor_raw_bytes(tensor)
-    return (
-        _transform_exponent_layout(raw_bytes, tensor.dtype, restore=False)
-        if config["bit_reorder"]
-        else raw_bytes
-    )
-
-
 def exponent_distribution(tensor):
     """Return the normalized exponent histogram of a floating tensor."""
 
     config = DTYPES[tensor.dtype]
-    storage_dtype = config["numpy"]
-    mantissa_bits = config["mantissa_bits"]
-    exponent_mask = config["exponent_mask"]
-    bits = np.frombuffer(_tensor_raw_bytes(tensor), dtype=storage_dtype)
-    exponent = (bits >> mantissa_bits) & exponent_mask
+    exponent = config.extract_exponents(_tensor_raw_bytes(tensor))
     counts = np.bincount(exponent, minlength=256).astype(np.float64)
     total = counts.sum()
     return counts / total if total else counts

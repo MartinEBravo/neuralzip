@@ -9,7 +9,9 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, GenerationConfig, PreTrainedModel
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
+from neuralzip.dtypes import DTYPES
 from neuralzip.gpu.inference import (
+    GPUEncodedSymbols,
     NeuralZipRuntime,
     export_model_for_gpu,
 )
@@ -55,6 +57,7 @@ def _export_stats(model, exported, setup, encoding_seconds):
     compressed_names = {binding.tensor_name for binding in exported.bindings}
     resident_bytes = 0
     resident_exponent_bytes = 0
+    exponent_available = True
     seen = set()
     for name, tensor in model.state_dict().items():
         key = (
@@ -68,35 +71,55 @@ def _export_stats(model, exported, setup, encoding_seconds):
             continue
         seen.add(key)
         resident_bytes += tensor.numel() * tensor.element_size()
-        if tensor.is_floating_point():
-            resident_exponent_bytes += tensor.numel()
-    compressed_numel = sum(group.encoded.numel for group in exported.groups)
-    exponent_raw_bytes = resident_exponent_bytes + compressed_numel
-    exponent_payload_bytes = sum(
-        len(group.encoded.exponents.bitstream)
-        + len(group.encoded.exponents.packed_gaps)
-        + 4 * len(group.encoded.exponents.output_positions)
-        for group in exported.groups
-    )
+        if tensor.is_floating_point() and tensor.numel():
+            config = DTYPES.get(tensor.dtype)
+            if config is None or config.exponent_stream is None:
+                exponent_available = False
+            else:
+                resident_exponent_bytes += tensor.numel()
+    exponent_raw_bytes = resident_exponent_bytes
+    exponent_compressed_bytes = resident_exponent_bytes
+    exponent_codebooks = set()
+    stream_raw_bytes = 0
+    stream_compressed_bytes = 0
+    for group in exported.groups:
+        encoded = group.encoded
+        for stream_id, stream in enumerate(encoded.streams):
+            if isinstance(stream, GPUEncodedSymbols):
+                stream_raw_bytes += stream.symbol_count
+                stream_compressed_bytes += stream.compressed_bytes
+                if stream_id == encoded.dtype.exponent_stream:
+                    exponent_codebooks.add(group.codebook_id)
+        if encoded.dtype.exponent_stream is None:
+            exponent_available = False
+        else:
+            stream = encoded.streams[encoded.dtype.exponent_stream]
+            exponent_raw_bytes += encoded.numel
+            exponent_compressed_bytes += (
+                stream.compressed_bytes
+                if isinstance(stream, GPUEncodedSymbols)
+                else len(stream)
+            )
+    # Canonical representation accounting, not allocated CUDA LUT memory.
     codebook_bytes = 1024 * len({group.codebook_id for group in exported.groups})
-    exponent_compressed_bytes = (
-        resident_exponent_bytes + exponent_payload_bytes + codebook_bytes
-    )
-    sign_mantissa_bytes = sum(
-        len(group.encoded.sign_mantissa) for group in exported.groups
-    )
+    stream_compressed_bytes += codebook_bytes
+    exponent_compressed_bytes += 1024 * len(exponent_codebooks)
     return NeuralZipStats(
         setup_seconds=setup_seconds(setup),
         encoding_seconds=float(encoding_seconds),
-        raw_bytes=resident_bytes + 2 * compressed_numel,
+        raw_bytes=resident_bytes
+        + sum(group.encoded.raw_bytes for group in exported.groups),
         compressed_bytes=(
             resident_bytes
-            + sign_mantissa_bytes
-            + exponent_payload_bytes
+            + sum(group.encoded.compressed_bytes for group in exported.groups)
             + codebook_bytes
         ),
-        exponent_raw_bytes=exponent_raw_bytes,
-        exponent_compressed_bytes=exponent_compressed_bytes,
+        exponent_raw_bytes=exponent_raw_bytes if exponent_available else None,
+        exponent_compressed_bytes=(
+            exponent_compressed_bytes if exponent_available else None
+        ),
+        stream_raw_bytes=stream_raw_bytes,
+        stream_compressed_bytes=stream_compressed_bytes,
         representation="gpu",
     )
 
@@ -214,6 +237,7 @@ def _load_storage(
     config,
     metadata,
     setup,
+    dtype,
 ):
     special, resident = _checkpoint_state(directory)
     required = {STORAGE_DATA, STORAGE_METADATA}
@@ -233,10 +257,19 @@ def _load_storage(
         *model_args,
         config=config,
         state_dict=state,
+        dtype=dtype,
         output_loading_info=True,
     )
     if any(loading_info.values()):
         raise ValueError("The decoded state does not match the model architecture.")
+    if dtype in (None, "auto"):
+        # HF infers one dtype; storage preserves each tensor's dtype and bits.
+        model.load_state_dict(state, assign=True)
+        for alias, canonical in metadata.get("aliases", {}).items():
+            parent, _, name = alias.rpartition(".")
+            source_parent, _, source_name = canonical.rpartition(".")
+            tensor = getattr(model.get_submodule(source_parent), source_name)
+            setattr(model.get_submodule(parent), name, tensor)
     model.config.name_or_path = str(directory)
     if (directory / "generation_config.json").is_file():
         model.generation_config = GenerationConfig.from_pretrained(
@@ -305,8 +338,6 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         ):
             raise ValueError("NeuralZip cannot attach to a quantized model.")
         device = _load_device(kwargs)
-        kwargs.pop("torch_dtype", None)
-        kwargs["dtype"] = torch.bfloat16
         result = _ORIGINAL_LOAD(cls, source, *model_args, config=config, **kwargs)
         model = result[0] if isinstance(result, tuple) else result
         exported = _encode_export(model, _HF_OPTIONS["setup"])
@@ -316,9 +347,10 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
     output_loading_info = kwargs.pop("output_loading_info", False)
     if kwargs.pop("use_safetensors", True) is False:
         raise ValueError("NeuralZip checkpoints require Safetensors.")
-    dtype = kwargs.pop("dtype", kwargs.pop("torch_dtype", None))
-    if dtype not in (None, "auto", "bfloat16", torch.bfloat16):
-        raise ValueError("NeuralZip GPU checkpoints require BF16 weights.")
+    dtype = kwargs.pop("dtype", None)
+    torch_dtype = kwargs.pop("torch_dtype", None)
+    if dtype is None:
+        dtype = torch_dtype
     if kwargs.pop("ignore_mismatched_sizes", False):
         raise ValueError("NeuralZip cannot ignore mismatched tensor sizes.")
     kwargs.pop("weights_only", None)
@@ -349,6 +381,7 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         config,
         _checkpoint_metadata(config),
         _HF_OPTIONS["setup"],
+        dtype,
     )
     if output_loading_info:
         return model, {

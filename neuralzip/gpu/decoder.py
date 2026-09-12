@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -11,14 +12,13 @@ except ModuleNotFoundError as error:
         raise
     cupy = None
 
-KERNEL_NAME = "decode_bf16_batched"
-KERNEL_PATH = Path(__file__).with_name("cuda") / "decode_bf16.cu"
+KERNEL_PATH = Path(__file__).with_name("cuda") / "decode.cu"
 BYTES_PER_THREAD = 8
 THREADS_PER_BLOCK = 512
 DESCRIPTOR_NAMES = (
     "lut",
-    "encoded_exponents",
-    "sign_mantissa",
+    "encoded_symbols",
+    "raw_streams",
     "packed_gaps",
     "output_positions",
     "output",
@@ -26,9 +26,10 @@ DESCRIPTOR_NAMES = (
 
 
 @dataclass(frozen=True)
-class PreparedBF16Batch:
+class PreparedBatch:
     descriptor_tensors: tuple[torch.Tensor, ...] = field(repr=False)
     device: torch.device
+    layout: tuple[int, bool, int, int, int]
     shared_memory: int
     kernel_grid: tuple[int, ...]
     kernel_args: tuple[object, ...] = field(repr=False)
@@ -48,7 +49,11 @@ def _device_property(properties, name):
     return int(properties.get(name, properties.get(name.encode("ascii"), 0)))
 
 
-class CuPyBF16Decoder:
+def shared_memory_bytes(element_size, max_elements):
+    return 4 * ((THREADS_PER_BLOCK + 31) // 32) + element_size * max_elements
+
+
+class CuPyDecoder:
     def __init__(self, kernel_path=KERNEL_PATH):
         self.kernel_path = Path(kernel_path)
         self._kernels = {}
@@ -61,20 +66,24 @@ class CuPyBF16Decoder:
             )
         return cupy
 
-    def _kernel(self, device_index):
-        if device_index not in self._kernels:
+    def _kernel(self, device_index, layout):
+        key = device_index, layout
+        if key not in self._kernels:
+            width, reorder, mantissa_bits, exponent_bits, stream_id = layout
+            word = {2: "uint16_t", 4: "uint32_t"}[width]
+            name = f"decode_batched<{word}, {int(reorder)}, {mantissa_bits}, {exponent_bits}, {stream_id}>"
             cupy = self.cupy
             with cupy.cuda.Device(device_index):
                 module = cupy.RawModule(
                     code=self.kernel_path.read_text(encoding="utf-8"),
                     options=("--std=c++14",),
-                    name_expressions=(KERNEL_NAME,),
+                    name_expressions=(name,),
                 )
-                self._kernels[device_index] = _Kernel(
+                self._kernels[key] = _Kernel(
                     module,
-                    module.get_function(KERNEL_NAME),
+                    module.get_function(name),
                 )
-        return self._kernels[device_index]
+        return self._kernels[key]
 
     def _ensure_shared_memory(self, kernel, device_index, required):
         if required <= kernel.configured_shared_memory:
@@ -91,9 +100,24 @@ class CuPyBF16Decoder:
         if required <= kernel.default_shared_memory:
             return
         if required > kernel.optin_shared_memory:
-            raise ValueError("The BF16 decode group exceeds CUDA shared memory.")
+            raise ValueError("The decode group exceeds CUDA shared memory.")
         kernel.function.max_dynamic_shared_size_bytes = required
         kernel.configured_shared_memory = required
+
+    def prepare_kernel(self, device_index, layout, shared_memory):
+        kernel = self._kernel(device_index, layout)
+        self._ensure_shared_memory(kernel, device_index, shared_memory)
+        return kernel
+
+    def prepare_group(self, device_index, group):
+        layout = group.layout
+        positions = group.encoded.streams[layout[-1]].output_positions
+        max_elements = max(
+            (right - left for left, right in pairwise(positions)), default=0
+        )
+        return self.prepare_kernel(
+            device_index, layout, shared_memory_bytes(layout[0], max_elements)
+        )
 
     def prepare_batch(self, groups):
         groups = tuple(groups)
@@ -102,18 +126,30 @@ class CuPyBF16Decoder:
         device = groups[0].lut.device
         if device.type != "cuda" or any(group.lut.device != device for group in groups):
             raise ValueError("A decode batch must use one CUDA device.")
+        layout = groups[0].layout
+        if any(group.layout != layout for group in groups):
+            raise ValueError("A decode batch must use one layout.")
 
         grids = [
-            (group.encoded_exponents.numel() + THREADS_PER_BLOCK * BYTES_PER_THREAD - 1)
+            (group.encoded_symbols.numel() + THREADS_PER_BLOCK * BYTES_PER_THREAD - 1)
             // (THREADS_PER_BLOCK * BYTES_PER_THREAD)
             for group in groups
         ]
         if not all(grids):
-            raise ValueError("GPU exponent streams must be non-empty.")
+            raise ValueError("GPU symbol streams must be non-empty.")
 
         def pointers(name):
+            values = (
+                [
+                    stream.data_ptr() if stream is not None else 0
+                    for group in groups
+                    for stream in group.raw_streams
+                ]
+                if name == "raw_streams"
+                else [getattr(group, name).data_ptr() for group in groups]
+            )
             return torch.tensor(
-                [getattr(group, name).data_ptr() for group in groups],
+                values,
                 dtype=torch.uint64,
                 device=device,
             )
@@ -129,16 +165,17 @@ class CuPyBF16Decoder:
         descriptors = tuple(pointers(name) for name in DESCRIPTOR_NAMES)
         descriptors += (
             integers(group.max_bits for group in groups),
-            integers(group.encoded_exponents.numel() for group in groups),
+            integers(group.encoded_symbols.numel() for group in groups),
             integers(group_ids),
             integers(local_ids),
         )
-        shared_memory = 4 * ((THREADS_PER_BLOCK + 31) // 32) + 2 * max(
-            group.max_block_elements for group in groups
+        shared_memory = shared_memory_bytes(
+            layout[0], max(group.max_block_elements for group in groups)
         )
-        return PreparedBF16Batch(
+        return PreparedBatch(
             descriptor_tensors=descriptors,
             device=device,
+            layout=layout,
             shared_memory=shared_memory,
             kernel_grid=(sum(grids),),
             kernel_args=tuple(np.uint64(tensor.data_ptr()) for tensor in descriptors),
@@ -148,8 +185,9 @@ class CuPyBF16Decoder:
     def decode_batch(self, prepared):
         cupy = self.cupy
         device_index = prepared.device.index
-        kernel = self._kernel(device_index)
-        self._ensure_shared_memory(kernel, device_index, prepared.shared_memory)
+        kernel = self.prepare_kernel(
+            device_index, prepared.layout, prepared.shared_memory
+        )
         torch_stream = torch.cuda.current_stream(device=prepared.device)
         with cupy.cuda.Device(device_index):
             kernel.function(
@@ -162,7 +200,7 @@ class CuPyBF16Decoder:
         return prepared.outputs
 
 
-_DECODER = CuPyBF16Decoder()
+_DECODER = CuPyDecoder()
 
 
 def default_decoder():

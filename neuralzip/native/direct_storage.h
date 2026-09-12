@@ -1,7 +1,12 @@
 constexpr std::size_t kSharedChunkMetadataBytes = 25;
 
-struct DirectBf16Request {
+struct DirectStorageRequest {
     ReadOnlyBuffer raw;
+    unsigned element_size = 0;
+    bool bit_reorder = false;
+    unsigned mantissa_bits = 0;
+    unsigned exponent_bits = 0;
+    unsigned stream_id = 0;
     nb::object codebook_owner;
     Huff0Codebook* codebook = nullptr;
     MixedMode mode = MixedMode::Raw;
@@ -11,11 +16,12 @@ struct DirectBf16Request {
     std::size_t chunk_size = 0;
     std::size_t symbol_count = 0;
     std::size_t symbol_offset = 0;
+    std::size_t raw_offset = 0;
     std::size_t first_job = 0;
     std::size_t job_count = 0;
 };
 
-struct DirectBf16Job {
+struct DirectStorageJob {
     std::size_t request_index = 0;
     std::size_t start = 0;
     std::size_t length = 0;
@@ -29,7 +35,49 @@ struct DirectBf16Job {
     std::string error;
 };
 
-nb::tuple compress_bf16_storage(
+template <unsigned ElementSize, bool ByteAlignedExponent>
+void extract_direct_streams(
+    const DirectStorageRequest& request,
+    const DirectStorageJob& job,
+    std::uint8_t* raw_destination,
+    std::uint8_t* symbols) {
+    const unsigned stream = ByteAlignedExponent ? ElementSize - 1U : request.stream_id;
+    const unsigned mantissa = ByteAlignedExponent ? ElementSize * 8U - 9U : request.mantissa_bits;
+    const unsigned exponent = ByteAlignedExponent ? 8U : request.exponent_bits;
+    const bool reorder = ByteAlignedExponent || request.bit_reorder;
+    const std::uint32_t mantissa_mask = (1U << mantissa) - 1U;
+    const std::uint32_t sign_mask = 1U << mantissa;
+    const std::uint32_t exponent_mask = ((1U << exponent) - 1U) << (mantissa + 1U);
+    std::array<std::uint8_t*, ElementSize> lanes{};
+    for (unsigned lane = 0; lane < ElementSize; ++lane) {
+        if (lane != stream) {
+            lanes[lane] = raw_destination + job.start
+                + (lane - (lane > stream)) * request.symbol_count;
+        }
+    }
+    const std::uint8_t* source = request.raw.data() + job.start * ElementSize;
+    for (std::size_t index = 0; index < job.length; ++index) {
+        std::uint32_t value = 0;
+        for (unsigned lane = 0; lane < ElementSize; ++lane) {
+            value |= static_cast<std::uint32_t>(source[index * ElementSize + lane])
+                << (8U * lane);
+        }
+        if (reorder) {
+            value = (value & mantissa_mask) | ((value >> exponent) & sign_mask)
+                | ((value << 1U) & exponent_mask);
+        }
+        for (unsigned lane = 0; lane < ElementSize; ++lane) {
+            const auto byte = static_cast<std::uint8_t>(value >> (8U * lane));
+            if (lane == stream) {
+                symbols[index] = byte;
+            } else {
+                lanes[lane][index] = byte;
+            }
+        }
+    }
+}
+
+nb::tuple compress_direct_storage(
     nb::handle tensor_source,
     nb::handle prefix_source,
     Py_ssize_t min_saving_bytes,
@@ -43,34 +91,53 @@ nb::tuple compress_bf16_storage(
         "compression_threshold must be in (0, 1].");
 
     nb::tuple tensor_sequence(tensor_source);
-    std::vector<DirectBf16Request> requests(tensor_sequence.size());
-    std::vector<DirectBf16Job> jobs;
+    std::vector<DirectStorageRequest> requests(tensor_sequence.size());
+    std::vector<DirectStorageJob> jobs;
     std::size_t total_symbols = 0;
+    std::size_t total_input_bytes = 0;
 
     for (std::size_t tensor_index = 0;
          tensor_index < tensor_sequence.size();
          ++tensor_index) {
         nb::tuple item(nb::handle(tensor_sequence[tensor_index].ptr()));
         require<nb::type_error>(
-            item.size() == 3,
-            "Each BF16 spec must contain data, chunk_size, and exponent mode.");
-        DirectBf16Request& request = requests[tensor_index];
+            item.size() == 8,
+            "Each direct spec needs data, width, reorder, mantissa/exponent bits, "
+            "stream_id, chunk_size, and mode.");
+        DirectStorageRequest& request = requests[tensor_index];
         request.raw.acquire(nb::handle(item[0].ptr()));
+        request.element_size = nb::cast<unsigned>(nb::handle(item[1].ptr()));
+        request.bit_reorder = nb::cast<bool>(nb::handle(item[2].ptr()));
+        request.mantissa_bits = nb::cast<unsigned>(nb::handle(item[3].ptr()));
+        request.exponent_bits = nb::cast<unsigned>(nb::handle(item[4].ptr()));
+        request.stream_id = nb::cast<unsigned>(nb::handle(item[5].ptr()));
         require<nb::value_error>(
-            request.raw.size() >= 0 && request.raw.size() % 2 == 0,
-            "BF16 input must contain complete two-byte elements.");
+            request.element_size == 2 || request.element_size == 4,
+            "Direct storage element_size must be 2 or 4.");
+        require<nb::value_error>(
+            request.mantissa_bits < 8U * request.element_size
+                && request.exponent_bits > 0
+                && request.exponent_bits < 8U * request.element_size
+                && request.mantissa_bits + request.exponent_bits + 1U
+                    == 8U * request.element_size,
+            "Sign, exponent and mantissa fields must fill the element.");
+        require<nb::value_error>(
+            request.stream_id < request.element_size, "stream_id is out of range.");
+        require<nb::value_error>(
+            request.raw.size() >= 0 && request.raw.size() % request.element_size == 0,
+            "Direct storage input must contain complete elements.");
         const Py_ssize_t requested_chunk_size =
-            nb::cast<Py_ssize_t>(nb::handle(item[1].ptr()));
+            nb::cast<Py_ssize_t>(nb::handle(item[6].ptr()));
         require<nb::value_error>(
             requested_chunk_size > 0
                 && requested_chunk_size <= static_cast<Py_ssize_t>(kMaxBlockSize),
-            "BF16 chunk_size must be in the Huff0 block range.");
+            "Direct storage chunk_size must be in the Huff0 block range.");
         request.chunk_size = static_cast<std::size_t>(requested_chunk_size);
 
-        nb::tuple mode(nb::handle(item[2].ptr()));
+        nb::tuple mode(nb::handle(item[7].ptr()));
         require<nb::type_error>(
             mode.size() == 5,
-            "The BF16 exponent mode must contain kind, codebook, id, "
+            "The direct stream mode must contain kind, codebook, id, "
             "vocabulary, and ngram_n.");
         const std::string kind = nb::cast<std::string>(nb::handle(mode[0].ptr()));
         if (kind == "shared_huff0" || kind == "packed_huff0") {
@@ -81,7 +148,7 @@ nb::tuple compress_bf16_storage(
             request.codebook_id = nb::cast<Py_ssize_t>(nb::handle(mode[2].ptr()));
             require<nb::value_error>(
                 request.codebook_id >= 0,
-                "Compressed BF16 mode requires a non-negative codebook id.");
+                "Compressed direct mode requires a non-negative codebook id.");
             if (kind == "packed_huff0") {
                 request.mode = MixedMode::PackedHuff0;
                 request.ngram_n = nb::cast<int>(nb::handle(mode[4].ptr()));
@@ -97,7 +164,7 @@ nb::tuple compress_bf16_storage(
         } else {
             require<nb::value_error>(
                 kind == "raw",
-                "Direct BF16 encode supports raw, shared_huff0, or packed_huff0.");
+                "Direct encode supports raw, shared_huff0, or packed_huff0.");
         }
 
         if (request.mode == MixedMode::PackedHuff0) {
@@ -108,13 +175,15 @@ nb::tuple compress_bf16_storage(
         }
 
         request.symbol_count =
-            static_cast<std::size_t>(request.raw.size()) / 2U;
+            static_cast<std::size_t>(request.raw.size()) / request.element_size;
         require<std::overflow_error>(
-            request.symbol_count
-                <= std::numeric_limits<std::size_t>::max() - total_symbols,
-            "Total BF16 symbol count overflowed.");
+            static_cast<std::size_t>(request.raw.size())
+                <= std::numeric_limits<std::size_t>::max() - total_input_bytes,
+            "Total direct input size overflowed.");
         request.symbol_offset = total_symbols;
+        request.raw_offset = total_input_bytes - total_symbols;
         total_symbols += request.symbol_count;
+        total_input_bytes += static_cast<std::size_t>(request.raw.size());
         request.first_job = jobs.size();
         for (std::size_t start = 0;
              start < request.symbol_count;
@@ -131,10 +200,9 @@ nb::tuple compress_bf16_storage(
     ReadOnlyBuffer prefix(prefix_source);
     const std::size_t prefix_size = static_cast<std::size_t>(prefix.size());
     require<std::overflow_error>(
-        total_symbols
-            <= (static_cast<std::size_t>(PY_SSIZE_T_MAX) - prefix_size) / 2U,
-        "Direct BF16 output exceeds Python's buffer limit.");
-    const std::size_t staging_size = prefix_size + 2U * total_symbols;
+        total_input_bytes <= static_cast<std::size_t>(PY_SSIZE_T_MAX) - prefix_size,
+        "Direct output exceeds Python's buffer limit.");
+    const std::size_t staging_size = prefix_size + total_input_bytes;
     PyObject* raw_output = PyByteArray_FromStringAndSize(
         nullptr, static_cast<Py_ssize_t>(staging_size));
     if (raw_output == nullptr) {
@@ -147,44 +215,36 @@ nb::tuple compress_bf16_storage(
         std::memcpy(output_data, prefix.data(), prefix_size);
     }
     const std::size_t raw_base = prefix_size;
-    const std::size_t exponent_base = prefix_size + total_symbols;
+    const std::size_t selected_base = prefix_size + total_input_bytes - total_symbols;
 
     {
         nb::gil_scoped_release release;
         run_parallel_jobs(
             jobs.size(),
-            total_symbols * 2U,
+            total_input_bytes,
             requested_threads,
             [&](std::size_t job_index) {
-                DirectBf16Job& job = jobs[job_index];
-                const DirectBf16Request& request = requests[job.request_index];
+                DirectStorageJob& job = jobs[job_index];
+                const DirectStorageRequest& request = requests[job.request_index];
                 try {
-                    const std::uint8_t* __restrict source =
-                        request.raw.data() + job.start * 2U;
-                    std::uint8_t* __restrict raw_destination =
-                        output_data + raw_base + request.symbol_offset + job.start;
-                    std::uint8_t* __restrict exponent_destination =
-                        output_data + exponent_base + request.symbol_offset + job.start;
-                    thread_local std::vector<std::uint8_t> exponents;
-                    exponents.resize(job.length);
-                    std::uint8_t* __restrict exponent_values =
-                        exponents.data();
-                    for (std::size_t index = 0; index < job.length; ++index) {
-                        const std::uint8_t low = source[index * 2U];
-                        const std::uint8_t high = source[index * 2U + 1U];
-                        raw_destination[index] = static_cast<std::uint8_t>(
-                            (low & 0x7FU) | (high & 0x80U));
-                        exponent_values[index] = static_cast<std::uint8_t>(
-                            ((high << 1U) & 0xFEU) | (low >> 7U));
-                    }
+                    std::uint8_t* __restrict selected_destination =
+                        output_data + selected_base + request.symbol_offset + job.start;
+                    thread_local std::vector<std::uint8_t> symbols;
+                    symbols.resize(job.length);
+                    const bool aligned = request.bit_reorder && request.exponent_bits == 8
+                        && request.stream_id == request.element_size - 1U;
+                    const auto extract = request.element_size == 2
+                        ? (aligned ? extract_direct_streams<2, true> : extract_direct_streams<2, false>)
+                        : (aligned ? extract_direct_streams<4, true> : extract_direct_streams<4, false>);
+                    extract(request, job, output_data + raw_base + request.raw_offset, symbols.data());
 
                     job.payload_size = job.length;
                     if (request.mode == MixedMode::SharedHuff0) {
                         const std::size_t compressed_size = encode_huff0_block_into(
-                            exponent_values,
-                            exponents.size(),
+                            symbols.data(),
+                            symbols.size(),
                             *request.codebook,
-                            exponent_destination,
+                            selected_destination,
                             job.length,
                             job.length);
                         if (
@@ -202,7 +262,7 @@ nb::tuple compress_bf16_storage(
                     } else if (request.mode == MixedMode::PackedHuff0) {
                         NGramBlockResult packed = encode_tokenized_ngram_block(
                             tokenize_byte_group_stream_ngrams(
-                                exponent_values,
+                                symbols.data(),
                                 1,
                                 false,
                                 0,
@@ -225,7 +285,7 @@ nb::tuple compress_bf16_storage(
                             job.payload_size = packed.payload.size();
                             job.escape_size = packed.escapes.size();
                             job.tail_size = packed.tail.size();
-                            std::uint8_t* destination = exponent_destination;
+                            std::uint8_t* destination = selected_destination;
                             std::memcpy(
                                 destination,
                                 packed.payload.data(),
@@ -248,12 +308,12 @@ nb::tuple compress_bf16_storage(
                     }
                     if (job.mode == MixedMode::Raw && job.length > 0) {
                         std::memcpy(
-                            exponent_destination, exponent_values, job.length);
+                            selected_destination, symbols.data(), job.length);
                     }
                 } catch (const std::exception& error) {
                     job.error = error.what();
                 } catch (...) {
-                    job.error = "Unknown direct BF16 encoding failure.";
+                    job.error = "Unknown direct encoding failure.";
                 }
             });
     }
@@ -264,10 +324,10 @@ nb::tuple compress_bf16_storage(
         }
     }
 
-    std::size_t cursor = exponent_base;
+    std::size_t cursor = selected_base;
     for (auto& job : jobs) {
-        const DirectBf16Request& request = requests[job.request_index];
-        const std::size_t source_offset = exponent_base
+        const DirectStorageRequest& request = requests[job.request_index];
+        const std::size_t source_offset = selected_base
             + request.symbol_offset + job.start;
         job.payload_offset = cursor;
         job.escape_offset = cursor + job.payload_size;
@@ -286,33 +346,28 @@ nb::tuple compress_bf16_storage(
 
     nb::list tensor_groups;
     for (const auto& request : requests) {
-        nb::list raw_chunks;
-        nb::list exponent_chunks;
-        for (std::size_t index = 0; index < request.job_count; ++index) {
-            const DirectBf16Job& job = jobs[request.first_job + index];
-            raw_chunks.append(nb::make_tuple(
-                "raw",
-                job.length,
-                -1,
-                raw_base + request.symbol_offset + job.start,
-                job.length,
-                0,
-                0,
-                0,
-                0));
-            exponent_chunks.append(nb::make_tuple(
-                mixed_mode_name(job.mode),
-                job.length,
-                job.mode == MixedMode::Raw ? -1 : request.codebook_id,
-                job.payload_offset,
-                job.payload_size,
-                job.escape_offset,
-                job.escape_size,
-                job.tail_offset,
-                job.tail_size));
+        nb::list groups;
+        for (unsigned lane = 0; lane < request.element_size; ++lane) {
+            nb::list chunks;
+            for (std::size_t index = 0; index < request.job_count; ++index) {
+                const DirectStorageJob& job = jobs[request.first_job + index];
+                if (lane == request.stream_id) {
+                    chunks.append(nb::make_tuple(
+                        mixed_mode_name(job.mode), job.length,
+                        job.mode == MixedMode::Raw ? -1 : request.codebook_id,
+                        job.payload_offset, job.payload_size,
+                        job.escape_offset, job.escape_size, job.tail_offset, job.tail_size));
+                } else {
+                    chunks.append(nb::make_tuple(
+                        "raw", job.length, -1,
+                        raw_base + request.raw_offset + job.start
+                            + (lane - (lane > request.stream_id)) * request.symbol_count,
+                        job.length, 0, 0, 0, 0));
+                }
+            }
+            groups.append(std::move(chunks));
         }
-        tensor_groups.append(nb::make_tuple(
-            std::move(raw_chunks), std::move(exponent_chunks)));
+        tensor_groups.append(nb::tuple(groups));
     }
     return nb::make_tuple(std::move(output), std::move(tensor_groups));
 }

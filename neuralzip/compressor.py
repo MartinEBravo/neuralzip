@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 
 from neuralzip import huff0
+from neuralzip.dtypes import DTYPES
 from neuralzip.payloads import (
     ByteGroupPayload,
     CodebookPayload,
@@ -11,14 +12,10 @@ from neuralzip.payloads import (
 )
 from neuralzip.setup import NeuralZipSetup
 from neuralzip.utils import (
-    DTYPES,
     _floating_tensors,
     _stream_chunk_size,
     _tensor_from_raw_bytes,
 )
-
-BF16_NAME = "bfloat16"
-EXPONENT_STREAM = 1
 
 _TRANSFER_NAME_FALLBACKS = {
     "lm_head.weight": ("model.embed_tokens.weight",),
@@ -57,16 +54,10 @@ class NeuralZipCompressor:
         }
         self._transfer_mode_by_tensor_stream = {}
         if gpu:
-            self._add_global_codebook()
+            self._add_global_codebooks()
         self.load_codebooks(self._codebook_payloads)
 
-    def _add_global_codebook(self):
-        key = (BF16_NAME, EXPONENT_STREAM)
-        if key in self._global_modes:
-            return
-        header = (
-            Path(__file__).with_name("codebooks").joinpath("bf16.huff0").read_bytes()
-        )
+    def _add_global_codebooks(self):
         codebook_id = (
             max(
                 (int(payload.codebook_id) for payload in self._codebook_payloads),
@@ -74,14 +65,26 @@ class NeuralZipCompressor:
             )
             + 1
         )
-        self._codebook_payloads.append(
-            CodebookPayload(codebook_id, EXPONENT_STREAM, BF16_NAME, codebook=header)
-        )
-        self._global_modes[key] = {
-            "kind": "shared_huff0",
-            "codebook_id": codebook_id,
-            "codebook": huff0.build_codebook_from_header(header),
-        }
+        for config in DTYPES.values():
+            for stream_id, filename in config.global_codebooks:
+                key = (config.name, stream_id)
+                if key in self._global_modes:
+                    continue
+                path = Path(__file__).with_name("codebooks") / filename
+                if not path.is_file():
+                    continue
+                header = path.read_bytes()
+                self._codebook_payloads.append(
+                    CodebookPayload(
+                        codebook_id, stream_id, config.name, codebook=header
+                    )
+                )
+                self._global_modes[key] = {
+                    "kind": "shared_huff0",
+                    "codebook_id": codebook_id,
+                    "codebook": huff0.build_codebook_from_header(header),
+                }
+                codebook_id += 1
 
     def export_codebooks(self):
         return tuple(self._codebook_payloads)
@@ -94,41 +97,17 @@ class NeuralZipCompressor:
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
-        return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
+        return str(name), DTYPES[tensor.dtype].name, int(stream_id)
 
     def prepare_gpu_transfer_target(self, named_tensors):
-        """Project a full setup onto the sharing-only BF16 GPU encoder."""
-        global_mode = self._global_modes[(BF16_NAME, EXPONENT_STREAM)]
-        transfer_modes = {}
-
-        for name, tensor in _floating_tensors(named_tensors):
-            tensor_name = str(name)
-            key = (tensor_name, BF16_NAME, EXPONENT_STREAM)
-            candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
-            source_name = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if (
-                        candidate,
-                        BF16_NAME,
-                        EXPONENT_STREAM,
-                    )
-                    in self._mode_by_tensor_stream
-                ),
-                None,
-            )
-            source_mode = (
-                self._mode_by_tensor_stream[(source_name, BF16_NAME, EXPONENT_STREAM)]
-                if source_name is not None
-                else None
-            )
-            if source_mode is not None and source_mode.get("kind") == "shared_huff0":
-                transfer_modes[key] = source_mode
-            else:
-                transfer_modes[key] = global_mode
-
-        self._transfer_mode_by_tensor_stream = transfer_modes
+        """Project setup modes onto sharing-only streams and declared fallbacks."""
+        self.prepare_storage_transfer_target(named_tensors)
+        self._transfer_mode_by_tensor_stream = {
+            key: mode
+            if mode.get("kind") == "shared_huff0"
+            else self._global_modes.get(key[1:], {"kind": "raw"})
+            for key, mode in self._transfer_mode_by_tensor_stream.items()
+        }
 
     def prepare_storage_transfer_target(self, named_tensors):
         """Map a target onto the full storage codec with lossless fallbacks."""
@@ -136,9 +115,9 @@ class NeuralZipCompressor:
         for name, tensor in _floating_tensors(named_tensors):
             config = DTYPES[tensor.dtype]
             tensor_name = str(name)
-            dtype = config["name"]
+            dtype = config.name
             candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
-            for stream_id in range(int(config["element_size"])):
+            for stream_id in config.stream_ids:
                 source_key = next(
                     (
                         (candidate, dtype, stream_id)
@@ -167,9 +146,9 @@ class NeuralZipCompressor:
         native_specs = [
             (
                 tensor.reshape(-1).view(torch.uint8).numpy(),
-                int(config["element_size"]),
-                int(config["bit_reorder"]),
-                _stream_chunk_size(self.chunk_size, int(config["element_size"])),
+                int(config.element_size),
+                int(config.bit_reorder),
+                _stream_chunk_size(self.chunk_size, int(config.element_size)),
                 tensor_modes,
             )
             for _, tensor, config, tensor_modes in tensor_specs
@@ -205,17 +184,16 @@ class NeuralZipCompressor:
 
         for name, tensor in named_tensors:
             config = DTYPES[tensor.dtype]
-            raw_bytes = int(tensor.numel()) * int(config["element_size"])
+            raw_bytes = int(tensor.numel()) * int(config.element_size)
             if batch and batch_bytes + raw_bytes > self.direct_batch_bytes:
                 flush_batch()
             original = tensor.detach().cpu().contiguous()
-            stream_count = int(config["element_size"])
             if original.numel() == 0:
-                tensor_modes = ({"kind": "raw"},) * stream_count
+                tensor_modes = ({"kind": "raw"},) * config.element_size
             else:
                 tensor_modes = tuple(
                     self._mode_for_tensor_stream(name, original, stream_id)
-                    for stream_id in range(stream_count)
+                    for stream_id in config.stream_ids
                 )
             batch.append((name, original, config, tensor_modes))
             batch_bytes += raw_bytes
@@ -255,11 +233,11 @@ class NeuralZipCompressor:
         return TensorPayload(
             name=name,
             shape=tuple(int(dim) for dim in tensor.shape),
-            dtype=config["name"],
-            element_size=int(config["element_size"]),
+            dtype=config.name,
+            element_size=int(config.element_size),
             numel=int(tensor.numel()),
             groups=tuple(groups),
-            bit_reorder=int(config["bit_reorder"]),
+            bit_reorder=int(config.bit_reorder),
         )
 
     def _decode_assets(self, chunk):
@@ -305,8 +283,8 @@ class NeuralZipCompressor:
                 )
             native_groups.append(tuple(native_chunks))
         return (
-            int(config["element_size"]),
-            bool(config["bit_reorder"]),
+            int(config.element_size),
+            bool(config.bit_reorder),
             int(compressed.numel),
             tuple(native_groups),
         ), dtype

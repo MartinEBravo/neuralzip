@@ -8,6 +8,7 @@ from torch import nn
 
 from neuralzip import _huff0_cpp
 from neuralzip.compressor import NeuralZipCompressor
+from neuralzip.dtypes import DTYPES, DTypeSpec
 from neuralzip.gpu import decoder as gpu_decoder
 
 RUNTIME_ATTRIBUTE = "neuralzip_runtime"
@@ -40,41 +41,57 @@ class GPUCodebook:
 
 
 @dataclass(frozen=True)
-class GPUEncodedExponents:
+class GPUEncodedSymbols:
     bitstream: bytes
     bit_length: int
     symbol_count: int
     packed_gaps: bytes
     output_positions: tuple[int, ...]
 
+    @property
+    def compressed_bytes(self):
+        return (
+            len(self.bitstream) + len(self.packed_gaps) + 4 * len(self.output_positions)
+        )
+
 
 @dataclass(frozen=True)
-class GPUEncodedBF16:
-    sign_mantissa: bytes
-    exponents: GPUEncodedExponents
+class GPUEncoded:
+    dtype: DTypeSpec
+    numel: int
+    streams: tuple[bytes | GPUEncodedSymbols, ...]  # Indexed by byte-lane ID.
 
     @property
-    def numel(self):
-        return len(self.sign_mantissa)
+    def raw_bytes(self):
+        return self.numel * self.dtype.element_size
+
+    @property
+    def compressed_bytes(self):
+        return sum(
+            len(stream) if isinstance(stream, bytes) else stream.compressed_bytes
+            for stream in self.streams
+        )
 
 
-def encode_bfloat16_native(raw_bfloat16, codebook_header):
-    encoded, sign_mantissa, gaps, positions, bit_length, _max_bits = (
-        _huff0_cpp.encode_gpu_bfloat16(
-            bytes(raw_bfloat16),
+def encode_gpu_native(raw, codebook_header, *, dtype, stream_id):
+    raw = bytes(raw)
+    encoded, raw_streams, gaps, positions, bit_length, _max_bits = (
+        _huff0_cpp.encode_gpu_tensor(
+            raw,
             bytes(codebook_header),
+            dtype.element_size,
+            bool(dtype.bit_reorder),
+            dtype.mantissa_bits,
+            dtype.exponent_mask.bit_length(),
+            stream_id,
         )
     )
-    return GPUEncodedBF16(
-        sign_mantissa,
-        GPUEncodedExponents(
-            encoded,
-            int(bit_length),
-            len(sign_mantissa),
-            gaps,
-            tuple(positions),
-        ),
+    numel = len(raw) // dtype.element_size
+    streams = list(raw_streams)
+    streams[stream_id] = GPUEncodedSymbols(
+        encoded, int(bit_length), numel, gaps, tuple(positions)
     )
+    return GPUEncoded(dtype, numel, tuple(streams))
 
 
 @dataclass(frozen=True)
@@ -87,18 +104,34 @@ class LinearWeightBinding:
 
 
 @dataclass(frozen=True)
-class BF16WeightGroup:
+class GPUWeightGroup:
     block_name: str
     codebook_id: int
     codebook: GPUCodebook
-    encoded: GPUEncodedBF16
+    encoded: GPUEncoded
     bindings: tuple[LinearWeightBinding, ...]
     workspace_offset: int
+
+    @property
+    def layout(self):
+        (stream_id,) = (
+            index
+            for index, stream in enumerate(self.encoded.streams)
+            if isinstance(stream, GPUEncodedSymbols)
+        )
+        dtype = self.encoded.dtype
+        return (
+            dtype.element_size,
+            bool(dtype.bit_reorder),
+            dtype.mantissa_bits,
+            dtype.exponent_mask.bit_length(),
+            stream_id,
+        )
 
 
 @dataclass(frozen=True)
 class NeuralZipModelExport:
-    groups: tuple[BF16WeightGroup, ...]
+    groups: tuple[GPUWeightGroup, ...]
 
     @property
     def block_order(self):
@@ -109,11 +142,14 @@ class NeuralZipModelExport:
         return tuple(binding for group in self.groups for binding in group.bindings)
 
     @property
-    def workspace_numel(self):
-        return max(
-            (group.workspace_offset + group.encoded.numel for group in self.groups),
-            default=0,
-        )
+    def workspace_sizes(self):
+        sizes = {}
+        for group in self.groups:
+            dtype = group.encoded.dtype.torch_dtype
+            sizes[dtype] = max(
+                sizes.get(dtype, 0), group.workspace_offset + group.encoded.numel
+            )
+        return sizes
 
 
 @dataclass(frozen=True)
@@ -126,15 +162,19 @@ class _Candidate:
 
 @dataclass(frozen=True)
 class _UploadedGroup:
-    group: BF16WeightGroup
+    group: GPUWeightGroup
     lut: torch.Tensor
-    encoded_exponents: torch.Tensor
-    sign_mantissa: torch.Tensor
+    encoded_symbols: torch.Tensor
+    raw_streams: tuple[torch.Tensor | None, ...]
     packed_gaps: torch.Tensor
     output_positions: torch.Tensor
     output: torch.Tensor
     max_bits: int
     max_block_elements: int
+
+    @property
+    def layout(self):
+        return self.group.layout
 
 
 def _join(parent, child):
@@ -199,14 +239,24 @@ def _assemble_export(block_order, candidates, compressor):
     grouped = defaultdict(list)
     for candidate in candidates:
         parameter = candidate.parameter
-        mode = compressor._mode_for_tensor_stream(candidate.tensor_name, parameter, 1)
-        kind = mode.get("kind")
-        if kind == "raw":
-            continue
-        if kind != "shared_huff0":
-            raise ValueError(
-                f"GPU inference needs a sharing-only setup; {candidate.tensor_name} uses {kind!r}."
+        config = DTYPES[parameter.dtype]
+        stream_ids = sorted(
+            config.stream_ids,
+            key=lambda stream: (stream != config.exponent_stream, -stream),
+        )
+        for stream_id in stream_ids:
+            mode = compressor._mode_for_tensor_stream(
+                candidate.tensor_name, parameter, stream_id
             )
+            kind = mode.get("kind")
+            if kind == "shared_huff0":
+                break
+            if kind != "raw":
+                raise ValueError(
+                    f"GPU inference needs a sharing-only setup; {candidate.tensor_name} uses {kind!r}."
+                )
+        else:
+            continue
         codebook_id = int(mode["codebook_id"])
         payload = payloads[codebook_id]
         if codebook_id not in codebooks:
@@ -215,17 +265,24 @@ def _assemble_export(block_order, candidates, compressor):
                 tuple(lengths),
                 tuple(values),
             )
-        grouped[(candidate.block_name, codebook_id)].append(candidate)
+        grouped[(candidate.block_name, codebook_id, parameter.dtype, stream_id)].append(
+            candidate
+        )
 
     block_index = {name: index for index, name in enumerate(block_order)}
     workspace_offsets = defaultdict(int)
     groups = []
-    for (block_name, codebook_id), members in sorted(
+    for (block_name, codebook_id, dtype, stream_id), members in sorted(
         grouped.items(),
-        key=lambda item: (block_index[item[0][0]], item[0][1]),
+        key=lambda item: (
+            block_index[item[0][0]],
+            item[0][1],
+            DTYPES[item[0][2]].name,
+            item[0][3],
+        ),
     ):
         members.sort(key=lambda member: member.module_name)
-        workspace_offset = workspace_offsets[block_name]
+        workspace_offset = workspace_offsets[(block_name, dtype)]
         group_offset = 0
         bindings = []
         raw_parts = []
@@ -244,20 +301,17 @@ def _assemble_export(block_order, candidates, compressor):
             raw_parts.append(raw.reshape(-1).view(torch.uint8).numpy().tobytes())
             group_offset += parameter.numel()
 
-        encoded = encode_bfloat16_native(
+        payload = payloads[codebook_id]
+        encoded = encode_gpu_native(
             b"".join(raw_parts),
-            payloads[codebook_id].codebook,
+            payload.codebook,
+            dtype=DTYPES[dtype],
+            stream_id=stream_id,
         )
-        encoded_bytes = (
-            len(encoded.sign_mantissa)
-            + len(encoded.exponents.bitstream)
-            + len(encoded.exponents.packed_gaps)
-            + 4 * len(encoded.exponents.output_positions)
-        )
-        if encoded_bytes >= 2 * encoded.numel:
+        if encoded.compressed_bytes >= encoded.raw_bytes:
             continue
         groups.append(
-            BF16WeightGroup(
+            GPUWeightGroup(
                 block_name,
                 codebook_id,
                 codebooks[codebook_id],
@@ -266,20 +320,21 @@ def _assemble_export(block_order, candidates, compressor):
                 workspace_offset,
             )
         )
-        workspace_offsets[block_name] += group_offset
+        workspace_offsets[(block_name, dtype)] += group_offset
 
     return NeuralZipModelExport(tuple(groups))
 
 
-def export_model_for_gpu(model, setup):
-    """Create the immutable sharing-only BF16 export used by the runtime."""
+def export_model_for_gpu(model, setup, *, allowed_dtypes=DTYPES):
+    """Export one shared-codebook lane per group, preferring pure exponents."""
 
     blocks, candidates = _gpu_candidates(model)
     candidates = _unique_candidates(model, candidates)
     candidates = tuple(
         candidate
         for candidate in candidates
-        if candidate.parameter.dtype == torch.bfloat16
+        if candidate.parameter.dtype in DTYPES
+        and candidate.parameter.dtype in allowed_dtypes
         and candidate.parameter.is_contiguous()
     )
     if not candidates:
@@ -305,6 +360,11 @@ def _binding_module(model, binding):
     return module
 
 
+def _binding_view(uploaded, binding):
+    offset = binding.workspace_offset - uploaded.group.workspace_offset
+    return uploaded.output[offset : offset + binding.numel].view(binding.shape)
+
+
 class NeuralZipRuntime:
     """Sequential runtime attached to one model on one CUDA device."""
 
@@ -314,11 +374,10 @@ class NeuralZipRuntime:
         self.device = torch.device(device)
         self._decoder = gpu_decoder.default_decoder()
         self._hook_handles = []
-        self.workspace = torch.empty(
-            exported.workspace_numel,
-            dtype=torch.bfloat16,
-            device=self.device,
-        )
+        self.workspaces = {
+            dtype: torch.empty(size, dtype=dtype, device=self.device)
+            for dtype, size in exported.workspace_sizes.items()
+        }
 
         luts = {
             group.codebook_id: torch.tensor(
@@ -330,16 +389,26 @@ class NeuralZipRuntime:
         }
         uploaded = []
         for group in exported.groups:
-            positions = group.encoded.exponents.output_positions
+            (symbols,) = (
+                stream
+                for stream in group.encoded.streams
+                if isinstance(stream, GPUEncodedSymbols)
+            )
+            positions = symbols.output_positions
             uploaded.append(
                 _UploadedGroup(
                     group,
                     luts[group.codebook_id],
-                    _bytes_tensor(group.encoded.exponents.bitstream, self.device),
-                    _bytes_tensor(group.encoded.sign_mantissa, self.device),
-                    _bytes_tensor(group.encoded.exponents.packed_gaps, self.device),
+                    _bytes_tensor(symbols.bitstream, self.device),
+                    tuple(
+                        _bytes_tensor(stream, self.device)
+                        if isinstance(stream, bytes)
+                        else None
+                        for stream in group.encoded.streams
+                    ),
+                    _bytes_tensor(symbols.packed_gaps, self.device),
                     torch.tensor(positions, dtype=torch.int32, device=self.device),
-                    self.workspace[
+                    self.workspaces[group.encoded.dtype.torch_dtype][
                         group.workspace_offset : group.workspace_offset
                         + group.encoded.numel
                     ],
@@ -356,10 +425,14 @@ class NeuralZipRuntime:
         self._groups_by_block = {
             name: tuple(by_block[name]) for name in exported.block_order
         }
-        self._prepared_batches = {
-            name: self._decoder.prepare_batch(groups)
-            for name, groups in self._groups_by_block.items()
-        }
+        self._prepared_batches = {}
+        for name, groups in self._groups_by_block.items():
+            layouts = defaultdict(list)
+            for group in groups:
+                layouts[group.layout].append(group)
+            self._prepared_batches[name] = tuple(
+                self._decoder.prepare_batch(batch) for batch in layouts.values()
+            )
         torch.cuda.synchronize(self.device)
 
     @classmethod
@@ -374,6 +447,11 @@ class NeuralZipRuntime:
         device = torch.device(device)
         if device.type != "cuda":
             raise ValueError("NeuralZip GPU inference requires a CUDA device.")
+        if device.index is None:
+            device = torch.device("cuda", torch.cuda.current_device())
+        decoder = gpu_decoder.default_decoder()
+        for group in exported.groups:
+            decoder.prepare_group(device.index, group)
 
         for binding in exported.bindings:
             module = _binding_module(model, binding)
@@ -385,11 +463,12 @@ class NeuralZipRuntime:
         return runtime
 
     def _install(self):
-        for binding in self.export.bindings:
-            view = self.workspace[
-                binding.workspace_offset : binding.workspace_offset + binding.numel
-            ].view(binding.shape)
-            _binding_module(self.model, binding).__dict__["weight"] = view
+        for groups in self._groups_by_block.values():
+            for uploaded in groups:
+                for binding in uploaded.group.bindings:
+                    _binding_module(self.model, binding).__dict__["weight"] = (
+                        _binding_view(uploaded, binding)
+                    )
         for block_name in self.export.block_order:
             handle = self.model.get_submodule(block_name).register_forward_pre_hook(
                 partial(self._decode_block, block_name),
@@ -399,7 +478,8 @@ class NeuralZipRuntime:
         setattr(self.model, RUNTIME_ATTRIBUTE, self)
 
     def _decode_block(self, block_name, _module=None, _args=None):
-        self._decoder.decode_batch(self._prepared_batches[block_name])
+        for prepared in self._prepared_batches[block_name]:
+            self._decoder.decode_batch(prepared)
 
     @torch.no_grad()
     def materialized_weights(self):
@@ -410,8 +490,5 @@ class NeuralZipRuntime:
             torch.cuda.synchronize(self.device)
             for uploaded in self._groups_by_block[block_name]:
                 for binding in uploaded.group.bindings:
-                    weight = self.workspace[
-                        binding.workspace_offset : binding.workspace_offset
-                        + binding.numel
-                    ].view(binding.shape)
+                    weight = _binding_view(uploaded, binding)
                     yield binding.tensor_name, weight.detach().to("cpu", copy=True)

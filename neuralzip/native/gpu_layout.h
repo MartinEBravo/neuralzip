@@ -7,13 +7,17 @@ static_assert(
     kGPUCodeMaxBits <= kGPUGapLimit,
     "GPU restart gaps must represent every supported code length.");
 
-struct GPUBFloat16Encoding {
-    std::vector<std::uint8_t> encoded_exponents;
-    std::vector<std::uint8_t> sign_mantissa;
+struct GPUHuffmanEncoding {
+    std::vector<std::uint8_t> bitstream;
     std::vector<std::uint8_t> packed_gaps;
     std::vector<std::uint32_t> output_positions;
     std::uint64_t bit_length = 0;
     unsigned max_bits = 0;
+};
+
+struct GPULayoutEncoding {
+    GPUHuffmanEncoding symbols;
+    std::vector<std::vector<std::uint8_t>> raw_streams;
 };
 
 std::size_t checked_size_product(
@@ -45,56 +49,44 @@ std::vector<std::uint8_t> pack_gpu_gaps(
     return output;
 }
 
-GPUBFloat16Encoding encode_gpu_bfloat16_layout(
-    const std::uint8_t* raw,
-    std::size_t raw_size,
-    const std::uint8_t* codebook_header,
-    Py_ssize_t codebook_header_size) {
+// Both passes read identical symbols; only the first may save residual bytes.
+template <typename SymbolReader>
+GPUHuffmanEncoding encode_gpu_symbols(
+    std::size_t symbol_count,
+    const ExportedCodeTable& table,
+    SymbolReader read_symbol) {
     constexpr std::size_t bytes_per_thread = 8;
     constexpr std::size_t threads_per_block = 512;
-    require(
-        (raw_size & 1U) == 0,
-        "A BF16 byte sequence must have an even length.");
-    const std::size_t numel = raw_size / 2U;
     require<std::overflow_error>(
-        numel <= kGPUDecoderIndexLimit,
-        "BF16 element count exceeds the int32 CUDA decoder ABI limit.");
-
-    const ExportedCodeTable table = export_code_table_from_header(
-        codebook_header, codebook_header_size, kGPUCodeMaxBits);
+        symbol_count <= kGPUDecoderIndexLimit,
+        "Symbol count exceeds the int32 CUDA decoder ABI limit.");
     require(
         table.max_bits > 0 && table.max_bits <= kGPUCodeMaxBits,
         "GPU Huffman code length must be in [1, 12].");
 
-    GPUBFloat16Encoding result;
+    GPUHuffmanEncoding result;
     result.max_bits = table.max_bits;
-    result.sign_mantissa.resize(numel);
 
-    for (std::size_t index = 0; index < numel; ++index) {
-        const std::uint8_t low = raw[index * 2U];
-        const std::uint8_t high = raw[index * 2U + 1U];
-        const std::uint8_t exponent = static_cast<std::uint8_t>(
-            ((high & 0x7FU) << 1U) | (low >> 7U));
-        const unsigned length = table.code_lengths[exponent];
+    for (std::size_t index = 0; index < symbol_count; ++index) {
+        const std::uint8_t symbol = read_symbol(index, true);
+        const unsigned length = table.code_lengths[symbol];
         if (length == 0) {
             throw std::runtime_error(
-                "Exponent symbol " + std::to_string(exponent)
+                "Symbol " + std::to_string(symbol)
                 + " at index " + std::to_string(index)
                 + " has no codebook entry.");
         }
         result.bit_length += length;
-        result.sign_mantissa[index] = static_cast<std::uint8_t>(
-            (high & 0x80U) | (low & 0x7FU));
     }
 
     const std::uint64_t encoded_bytes_u64 =
         result.bit_length / 8U + (result.bit_length % 8U != 0 ? 1U : 0U);
     require<std::overflow_error>(
         encoded_bytes_u64 <= kGPUDecoderIndexLimit,
-        "Encoded exponent stream exceeds the int32 CUDA decoder ABI limit.");
+        "Encoded symbol stream exceeds the int32 CUDA decoder ABI limit.");
     const std::size_t encoded_bytes = static_cast<std::size_t>(
         encoded_bytes_u64);
-    result.encoded_exponents.resize(encoded_bytes);
+    result.bitstream.resize(encoded_bytes);
 
     const std::size_t block_bytes = checked_size_product(
         bytes_per_thread,
@@ -110,7 +102,7 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
         encoded_bytes, bytes_per_thread);
     std::vector<std::uint8_t> gaps(gap_count, 0);
     result.output_positions.assign(
-        block_count + 1U, static_cast<std::uint32_t>(numel));
+        block_count + 1U, static_cast<std::uint32_t>(symbol_count));
 
     const std::uint64_t segment_bits = bytes_per_thread * 8U;
     const std::uint64_t block_bits =
@@ -122,7 +114,7 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
     std::uint32_t accumulator = 0;
     unsigned pending = 0;
 
-    for (std::size_t index = 0; index < numel; ++index) {
+    for (std::size_t index = 0; index < symbol_count; ++index) {
         while (
             next_segment < populated_segments
             && symbol_start
@@ -147,18 +139,15 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
             ++next_block;
         }
 
-        const std::uint8_t low = raw[index * 2U];
-        const std::uint8_t high = raw[index * 2U + 1U];
-        const std::uint8_t exponent = static_cast<std::uint8_t>(
-            ((high & 0x7FU) << 1U) | (low >> 7U));
-        const unsigned length = table.code_lengths[exponent];
-        accumulator = (accumulator << length) | table.code_values[exponent];
+        const std::uint8_t symbol = read_symbol(index, false);
+        const unsigned length = table.code_lengths[symbol];
+        accumulator = (accumulator << length) | table.code_values[symbol];
         pending += length;
         symbol_start += length;
 
         while (pending >= 8U) {
             pending -= 8U;
-            result.encoded_exponents[encoded_offset++] =
+            result.bitstream[encoded_offset++] =
                 static_cast<std::uint8_t>((accumulator >> pending) & 0xFFU);
             accumulator = pending == 0
                 ? 0U
@@ -166,7 +155,7 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
         }
     }
     if (pending != 0) {
-        result.encoded_exponents[encoded_offset++] =
+        result.bitstream[encoded_offset++] =
             static_cast<std::uint8_t>(
                 (accumulator << (8U - pending)) & 0xFFU);
     }
@@ -178,5 +167,56 @@ GPUBFloat16Encoding encode_gpu_bfloat16_layout(
         ++next_segment;
     }
     result.packed_gaps = pack_gpu_gaps(gaps);
+    return result;
+}
+
+template <unsigned ElementSize, bool ByteAlignedExponent>
+GPULayoutEncoding encode_gpu_layout(
+    const std::uint8_t* raw,
+    std::size_t numel,
+    const ExportedCodeTable& table,
+    unsigned stream_id,
+    bool bit_reorder,
+    unsigned mantissa_bits,
+    unsigned exponent_bits) {
+    if constexpr (ByteAlignedExponent) {
+        stream_id = ElementSize - 1U;
+        bit_reorder = true;
+        mantissa_bits = ElementSize * 8U - 9U;
+        exponent_bits = 8;
+    }
+    const std::uint32_t mantissa_mask = (1U << mantissa_bits) - 1U;
+    const std::uint32_t sign_mask = 1U << mantissa_bits;
+    const std::uint32_t exponent_mask =
+        ((1U << exponent_bits) - 1U) << (mantissa_bits + 1U);
+    GPULayoutEncoding result;
+    result.raw_streams.resize(ElementSize);
+    for (unsigned lane = 0; lane < ElementSize; ++lane) {
+        if (lane != stream_id) {
+            result.raw_streams[lane].resize(numel);
+        }
+    }
+    result.symbols = encode_gpu_symbols(
+        numel, table, [&](std::size_t index, bool first_pass) {
+            std::uint32_t value = 0;
+            for (unsigned lane = 0; lane < ElementSize; ++lane) {
+                value |= static_cast<std::uint32_t>(raw[index * ElementSize + lane])
+                    << (8U * lane);
+            }
+            if (bit_reorder) {
+                value = (value & mantissa_mask)
+                    | ((value >> exponent_bits) & sign_mask)
+                    | ((value << 1U) & exponent_mask);
+            }
+            if (first_pass) {
+                for (unsigned lane = 0; lane < ElementSize; ++lane) {
+                    if (lane != stream_id) {
+                        result.raw_streams[lane][index] = static_cast<std::uint8_t>(
+                            value >> (8U * lane));
+                    }
+                }
+            }
+            return static_cast<std::uint8_t>(value >> (8U * stream_id));
+        });
     return result;
 }

@@ -117,9 +117,14 @@ nb::tuple export_code_table(
         table.max_bits);
 }
 
-nb::tuple encode_gpu_bfloat16(
+nb::tuple encode_gpu_tensor(
     nb::handle raw_source,
     nb::handle header_source,
+    unsigned element_size,
+    bool bit_reorder,
+    unsigned mantissa_bits,
+    unsigned exponent_bits,
+    unsigned stream_id,
     Py_ssize_t bytes_per_thread,
     Py_ssize_t threads_per_block) {
     require<nb::value_error>(
@@ -127,26 +132,49 @@ nb::tuple encode_gpu_bfloat16(
         "The GPU ABI requires 8 bytes per thread and 512 threads per block.");
     ReadOnlyBuffer raw(raw_source);
     ReadOnlyBuffer header(header_source);
+    require<nb::value_error>(
+        element_size == 2 || element_size == 4,
+        "GPU element_size must be 2 or 4.");
+    require<nb::value_error>(
+        mantissa_bits < 8U * element_size && exponent_bits > 0
+            && exponent_bits < 8U * element_size
+            && mantissa_bits + exponent_bits + 1U == 8U * element_size,
+        "Sign, exponent and mantissa fields must fill the element.");
+    require<nb::value_error>(stream_id < element_size, "GPU stream_id is out of range.");
+    require(raw.size() % element_size == 0, "Input must contain complete elements.");
+    const std::size_t numel = static_cast<std::size_t>(raw.size()) / element_size;
+    require<std::overflow_error>(
+        numel <= kGPUDecoderIndexLimit,
+        "Element count exceeds the int32 CUDA decoder ABI limit.");
 
-    GPUBFloat16Encoding encoded;
+    GPULayoutEncoding encoded;
     {
         nb::gil_scoped_release release;
-        encoded = encode_gpu_bfloat16_layout(
-            raw.data(),
-            static_cast<std::size_t>(raw.size()),
-            header.data(),
-            header.size());
+        const ExportedCodeTable table = export_code_table_from_header(
+            header.data(), header.size(), kGPUCodeMaxBits);
+        // Select constant layout parameters outside the symbol loops.
+        const bool aligned_exponent = bit_reorder && exponent_bits == 8
+            && stream_id == element_size - 1U;
+        const auto encode = element_size == 2
+            ? (aligned_exponent ? encode_gpu_layout<2, true> : encode_gpu_layout<2, false>)
+            : (aligned_exponent ? encode_gpu_layout<4, true> : encode_gpu_layout<4, false>);
+        encoded = encode(raw.data(), numel, table, stream_id,
+            bit_reorder, mantissa_bits, exponent_bits);
     }
 
+    nb::list raw_streams;
+    for (const auto& stream : encoded.raw_streams) {
+        raw_streams.append(bytes_from_vector(stream));
+    }
     nb::list positions;
-    for (const auto position : encoded.output_positions) {
+    for (const auto position : encoded.symbols.output_positions) {
         positions.append(position);
     }
     return nb::make_tuple(
-        bytes_from_vector(encoded.encoded_exponents),
-        bytes_from_vector(encoded.sign_mantissa),
-        bytes_from_vector(encoded.packed_gaps),
+        bytes_from_vector(encoded.symbols.bitstream),
+        nb::tuple(raw_streams),
+        bytes_from_vector(encoded.symbols.packed_gaps),
         nb::tuple(positions),
-        encoded.bit_length,
-        encoded.max_bits);
+        encoded.symbols.bit_length,
+        encoded.symbols.max_bits);
 }

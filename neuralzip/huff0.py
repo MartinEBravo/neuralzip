@@ -56,7 +56,7 @@ def compress_mixed_streams_many(
     )
 
 
-def compress_bf16_storage(
+def compress_direct_storage(
     tensor_specs,
     prefix,
     *,
@@ -65,7 +65,7 @@ def compress_bf16_storage(
     compression_threshold=0.95,
 ):
     native_specs = []
-    for data, chunk_size, mode in tensor_specs:
+    for data, dtype, stream_id, chunk_size, mode in tensor_specs:
         kind = str(mode.get("kind"))
         if kind == "raw":
             native_mode = (kind, None, -1, b"", 1)
@@ -79,10 +79,21 @@ def compress_bf16_storage(
             )
         else:
             raise ValueError(
-                "Direct BF16 storage supports raw, shared_huff0, or packed_huff0."
+                "Direct storage supports raw, shared_huff0, or packed_huff0."
             )
-        native_specs.append((data, int(chunk_size), native_mode))
-    return _huff0_cpp.compress_bf16_storage(
+        native_specs.append(
+            (
+                data,
+                dtype.element_size,
+                bool(dtype.bit_reorder),
+                dtype.mantissa_bits,
+                dtype.exponent_mask.bit_length(),
+                int(stream_id),
+                int(chunk_size),
+                native_mode,
+            )
+        )
+    return _huff0_cpp.compress_direct_storage(
         tuple(native_specs),
         prefix,
         min_saving_bytes=int(min_saving_bytes),

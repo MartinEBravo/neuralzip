@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from neuralzip import huff0
+from neuralzip.dtypes import DTYPES
 from neuralzip.payloads import (
     PACKED_CHUNK_METADATA_BYTES,
     RAW_CHUNK_METADATA_BYTES,
@@ -12,11 +13,10 @@ from neuralzip.payloads import (
     CodebookPayload,
 )
 from neuralzip.utils import (
-    DTYPES,
-    _byte_group_reordered_bytes,
     _floating_tensors,
     _model_tensors,
     _stream_chunk_size,
+    _tensor_raw_bytes,
     estimate_mode,
     exponent_distribution,
     jensen_shannon_distance,
@@ -198,11 +198,10 @@ class NeuralZipSetup:
         for name, tensor in _floating_tensors(named_tensors):
             original = tensor.detach().cpu().contiguous()
             config = DTYPES[original.dtype]
-            reordered = _byte_group_reordered_bytes(original, config)
-            element_size = int(config["element_size"])
-            exponent_stream = element_size - 1 if config["bit_reorder"] else -1
-            for stream_id in range(element_size):
-                is_exponent = stream_id == exponent_stream
+            reordered = config.reorder_bytes(_tensor_raw_bytes(original))
+            element_size = int(config.element_size)
+            for stream_id in config.stream_ids:
+                is_exponent = stream_id == config.exponent_stream
                 stream = reordered[stream_id::element_size]
                 key = self._codebook_key(name, original, stream_id, clusters)
                 total_sizes[key] = total_sizes.get(key, 0) + len(stream)
@@ -540,7 +539,7 @@ class NeuralZipSetup:
         tensor_modes = {}
         for name, tensor in _floating_tensors(named_tensors):
             config = DTYPES[tensor.dtype]
-            for stream_id in range(int(config["element_size"])):
+            for stream_id in config.stream_ids:
                 selected = mode_by_key[
                     self._codebook_key(name, tensor, stream_id, clusters)
                 ]
@@ -551,8 +550,8 @@ class NeuralZipSetup:
 
     @staticmethod
     def _codebook_key(name, tensor, stream_id, clusters):
-        return clusters.get(name), DTYPES[tensor.dtype]["name"], int(stream_id)
+        return clusters.get(name), DTYPES[tensor.dtype].name, int(stream_id)
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
-        return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
+        return str(name), DTYPES[tensor.dtype].name, int(stream_id)

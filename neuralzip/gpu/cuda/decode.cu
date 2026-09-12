@@ -55,13 +55,23 @@ __device__ __forceinline__ uint8_t entry_symbol(const uint16_t entry) {
     return static_cast<uint8_t>(entry & 0xFFU);
 }
 
-__device__ __forceinline__ uint16_t assemble_bfloat16(
-    const uint8_t exponent,
-    const uint8_t sign_mantissa) {
-    return static_cast<uint16_t>(
-        (static_cast<uint16_t>(sign_mantissa & 0x80U) << 8U)
-        | (static_cast<uint16_t>(exponent) << 7U)
-        | static_cast<uint16_t>(sign_mantissa & 0x7FU));
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+__device__ __forceinline__ Word assemble_value(
+    const uint8_t symbol,
+    const uint8_t* const* raw_streams,
+    const uint32_t index) {
+    uint32_t value = 0;
+#pragma unroll
+    for (int lane = 0; lane < sizeof(Word); ++lane) {
+        const uint8_t byte = lane == StreamId ? symbol : raw_streams[lane][index];
+        value |= static_cast<uint32_t>(byte) << (8U * lane);
+    }
+    if (Reorder) {
+        value = (value & ((1U << MantissaBits) - 1U))
+            | ((value << ExponentBits) & (1U << (MantissaBits + ExponentBits)))
+            | ((value >> 1U) & (((1U << ExponentBits) - 1U) << MantissaBits));
+    }
+    return static_cast<Word>(value);
 }
 
 __device__ __forceinline__ uint32_t exclusive_block_prefix(
@@ -112,14 +122,15 @@ __device__ __forceinline__ uint32_t exclusive_block_prefix(
     return warp_offsets[warp_id] + inclusive - value;
 }
 
-__device__ __forceinline__ void decode_bf16_block(
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+__device__ __forceinline__ void decode_block(
     const uint16_t* __restrict__ lut,
     const int max_bits,
     const uint8_t* __restrict__ codes,
-    const uint8_t* __restrict__ sign_mantissa,
+    const uint8_t* const* raw_streams,
     const uint8_t* __restrict__ gaps,
     const uint32_t* __restrict__ output_positions,
-    uint16_t* __restrict__ outputs,
+    Word* __restrict__ outputs,
     const int n_bytes,
     const uint32_t local_block_id,
     uint8_t* __restrict__ shared_mem) {
@@ -127,7 +138,7 @@ __device__ __forceinline__ void decode_bf16_block(
     uint8_t register_buffer[12] = {};
     uint32_t* warp_offsets = reinterpret_cast<uint32_t*>(shared_mem);
     const uint32_t warp_count = (N_THREADS + 31U) >> 5U;
-    uint16_t* write_buffer = reinterpret_cast<uint16_t*>(
+    Word* write_buffer = reinterpret_cast<Word*>(
         shared_mem + static_cast<uint64_t>(warp_count) * sizeof(uint32_t));
 
     const uint64_t group_thread_id =
@@ -204,8 +215,9 @@ __device__ __forceinline__ void decode_bf16_block(
     while (free_bits < 32U && output_idx < end_output_idx) {
         const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
         const uint8_t nbits = entry_nbits(entry);
-        write_buffer[output_idx - write_offset] = assemble_bfloat16(
-            entry_symbol(entry), sign_mantissa[output_idx]);
+        write_buffer[output_idx - write_offset] =
+            assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+                entry_symbol(entry), raw_streams, output_idx);
 
         output_idx += 1U;
         long_buffer <<= nbits;
@@ -218,8 +230,9 @@ __device__ __forceinline__ void decode_bf16_block(
     while (output_idx < end_output_idx) {
         const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
         const uint8_t nbits = entry_nbits(entry);
-        write_buffer[output_idx - write_offset] = assemble_bfloat16(
-            entry_symbol(entry), sign_mantissa[output_idx]);
+        write_buffer[output_idx - write_offset] =
+            assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+                entry_symbol(entry), raw_streams, output_idx);
 
         output_idx += 1U;
         long_buffer <<= nbits;
@@ -236,10 +249,11 @@ __device__ __forceinline__ void decode_bf16_block(
 
 }  // namespace
 
-extern "C" __global__ void decode_bf16_batched(
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+__global__ void decode_batched(
     const uint64_t* __restrict__ lut_ptrs,
     const uint64_t* __restrict__ code_ptrs,
-    const uint64_t* __restrict__ sign_mantissa_ptrs,
+    const uint64_t* __restrict__ raw_stream_ptrs,
     const uint64_t* __restrict__ gap_ptrs,
     const uint64_t* __restrict__ output_position_ptrs,
     const uint64_t* __restrict__ output_ptrs,
@@ -254,22 +268,28 @@ extern "C" __global__ void decode_bf16_batched(
 
     const uint64_t lut_address = __ldg(lut_ptrs + group_id);
     const uint64_t code_address = __ldg(code_ptrs + group_id);
-    const uint64_t sign_mantissa_address = __ldg(
-        sign_mantissa_ptrs + group_id);
+    const uint8_t* raw_streams[sizeof(Word)] = {};
+#pragma unroll
+    for (int lane = 0; lane < sizeof(Word); ++lane) {
+        if (lane != StreamId) {
+            raw_streams[lane] = reinterpret_cast<const uint8_t*>(
+                __ldg(raw_stream_ptrs + group_id * sizeof(Word) + lane));
+        }
+    }
     const uint64_t gap_address = __ldg(gap_ptrs + group_id);
     const uint64_t output_position_address = __ldg(
         output_position_ptrs + group_id);
     const uint64_t output_address = __ldg(output_ptrs + group_id);
 
     extern __shared__ __align__(16) uint8_t shared_mem[];
-    decode_bf16_block(
+    decode_block<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
         reinterpret_cast<const uint16_t*>(lut_address),
         group_max_bits,
         reinterpret_cast<const uint8_t*>(code_address),
-        reinterpret_cast<const uint8_t*>(sign_mantissa_address),
+        raw_streams,
         reinterpret_cast<const uint8_t*>(gap_address),
         reinterpret_cast<const uint32_t*>(output_position_address),
-        reinterpret_cast<uint16_t*>(output_address),
+        reinterpret_cast<Word*>(output_address),
         group_n_bytes,
         static_cast<uint32_t>(local_block_id),
         shared_mem);

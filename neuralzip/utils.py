@@ -301,6 +301,10 @@ def tokenize_ngrams(data, n, vocab):
     return tokens.tobytes(), escapes, tail
 
 
+def _stream_chunk_size(chunk_size, element_size):
+    return max(1, chunk_size // int(element_size))
+
+
 def time_call(func, /, *args, **kwargs):
     """Call a function and return the result and elapsed time in seconds."""
 

@@ -16,6 +16,7 @@ from neuralzip.utils import (
     _byte_group_reordered_bytes,
     _floating_tensors,
     _model_tensors,
+    _stream_chunk_size,
     estimate_mode,
     exponent_distribution,
     jensen_shannon_distance,
@@ -206,7 +207,7 @@ class NeuralZipSetup:
                 key = self._codebook_key(name, original, stream_id, clusters)
                 total_sizes[key] = total_sizes.get(key, 0) + len(stream)
                 stream_info[key] = (element_size, is_exponent)
-                raw_step = self._stream_chunk_size(element_size)
+                raw_step = _stream_chunk_size(self.chunk_size, element_size)
                 shared_step = min(raw_step, huff0.MAX_BLOCK_SIZE)
                 raw_chunks, shared_chunks = chunk_counts.get(key, (0, 0))
                 chunk_counts[key] = (
@@ -408,7 +409,7 @@ class NeuralZipSetup:
                     interleaved,
                     element_size,
                     0,
-                    self._stream_chunk_size(element_size),
+                    _stream_chunk_size(self.chunk_size, element_size),
                     stream_modes,
                 )
             )
@@ -555,6 +556,3 @@ class NeuralZipSetup:
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
         return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
-
-    def _stream_chunk_size(self, element_size):
-        return max(1, self.chunk_size // int(element_size))

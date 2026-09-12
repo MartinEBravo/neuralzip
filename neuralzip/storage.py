@@ -14,7 +14,7 @@ from neuralzip.payloads import (
     serialized_size,
 )
 from neuralzip.setup import NeuralZipSetup
-from neuralzip.utils import DTYPES, _model_tensors
+from neuralzip.utils import DTYPES, _model_tensors, _stream_chunk_size
 
 FORMAT_VERSION = 1
 
@@ -293,7 +293,7 @@ def _direct_bf16_storage(compressor, named_tensors):
         specs.append(
             (
                 original.reshape(-1).view(torch.uint8).numpy(),
-                compressor._stream_chunk_size(2),
+                _stream_chunk_size(compressor.chunk_size, 2),
                 modes[1],
             )
         )

@@ -10,7 +10,12 @@ from neuralzip.payloads import (
     TensorPayload,
 )
 from neuralzip.setup import NeuralZipSetup
-from neuralzip.utils import DTYPES, _floating_tensors, _tensor_from_raw_bytes
+from neuralzip.utils import (
+    DTYPES,
+    _floating_tensors,
+    _stream_chunk_size,
+    _tensor_from_raw_bytes,
+)
 
 BF16_NAME = "bfloat16"
 EXPONENT_STREAM = 1
@@ -77,9 +82,6 @@ class NeuralZipCompressor:
             "codebook_id": codebook_id,
             "codebook": huff0.build_codebook_from_header(header),
         }
-
-    def _stream_chunk_size(self, element_size):
-        return max(1, self.chunk_size // int(element_size))
 
     def export_codebooks(self):
         return tuple(self._codebook_payloads)
@@ -167,7 +169,7 @@ class NeuralZipCompressor:
                 tensor.reshape(-1).view(torch.uint8).numpy(),
                 int(config["element_size"]),
                 int(config["bit_reorder"]),
-                self._stream_chunk_size(int(config["element_size"])),
+                _stream_chunk_size(self.chunk_size, int(config["element_size"])),
                 tensor_modes,
             )
             for _, tensor, config, tensor_modes in tensor_specs

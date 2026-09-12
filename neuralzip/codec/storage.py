@@ -1,7 +1,8 @@
 import torch
+
 from neuralzip import huff0
-from neuralzip.codec_primitives import DTYPES, _tensor_from_raw_bytes
 from neuralzip.payloads import ByteGroupPayload, StreamChunk, TensorPayload
+from neuralzip.utils import DTYPES, _tensor_from_raw_bytes
 
 
 class _StorageMixin:

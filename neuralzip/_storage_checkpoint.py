@@ -1,18 +1,20 @@
 import time
 from dataclasses import dataclass
+
 import torch
+
 from neuralzip import huff0
-from neuralzip._setup import _model_tensors, load_setup, materialize_setup
-from neuralzip.codec_primitives import DTYPES
-from neuralzip.neuralzip_codec import NeuralZipCodec
+from neuralzip.codec.codec import NeuralZipCodec
 from neuralzip.payloads import (
-    ByteGroupPayload,
     CHUNK_METADATA_BYTES,
+    ByteGroupPayload,
     CodebookPayload,
     StreamChunk,
     TensorPayload,
     serialized_size,
 )
+from neuralzip.setup import _model_tensors, load_setup, materialize_setup
+from neuralzip.utils import DTYPES
 
 FORMAT_VERSION = 1
 
@@ -197,9 +199,7 @@ def storage_bytes(codebooks, tensors):
     tensors = tuple(tensors)
     raw = sum(tensor.raw_bytes for tensor in tensors)
     exponent_raw = sum(tensor.numel for tensor in tensors)
-    exponent_streams = {
-        (tensor.dtype, len(tensor.groups) - 1) for tensor in tensors
-    }
+    exponent_streams = {(tensor.dtype, len(tensor.groups) - 1) for tensor in tensors}
     exponent_compressed = sum(
         chunk.compressed_bytes
         for tensor in tensors
@@ -227,13 +227,7 @@ def _direct_storage_bytes(codebooks, tensors, blob_bytes):
     structural_bytes = 4 + 2 + _text_size("neuralzip") + 8
     for codebook in codebooks:
         structural_bytes += (
-            8
-            + 4
-            + _text_size(codebook.dtype)
-            + _text_size(codebook.mode)
-            + 1
-            + 8
-            + 8
+            8 + 4 + _text_size(codebook.dtype) + _text_size(codebook.mode) + 1 + 8 + 8
         )
     structural_bytes += 8
     for tensor in tensors:
@@ -415,8 +409,7 @@ def decode_storage(blob, metadata):
     codec.load_codebooks(codebooks)
     tensors = codec.decompress_tensors(payloads)
     return {
-        payload.name: tensor
-        for payload, tensor in zip(payloads, tensors, strict=True)
+        payload.name: tensor for payload, tensor in zip(payloads, tensors, strict=True)
     }
 
 

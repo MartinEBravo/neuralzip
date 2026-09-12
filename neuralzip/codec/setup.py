@@ -1,8 +1,16 @@
-import numpy as np
 import time
+
+import numpy as np
 import torch
+
 from neuralzip import huff0
-from neuralzip.codec_primitives import (
+from neuralzip.payloads import (
+    PACKED_CHUNK_METADATA_BYTES,
+    RAW_CHUNK_METADATA_BYTES,
+    SHARED_CHUNK_METADATA_BYTES,
+    CodebookPayload,
+)
+from neuralzip.utils import (
     DTYPES,
     _byte_group_reordered_bytes,
     estimate_mode,
@@ -12,12 +20,6 @@ from neuralzip.codec_primitives import (
     select_packed_time_budget,
     tokenize_ngrams,
     topk_vocab,
-)
-from neuralzip.payloads import (
-    PACKED_CHUNK_METADATA_BYTES,
-    RAW_CHUNK_METADATA_BYTES,
-    SHARED_CHUNK_METADATA_BYTES,
-    CodebookPayload,
 )
 
 

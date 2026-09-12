@@ -1,12 +1,15 @@
-import json
 import inspect
+import json
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
+
 import torch
+from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 from transformers import AutoConfig, GenerationConfig, PreTrainedModel
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
+
 from neuralzip._storage_checkpoint import (
     NeuralZipStats,
     _bytes_tensor,
@@ -27,12 +30,14 @@ STORAGE_DATA = f"{PREFIX}storage.data"
 STORAGE_METADATA = f"{PREFIX}storage.metadata"
 STATS_ATTRIBUTE = "neuralzip_stats"
 _MISSING = object()
-_ORIGINAL_SAVE = PreTrainedModel.save_pretrained
-_ORIGINAL_LOAD = PreTrainedModel.__dict__["from_pretrained"].__func__
+_ORIGINAL_SAVE = None
+_ORIGINAL_LOAD = None
 _HF_OPTIONS = {}
+
 
 def _tensor_bytes(tensor):
     return tensor.detach().cpu().contiguous().numpy().tobytes()
+
 
 def _checkpoint_metadata(config):
     metadata = getattr(config, "neuralzip", None)
@@ -44,6 +49,7 @@ def _checkpoint_metadata(config):
     if metadata.get("encoding") != "storage":
         raise ValueError("Invalid NeuralZip checkpoint format metadata.")
     return metadata
+
 
 def _export_stats(model, exported, setup, encoding_seconds):
     compressed_names = {binding.tensor_name for binding in exported.bindings}
@@ -72,9 +78,7 @@ def _export_stats(model, exported, setup, encoding_seconds):
         + 4 * len(group.encoded.exponents.output_positions)
         for group in exported.groups
     )
-    codebook_bytes = 1024 * len(
-        {group.codebook_id for group in exported.groups}
-    )
+    codebook_bytes = 1024 * len({group.codebook_id for group in exported.groups})
     exponent_compressed_bytes = (
         resident_exponent_bytes + exponent_payload_bytes + codebook_bytes
     )
@@ -96,6 +100,7 @@ def _export_stats(model, exported, setup, encoding_seconds):
         representation="gpu",
     )
 
+
 def _encode_export(model, setup):
     started = time.perf_counter()
     exported = export_model_for_gpu(model, setup)
@@ -103,24 +108,25 @@ def _encode_export(model, setup):
     setattr(model, STATS_ATTRIBUTE, stats)
     return exported
 
+
 def _attach_export(model, exported, device):
     if exported.groups:
         NeuralZipRuntime.attach(model, exported, device=device)
     elif device is not None:
         model.to(device).eval()
 
+
 def _checkpoint_directory(value, **hub_kwargs):
     path = Path(value).expanduser()
     if path.is_dir():
         return path
-    from huggingface_hub import snapshot_download
-
     return Path(
         snapshot_download(
             repo_id=str(value),
             **hub_kwargs,
         )
     )
+
 
 def _checkpoint_state(directory):
     special = {}
@@ -140,6 +146,7 @@ def _checkpoint_state(directory):
             target = special if name.startswith(PREFIX) else resident
             target[name] = tensor
     return special, resident
+
 
 def _save_pretrained(
     model,
@@ -199,6 +206,7 @@ def _save_pretrained(
             config.neuralzip = previous
     return result
 
+
 def _load_storage(
     directory,
     device,
@@ -248,6 +256,7 @@ def _load_storage(
     setattr(model, STATS_ATTRIBUTE, stats)
     return model
 
+
 def _patched_save(model, directory, *args, **kwargs):
     return _save_pretrained(
         model,
@@ -256,6 +265,7 @@ def _patched_save(model, directory, *args, **kwargs):
         save_args=args,
         save_kwargs=kwargs,
     )
+
 
 def _load_device(kwargs):
     value = kwargs.pop("device_map", None)
@@ -270,6 +280,7 @@ def _load_device(kwargs):
     if device.type != "cuda":
         raise TypeError("NeuralZip inference needs one CUDA device.")
     return device
+
 
 def _patched_load(cls, source, *model_args, config=None, **kwargs):
     hub_keys = ("revision", "token", "cache_dir", "local_files_only", "force_download")
@@ -287,11 +298,15 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         if _checkpoint_metadata(source_config) is not None:
             config = source_config
     if _checkpoint_metadata(config) is None:
-        if kwargs.get("quantization_config") is not None or getattr(
-            config,
-            "quantization_config",
-            None,
-        ) is not None:
+        if (
+            kwargs.get("quantization_config") is not None
+            or getattr(
+                config,
+                "quantization_config",
+                None,
+            )
+            is not None
+        ):
             raise ValueError("NeuralZip cannot attach to a quantized model.")
         device = _load_device(kwargs)
         kwargs.pop("torch_dtype", None)
@@ -322,11 +337,14 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         raise TypeError(f"Unsupported NeuralZip loading options: {names}.")
     subfolder = kwargs.get("subfolder", "")
     pattern = f"{subfolder}/*" if subfolder else "*"
-    directory = _checkpoint_directory(
-        source,
-        allow_patterns=(f"{pattern}.json", f"{pattern}.safetensors"),
-        **hub,
-    ) / subfolder
+    directory = (
+        _checkpoint_directory(
+            source,
+            allow_patterns=(f"{pattern}.json", f"{pattern}.safetensors"),
+            **hub,
+        )
+        / subfolder
+    )
     model = _load_storage(
         directory,
         device,
@@ -345,8 +363,13 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         }
     return model
 
+
 def enable(setup=None, *, device=None):
+    global _ORIGINAL_SAVE, _ORIGINAL_LOAD
     _HF_OPTIONS.update(setup=setup, device=device)
     if PreTrainedModel.save_pretrained is not _patched_save:
+        if _ORIGINAL_SAVE is None:
+            _ORIGINAL_SAVE = PreTrainedModel.save_pretrained
+            _ORIGINAL_LOAD = PreTrainedModel.__dict__["from_pretrained"].__func__
         PreTrainedModel.save_pretrained = _patched_save
         PreTrainedModel.from_pretrained = classmethod(_patched_load)

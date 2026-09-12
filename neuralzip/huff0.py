@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 from neuralzip import _huff0_cpp
 
 MAX_BLOCK_SIZE = int(_huff0_cpp.MAX_BLOCK_SIZE)

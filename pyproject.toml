@@ -18,6 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x>=13"]
 
+[tool.ruff.lint]
+extend-select = ["E402", "PLC0415"]
+
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 cmake.version = ">=3.18"

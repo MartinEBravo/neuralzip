@@ -5,9 +5,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
+
 import torch
+
 from neuralzip import huff0
-from neuralzip.neuralzip_codec import BF16_NAME, EXPONENT_STREAM, NeuralZipCodec
+from neuralzip.codec.codec import BF16_NAME, EXPONENT_STREAM, NeuralZipCodec
 from neuralzip.payloads import CodebookPayload
 
 
@@ -89,10 +91,13 @@ def _add_global_codebook(codec):
     if key in codec._global_modes:
         return
     header = Path(__file__).with_name("codebooks").joinpath("bf16.huff0").read_bytes()
-    codebook_id = max(
-        (int(payload.codebook_id) for payload in codec._codebook_payloads),
-        default=-1,
-    ) + 1
+    codebook_id = (
+        max(
+            (int(payload.codebook_id) for payload in codec._codebook_payloads),
+            default=-1,
+        )
+        + 1
+    )
     codec._codebook_payloads.append(
         CodebookPayload(codebook_id, EXPONENT_STREAM, BF16_NAME, codebook=header)
     )

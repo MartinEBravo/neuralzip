@@ -1,6 +1,6 @@
-from neuralzip._codec_setup import _floating_tensors, _SetupMixin
-from neuralzip._codec_storage import _StorageMixin
-from neuralzip.codec_primitives import DTYPES
+from neuralzip.codec.setup import _floating_tensors, _SetupMixin
+from neuralzip.codec.storage import _StorageMixin
+from neuralzip.utils import DTYPES
 
 BF16_NAME = "bfloat16"
 EXPONENT_STREAM = 1
@@ -98,9 +98,7 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
                 None,
             )
             source_mode = (
-                self._mode_by_tensor_stream[
-                    (source_name, BF16_NAME, EXPONENT_STREAM)
-                ]
+                self._mode_by_tensor_stream[(source_name, BF16_NAME, EXPONENT_STREAM)]
                 if source_name is not None
                 else None
             )

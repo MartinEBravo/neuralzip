@@ -1,8 +1,15 @@
-import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
+
 import numpy as np
 import torch
+
+try:
+    import cupy
+except ModuleNotFoundError as error:
+    if error.name != "cupy":
+        raise
+    cupy = None
 
 KERNEL_NAME = "decode_bf16_batched"
 KERNEL_PATH = Path(__file__).with_name("cuda") / "decode_bf16.cu"
@@ -44,19 +51,15 @@ def _device_property(properties, name):
 class CuPyBF16Decoder:
     def __init__(self, kernel_path=KERNEL_PATH):
         self.kernel_path = Path(kernel_path)
-        self._cupy = None
         self._kernels = {}
 
     @property
     def cupy(self):
-        if self._cupy is None:
-            try:
-                self._cupy = importlib.import_module("cupy")
-            except ImportError as error:
-                raise ImportError(
-                    "NeuralZip GPU inference requires a CuPy wheel matching CUDA."
-                ) from error
-        return self._cupy
+        if cupy is None:
+            raise ImportError(
+                "NeuralZip GPU inference requires a CuPy wheel matching CUDA."
+            )
+        return cupy
 
     def _kernel(self, device_index):
         if device_index not in self._kernels:

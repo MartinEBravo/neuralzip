@@ -2,11 +2,13 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import pairwise
+
 import torch
 from torch import nn
+
 from neuralzip import _huff0_cpp
-from neuralzip._setup import materialize_setup
 from neuralzip.gpu import decoder as gpu_decoder
+from neuralzip.setup import materialize_setup
 
 RUNTIME_ATTRIBUTE = "neuralzip_runtime"
 
@@ -208,9 +210,7 @@ def _assemble_export(block_order, candidates, codec):
         codebook_id = int(mode["codebook_id"])
         payload = payloads[codebook_id]
         if codebook_id not in codebooks:
-            lengths, values, _max_bits = _huff0_cpp.export_code_table(
-                payload.codebook
-            )
+            lengths, values, _max_bits = _huff0_cpp.export_code_table(payload.codebook)
             codebooks[codebook_id] = GPUCodebook(
                 tuple(lengths),
                 tuple(values),

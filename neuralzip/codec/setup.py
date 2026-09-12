@@ -1,5 +1,3 @@
-import time
-
 import numpy as np
 import torch
 
@@ -18,6 +16,7 @@ from neuralzip.utils import (
     jensen_shannon_distance,
     select_fastest_within_ratio,
     select_packed_time_budget,
+    time_call,
     tokenize_ngrams,
     topk_vocab,
 )
@@ -115,17 +114,15 @@ class _SetupMixin:
             return 0, 0.0
 
         def encode_once():
-            started = time.perf_counter()
-            output = huff0.compress_mixed_streams_many(
+            return huff0.compress_mixed_streams_many(
                 tuple(tensor_specs),
                 min_saving_bytes=self.min_saving_bytes,
                 threads=self.threads,
                 compression_threshold=self.compression_threshold,
             )
-            return output, time.perf_counter() - started
 
-        native_batch, _ = encode_once()
-        seconds = min(encode_once()[1] for _ in range(3))
+        native_batch, _ = time_call(encode_once)
+        seconds = min(time_call(encode_once)[1] for _ in range(3))
         metadata_by_mode = {
             "raw": RAW_CHUNK_METADATA_BYTES,
             "shared_huff0": SHARED_CHUNK_METADATA_BYTES,

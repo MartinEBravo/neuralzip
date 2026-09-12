@@ -1,6 +1,5 @@
 import copy
 import pickle
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import chain
@@ -11,6 +10,7 @@ import torch
 from neuralzip import huff0
 from neuralzip.codec.codec import BF16_NAME, EXPONENT_STREAM, NeuralZipCodec
 from neuralzip.payloads import CodebookPayload
+from neuralzip.utils import time_call
 
 
 @dataclass(frozen=True)
@@ -164,13 +164,9 @@ def _model_tensors(model):
 def build_setup(model, **setup_options):
     named_tensors = _model_tensors(model)
     codec = NeuralZipCodec(**setup_options)
-    started = time.perf_counter()
-    codec.prepare_clusters(named_tensors)
-    clustering_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    codec.build_codebooks_and_select_modes(named_tensors)
-    report = SetupReport(
-        clustering_seconds,
-        time.perf_counter() - started,
+    _, clustering_seconds = time_call(codec.prepare_clusters, named_tensors)
+    _, codebook_setup_seconds = time_call(
+        codec.build_codebooks_and_select_modes, named_tensors
     )
+    report = SetupReport(clustering_seconds, codebook_setup_seconds)
     return setup_from_codec(codec, report)

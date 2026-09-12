@@ -1,4 +1,5 @@
 import math
+import time
 
 import numpy as np
 import torch
@@ -250,3 +251,10 @@ def tokenize_ngrams(data, n, vocab):
     )
     escapes = source[~hits].reshape(-1).tobytes() if np.any(~hits) else b""
     return tokens.tobytes(), escapes, tail
+
+
+def time_call(func, /, *args, **kwargs):
+    """Call a function and return the result and elapsed time in seconds."""
+
+    start = time.perf_counter()
+    return func(*args, **kwargs), time.perf_counter() - start

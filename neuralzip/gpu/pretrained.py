@@ -1,6 +1,5 @@
 import inspect
 import json
-import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -10,7 +9,11 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, GenerationConfig, PreTrainedModel
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
-from neuralzip._storage_checkpoint import (
+from neuralzip.gpu.inference import (
+    NeuralZipRuntime,
+    export_model_for_gpu,
+)
+from neuralzip.storage import (
     NeuralZipStats,
     _bytes_tensor,
     decode_model_storage,
@@ -18,10 +21,7 @@ from neuralzip._storage_checkpoint import (
     setup_seconds,
     storage_stats,
 )
-from neuralzip.gpu.inference import (
-    NeuralZipRuntime,
-    export_model_for_gpu,
-)
+from neuralzip.utils import time_call
 
 FORMAT_NAME = "neuralzip"
 FORMAT_VERSION = 2
@@ -102,9 +102,8 @@ def _export_stats(model, exported, setup, encoding_seconds):
 
 
 def _encode_export(model, setup):
-    started = time.perf_counter()
-    exported = export_model_for_gpu(model, setup)
-    stats = _export_stats(model, exported, setup, time.perf_counter() - started)
+    exported, encoding_seconds = time_call(export_model_for_gpu, model, setup)
+    stats = _export_stats(model, exported, setup, encoding_seconds)
     setattr(model, STATS_ATTRIBUTE, stats)
     return exported
 
@@ -221,14 +220,13 @@ def _load_storage(
     if set(special) != required:
         raise ValueError("The NeuralZip storage checkpoint is incomplete.")
     storage = json.loads(_tensor_bytes(special[STORAGE_METADATA]).decode("utf-8"))
-    started = time.perf_counter()
-    state = decode_model_storage(
+    state, decoding_seconds = time_call(
+        decode_model_storage,
         special[STORAGE_DATA],
         storage,
         resident,
         metadata.get("aliases", {}),
     )
-    decoding_seconds = time.perf_counter() - started
     model, loading_info = _ORIGINAL_LOAD(
         model_class,
         None,
@@ -244,9 +242,7 @@ def _load_storage(
         model.generation_config = GenerationConfig.from_pretrained(
             directory, local_files_only=True
         )
-    started = time.perf_counter()
-    exported = export_model_for_gpu(model, setup)
-    runtime_encoding_seconds = time.perf_counter() - started
+    exported, runtime_encoding_seconds = time_call(export_model_for_gpu, model, setup)
     _attach_export(model, exported, device)
     stats = replace(
         NeuralZipStats(**metadata["stats"]),

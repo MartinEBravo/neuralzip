@@ -1,8 +1,14 @@
 import copy
 import pickle
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
+import torch
 from neuralzip import huff0
+from neuralzip.neuralzip_codec import BF16_NAME, EXPONENT_STREAM, NeuralZipCodec
+from neuralzip.payloads import CodebookPayload
 
 
 @dataclass(frozen=True)
@@ -17,10 +23,19 @@ class SetupReport:
 
 @dataclass(frozen=True, slots=True)
 class NeuralZipSetup:
-    """Opaque, immutable setup returned by :meth:`NeuralZip.fit`."""
-
     _codec_state: bytes = field(repr=False)
     setup_report: SetupReport | None = None
+
+    @property
+    def setup_seconds(self):
+        return None if self.setup_report is None else self.setup_report.setup_seconds
+
+    def save(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            pickle.dump(self, handle, protocol=5)
+        return path
 
 
 def _detached_codec_snapshot(codec):
@@ -57,29 +72,100 @@ def setup_from_codec(codec, setup_report=None):
     return NeuralZipSetup(pickle.dumps(snapshot, protocol=5), setup_report)
 
 
-def load_setup(value_or_path):
-    if isinstance(value_or_path, NeuralZipSetup):
-        return value_or_path
-    with Path(value_or_path).open("rb") as handle:
-        return pickle.load(handle)
+def load_setup(value):
+    if isinstance(value, NeuralZipSetup):
+        return value
+    with Path(value).open("rb") as handle:
+        setup = pickle.load(handle)
+    if not isinstance(setup, NeuralZipSetup):
+        raise TypeError("The file does not contain a NeuralZip setup.")
+    return setup
 
 
-def materialize_setup(value_or_path, *, threads=None):
-    setup = load_setup(value_or_path)
-    codec = pickle.loads(setup._codec_state)
-    _restore_live_codebooks(codec)
+def _add_global_codebook(codec):
+    if not hasattr(codec, "_global_modes"):
+        codec._global_modes = {}
+    key = (BF16_NAME, EXPONENT_STREAM)
+    if key in codec._global_modes:
+        return
+    header = Path(__file__).with_name("codebooks").joinpath("bf16.huff0").read_bytes()
+    codebook_id = max(
+        (int(payload.codebook_id) for payload in codec._codebook_payloads),
+        default=-1,
+    ) + 1
+    codec._codebook_payloads.append(
+        CodebookPayload(codebook_id, EXPONENT_STREAM, BF16_NAME, codebook=header)
+    )
+    codec._global_modes[key] = {
+        "kind": "shared_huff0",
+        "codebook_id": codebook_id,
+        "codebook": huff0.build_codebook_from_header(header),
+    }
+
+
+def materialize_setup(value=None, *, threads=None, gpu=False):
+    if value is None:
+        codec = NeuralZipCodec(ngram_values=())
+    else:
+        codec = pickle.loads(load_setup(value)._codec_state)
+        _restore_live_codebooks(codec)
     if threads is not None:
-        threads = int(threads)
-        if threads < 0:
-            raise ValueError("threads must be non-negative.")
-        codec.threads = threads
+        codec.threads = int(threads)
+    if gpu:
+        _add_global_codebook(codec)
     return codec
 
 
-def save_setup(value, path):
-    setup = load_setup(value)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        pickle.dump(setup, handle, protocol=5)
-    return path
+def _named_tensors(value, prefix=""):
+    if torch.is_tensor(value):
+        yield prefix, value
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            name = str(key) if not prefix else f"{prefix}.{key}"
+            yield from _named_tensors(child, name)
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            name = str(index) if not prefix else f"{prefix}.{index}"
+            yield from _named_tensors(child, name)
+
+
+def _model_tensors(model):
+    if isinstance(model, Mapping):
+        items = _named_tensors(model)
+    elif isinstance(model, torch.nn.Module):
+        persistent = set(model.state_dict())
+        items = chain(
+            model.named_parameters(),
+            (
+                (name, tensor)
+                for name, tensor in model.named_buffers()
+                if name in persistent
+            ),
+        )
+    else:
+        raise TypeError("Expected a tensor mapping or torch.nn.Module.")
+    tensors = [
+        (str(name), tensor)
+        for name, tensor in items
+        if torch.is_tensor(tensor) and tensor.is_floating_point()
+    ]
+    if not tensors:
+        raise ValueError("No floating tensors were found.")
+    if len({name for name, _ in tensors}) != len(tensors):
+        raise ValueError("Tensor names must be unique.")
+    return tensors
+
+
+def build_setup(model, **setup_options):
+    named_tensors = _model_tensors(model)
+    codec = NeuralZipCodec(**setup_options)
+    started = time.perf_counter()
+    codec.prepare_clusters(named_tensors)
+    clustering_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    codec.build_codebooks_and_select_modes(named_tensors)
+    report = SetupReport(
+        clustering_seconds,
+        time.perf_counter() - started,
+    )
+    return setup_from_codec(codec, report)

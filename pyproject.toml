@@ -12,7 +12,7 @@ dependencies = [
     "numpy",
     "safetensors>=0.4",
     "torch",
-    "transformers",
+    "transformers>=5.15,<6",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +29,7 @@ sdist.include = [
     "neuralzip/native/*.cpp",
     "neuralzip/native/*.inc",
     "neuralzip/gpu/cuda/*.cu",
+    "neuralzip/codebooks/*.huff0",
     "third_party/dfloat11/LICENSE",
     "third_party/zstd/LICENSE",
     "third_party/zstd/UPSTREAM",

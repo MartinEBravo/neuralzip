@@ -210,10 +210,12 @@ class _SetupMixin:
         codebook_payload,
     ):
         """Bound shared size from exact counts plus Huff0's 10-byte 4X overhead."""
-        table = huff0.export_code_table(mode["codebook"].codebook, max_bits=12)
+        code_lengths, _, _ = huff0.export_code_table(
+            mode["codebook"].codebook, max_bits=12
+        )
         symbol_bits = sum(
             int(count) * int(length)
-            for count, length in zip(symbol_counts, table.code_lengths, strict=True)
+            for count, length in zip(symbol_counts, code_lengths, strict=True)
         )
         symbol_bytes = (symbol_bits + 7) // 8
         shared_chunks = (

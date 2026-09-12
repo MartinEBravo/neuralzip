@@ -1,18 +1,16 @@
-"""NeuralZip codec and its reusable setup state."""
+from neuralzip._codec_setup import _floating_tensors, _SetupMixin
+from neuralzip._codec_storage import _StorageMixin
+from neuralzip.codec_primitives import DTYPES
 
-from ._codec_setup import _floating_tensors, _SetupMixin
-from ._codec_storage import _StorageMixin
-from .codec_primitives import _byte_group_dtype_config, dtype_name
+BF16_NAME = "bfloat16"
+EXPONENT_STREAM = 1
 
 _TRANSFER_NAME_FALLBACKS = {
-    # Qwen ties the output head to the input embedding in some family members.
     "lm_head.weight": ("model.embed_tokens.weight",),
 }
 
 
 class NeuralZipCodec(_SetupMixin, _StorageMixin):
-    """JS-clustered Huffman with deterministic packed-exponent selection."""
-
     def __init__(
         self,
         *,
@@ -39,7 +37,9 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         self.threads = int(threads)
         self.prior_count = int(prior_count)
         self.exponent_prior_count = int(exponent_prior_count)
-        self.cluster_map = {str(name): str(value) for name, value in (cluster_map or {}).items()}
+        self.cluster_map = {
+            str(name): str(value) for name, value in (cluster_map or {}).items()
+        }
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
         self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
@@ -57,6 +57,7 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         self._clusters_prepared = False
         self._mode_by_tensor_stream = {}
         self._transfer_mode_by_tensor_stream = {}
+        self._global_modes = {}
 
     def _stream_chunk_size(self, element_size):
         return max(1, self.chunk_size // int(element_size))
@@ -65,82 +66,79 @@ class NeuralZipCodec(_SetupMixin, _StorageMixin):
         return tuple(self._codebook_payloads)
 
     def load_codebooks(self, codebooks):
-        self._codebook_payload_by_id = {int(codebook.codebook_id): codebook for codebook in codebooks}
+        self._codebook_payload_by_id = {
+            int(codebook.codebook_id): codebook for codebook in codebooks
+        }
         self._decode_codebooks = {}
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):
-        return str(name), dtype_name(tensor.dtype), int(stream_id)
+        return str(name), DTYPES[tensor.dtype]["name"], int(stream_id)
 
-    def prepare_direct_transfer_target(self, named_tensors):
-        """Map target names, dtypes and streams to a reusable source setup."""
-        if not self._clusters_prepared:
-            raise RuntimeError("Source clusters must be prepared before transfer.")
-        if not self._mode_by_tensor_stream:
-            raise RuntimeError("Source codebooks and modes must be built before transfer.")
-
+    def prepare_gpu_transfer_target(self, named_tensors):
+        """Project a full setup onto the sharing-only BF16 GPU encoder."""
+        global_mode = self._global_modes[(BF16_NAME, EXPONENT_STREAM)]
         transfer_modes = {}
-        target_tensors = 0
-        fallback_tensors = 0
-        target_symbols = 0
-        fallback_symbols = 0
-        fallback_assignments = {}
 
         for name, tensor in _floating_tensors(named_tensors):
-            config = _byte_group_dtype_config(tensor.dtype)
-            stream_ids = tuple(range(int(config["element_size"])))
             tensor_name = str(name)
-            dtype = dtype_name(tensor.dtype)
+            key = (tensor_name, BF16_NAME, EXPONENT_STREAM)
             candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
             source_name = next(
                 (
                     candidate
                     for candidate in candidates
-                    if all((candidate, dtype, stream_id) in self._mode_by_tensor_stream for stream_id in stream_ids)
+                    if (
+                        candidate,
+                        BF16_NAME,
+                        EXPONENT_STREAM,
+                    )
+                    in self._mode_by_tensor_stream
                 ),
                 None,
             )
-            if source_name is None:
-                raise ValueError(f"Direct transfer has no compatible source tensor for {tensor_name}:{dtype}.")
-
-            for stream_id in stream_ids:
-                plan_key = (tensor_name, dtype, stream_id)
-                transfer_modes[plan_key] = self._mode_by_tensor_stream[(source_name, dtype, stream_id)]
-                if source_name != tensor_name:
-                    fallback_assignments[f"{tensor_name}:{dtype}:stream{stream_id}"] = (
-                        f"{source_name}:{dtype}:stream{stream_id}"
-                    )
-
-            symbols = int(tensor.numel())
-            target_tensors += 1
-            target_symbols += symbols
-            if source_name != tensor_name:
-                fallback_tensors += 1
-                fallback_symbols += symbols
+            source_mode = (
+                self._mode_by_tensor_stream[
+                    (source_name, BF16_NAME, EXPONENT_STREAM)
+                ]
+                if source_name is not None
+                else None
+            )
+            if source_mode is not None and source_mode.get("kind") == "shared_huff0":
+                transfer_modes[key] = source_mode
+            else:
+                transfer_modes[key] = global_mode
 
         self._transfer_mode_by_tensor_stream = transfer_modes
-        return {
-            "mapping": (
-                "exact source tensor name, dtype, and stream"
-                if not fallback_assignments
-                else "exact name or explicit structural alias, dtype, and stream"
-            ),
-            "target_tensors": target_tensors,
-            "matched_tensors": target_tensors,
-            "exact_tensors": target_tensors - fallback_tensors,
-            "fallback_tensors": fallback_tensors,
-            "target_exponents": target_symbols,
-            "matched_exponents": target_symbols,
-            "exact_exponents": target_symbols - fallback_symbols,
-            "fallback_exponents": fallback_symbols,
-            "missing_streams": 0,
-            "fallback_streams": len(fallback_assignments),
-            "fallback_assignments": dict(sorted(fallback_assignments.items())),
-            "target_histograms_computed": False,
-            "target_js_matching": False,
-            "target_mode_probing": False,
-        }
+
+    def prepare_storage_transfer_target(self, named_tensors):
+        """Map a target onto the full storage codec with lossless fallbacks."""
+        transfer_modes = {}
+        for name, tensor in _floating_tensors(named_tensors):
+            config = DTYPES[tensor.dtype]
+            tensor_name = str(name)
+            dtype = config["name"]
+            candidates = (tensor_name, *_TRANSFER_NAME_FALLBACKS.get(tensor_name, ()))
+            for stream_id in range(int(config["element_size"])):
+                source_key = next(
+                    (
+                        (candidate, dtype, stream_id)
+                        for candidate in candidates
+                        if (candidate, dtype, stream_id) in self._mode_by_tensor_stream
+                    ),
+                    None,
+                )
+                target_key = (tensor_name, dtype, stream_id)
+                if source_key is not None:
+                    transfer_modes[target_key] = self._mode_by_tensor_stream[source_key]
+                else:
+                    transfer_modes[target_key] = self._global_modes.get(
+                        (dtype, stream_id), {"kind": "raw"}
+                    )
+        self._transfer_mode_by_tensor_stream = transfer_modes
 
     def _mode_for_tensor_stream(self, name, tensor, stream_id):
         """Return the prepared mode for one concrete tensor byte stream."""
-        return self._transfer_mode_by_tensor_stream[self._transfer_plan_key(name, tensor, stream_id)]
+        return self._transfer_mode_by_tensor_stream[
+            self._transfer_plan_key(name, tensor, stream_id)
+        ]

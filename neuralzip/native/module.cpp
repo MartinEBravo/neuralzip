@@ -29,6 +29,7 @@ namespace nb = nanobind;
 #include "ngrams.inc"
 #include "mixed_encode.inc"
 #include "binding_helpers.inc"
+#include "direct_storage.inc"
 #include "encode_queue.inc"
 #include "decode_queue.inc"
 
@@ -68,6 +69,14 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("threads") = 0,
         nb::arg("compression_threshold") = 0.95,
         "Encode many tensors with one mixed-stream Huff0 native job queue.");
+    module.def(
+        "compress_bf16_storage", &compress_bf16_storage,
+        nb::arg("tensor_specs"),
+        nb::arg("prefix"),
+        nb::arg("min_saving_bytes") = 0,
+        nb::arg("threads") = 0,
+        nb::arg("compression_threshold") = 0.95,
+        "Encode BF16 tensors directly into one persistent storage buffer.");
     module.def(
         "decompress_mixed_streams_many", &decompress_mixed_streams_many,
         nb::arg("tensor_specs"),

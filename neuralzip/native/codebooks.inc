@@ -139,6 +139,36 @@ std::vector<std::uint8_t> encode_huff0_block(
     return output;
 }
 
+std::size_t encode_huff0_block_into(
+    const std::uint8_t* data,
+    std::size_t data_size,
+    const Huff0Codebook& codebook,
+    std::uint8_t* output,
+    std::size_t output_capacity,
+    std::size_t max_output_bytes) {
+    if (data_size == 0 || data_size > kMaxBlockSize || output_capacity == 0) {
+        return 0;
+    }
+    if (!codebook.covers_all_symbols) {
+        for (std::size_t index = 0; index < data_size; ++index) {
+            if (HUF_getNbBitsFromCTable(codebook.ctable.data(), data[index]) == 0) {
+                return 0;
+            }
+        }
+    }
+    const std::size_t size = HUF_compress4X_usingCTable(
+        output,
+        output_capacity,
+        data,
+        data_size,
+        codebook.ctable.data(),
+        kFlags);
+    if (HUF_isError(size) || size == 0 || size > max_output_bytes) {
+        return 0;
+    }
+    return size;
+}
+
 std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(
     const std::uint8_t* header,
     Py_ssize_t header_len) {

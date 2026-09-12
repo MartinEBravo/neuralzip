@@ -1,303 +1,352 @@
-"""Trusted, directly loadable NeuralZip inference checkpoints."""
-
-import hashlib
-import importlib
 import json
-import math
-import os
+import inspect
+import time
+from dataclasses import asdict, replace
 from pathlib import Path
-
 import torch
-from safetensors.torch import load_file, save_file
-from torch import nn
-
-from .inference import (
-    BF16WeightGroup,
-    GPUCodebook,
-    GPUEncodedBF16,
-    GPUEncodedExponents,
-    LinearWeightBinding,
-    NeuralZipModelExport,
+from safetensors.torch import load_file
+from transformers import AutoConfig, GenerationConfig, PreTrainedModel
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
+from neuralzip._storage_checkpoint import (
+    NeuralZipStats,
+    _bytes_tensor,
+    decode_model_storage,
+    encode_model_storage,
+    setup_seconds,
+    storage_stats,
+)
+from neuralzip.gpu.inference import (
     NeuralZipRuntime,
     export_model_for_gpu,
 )
 
-FORMAT_NAME = "neuralzip-gpu-pretrained"
-FORMAT_VERSION = 3
-MANIFEST_FILENAME = "neuralzip_config.json"
-EXPORT_FILENAME = "neuralzip-export.pt"
-RESIDENT_FILENAME = "neuralzip-resident.safetensors"
+FORMAT_NAME = "neuralzip"
+FORMAT_VERSION = 2
+PREFIX = "__neuralzip__."
+STORAGE_DATA = f"{PREFIX}storage.data"
+STORAGE_METADATA = f"{PREFIX}storage.metadata"
+STATS_ATTRIBUTE = "neuralzip_stats"
+_MISSING = object()
+_ORIGINAL_SAVE = PreTrainedModel.save_pretrained
+_ORIGINAL_LOAD = PreTrainedModel.__dict__["from_pretrained"].__func__
+_HF_OPTIONS = {}
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _tensor_bytes(tensor):
+    return tensor.detach().cpu().contiguous().numpy().tobytes()
 
-def _checkpoint_source(
-    value,
-    *,
-    revision="main",
-    token=None,
-    cache_dir=None,
-    local_files_only=False,
-):
-    source = os.fspath(value)
-    local = Path(source).expanduser()
-    if local.is_dir():
-        return local
-    if local.exists() or local.is_absolute() or source.startswith((".", "~")):
-        raise FileNotFoundError(local)
+def _checkpoint_metadata(config):
+    metadata = getattr(config, "neuralzip", None)
+    if not isinstance(metadata, dict) or metadata.get("format") != FORMAT_NAME:
+        return None
+    version = metadata.get("version")
+    if type(version) is not int or version != FORMAT_VERSION:
+        raise ValueError("Unsupported NeuralZip checkpoint.")
+    if metadata.get("encoding") != "storage":
+        raise ValueError("Invalid NeuralZip checkpoint format metadata.")
+    return metadata
 
+def _export_stats(model, exported, setup, encoding_seconds):
+    compressed_names = {binding.tensor_name for binding in exported.bindings}
+    resident_bytes = 0
+    resident_exponent_bytes = 0
+    seen = set()
+    for name, tensor in model.state_dict().items():
+        key = (
+            tensor.device,
+            tensor.data_ptr(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.dtype,
+        )
+        if name in compressed_names or key in seen:
+            continue
+        seen.add(key)
+        resident_bytes += tensor.numel() * tensor.element_size()
+        if tensor.is_floating_point():
+            resident_exponent_bytes += tensor.numel()
+    compressed_numel = sum(group.encoded.numel for group in exported.groups)
+    exponent_raw_bytes = resident_exponent_bytes + compressed_numel
+    exponent_payload_bytes = sum(
+        len(group.encoded.exponents.bitstream)
+        + len(group.encoded.exponents.packed_gaps)
+        + 4 * len(group.encoded.exponents.output_positions)
+        for group in exported.groups
+    )
+    codebook_bytes = 1024 * len(
+        {group.codebook_id for group in exported.groups}
+    )
+    exponent_compressed_bytes = (
+        resident_exponent_bytes + exponent_payload_bytes + codebook_bytes
+    )
+    sign_mantissa_bytes = sum(
+        len(group.encoded.sign_mantissa) for group in exported.groups
+    )
+    return NeuralZipStats(
+        setup_seconds=setup_seconds(setup),
+        encoding_seconds=float(encoding_seconds),
+        raw_bytes=resident_bytes + 2 * compressed_numel,
+        compressed_bytes=(
+            resident_bytes
+            + sign_mantissa_bytes
+            + exponent_payload_bytes
+            + codebook_bytes
+        ),
+        exponent_raw_bytes=exponent_raw_bytes,
+        exponent_compressed_bytes=exponent_compressed_bytes,
+        representation="gpu",
+    )
+
+def _encode_export(model, setup):
+    started = time.perf_counter()
+    exported = export_model_for_gpu(model, setup)
+    stats = _export_stats(model, exported, setup, time.perf_counter() - started)
+    setattr(model, STATS_ATTRIBUTE, stats)
+    return exported
+
+def _attach_export(model, exported, device):
+    if exported.groups:
+        NeuralZipRuntime.attach(model, exported, device=device)
+    elif device is not None:
+        model.to(device).eval()
+
+def _checkpoint_directory(value, **hub_kwargs):
+    path = Path(value).expanduser()
+    if path.is_dir():
+        return path
     from huggingface_hub import snapshot_download
 
     return Path(
         snapshot_download(
-            repo_id=source,
-            revision=revision,
-            token=token,
-            cache_dir=cache_dir,
-            local_files_only=local_files_only,
+            repo_id=str(value),
+            **hub_kwargs,
         )
     )
 
-def _transformers_model(directory, module_name, class_name):
-    if not module_name.startswith("transformers."):
-        raise ValueError("The checkpoint does not contain a Transformers model.")
-    model_class = getattr(importlib.import_module(module_name), class_name)
-    if not isinstance(model_class, type) or not issubclass(model_class, nn.Module):
-        raise TypeError("The saved Transformers model class is unavailable.")
+def _checkpoint_state(directory):
+    special = {}
+    resident = {}
+    index = directory / SAFE_WEIGHTS_INDEX_NAME
+    if index.is_file():
+        weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+        files = tuple(directory / name for name in dict.fromkeys(weight_map.values()))
+    else:
+        files = (directory / SAFE_WEIGHTS_NAME,)
+    for path in files:
+        shard = load_file(path, device="cpu")
+        duplicates = (set(special) | set(resident)) & set(shard)
+        if duplicates:
+            raise ValueError("A checkpoint tensor occurs in more than one shard.")
+        for name, tensor in shard.items():
+            target = special if name.startswith(PREFIX) else resident
+            target[name] = tensor
+    return special, resident
 
-    from transformers import AutoConfig
-
-    config = AutoConfig.from_pretrained(directory, local_files_only=True)
-    return model_class(config)
-
-def _resident_state(runtime):
-    return {
-        name: tensor.detach().to(device="cpu").contiguous() for name, tensor in runtime.resident_state_dict().items()
-    }
-
-def _export_state(exported):
-    codebooks = {}
-    groups = []
-    for group in exported.groups:
-        codebooks.setdefault(
-            group.codebook_id,
-            {
-                "lengths": group.codebook.code_lengths,
-                "values": group.codebook.code_values,
-            },
-        )
-        groups.append(
-            {
-                "block": group.block_name,
-                "codebook": group.codebook_id,
-                "encoded": {
-                    "bitstream": group.encoded.exponents.bitstream,
-                    "bit_length": group.encoded.exponents.bit_length,
-                    "symbol_count": group.encoded.exponents.symbol_count,
-                    "packed_gaps": group.encoded.exponents.packed_gaps,
-                    "output_positions": group.encoded.exponents.output_positions,
-                    "sign_mantissa": group.encoded.sign_mantissa,
-                },
-                "bindings": [
-                    {
-                        "module": binding.module_name,
-                        "tensor": binding.tensor_name,
-                        "shape": binding.shape,
-                        "requires_grad": binding.requires_grad,
-                        "kind": binding.module_kind,
-                    }
-                    for binding in group.bindings
-                ],
-            }
-        )
-    return {
-        "codebooks": codebooks,
-        "groups": groups,
-    }
-
-def _load_export(path):
-    state = torch.load(path, map_location="cpu", weights_only=True)
-    codebooks = {
-        int(codebook_id): GPUCodebook(value["lengths"], value["values"])
-        for codebook_id, value in state["codebooks"].items()
-    }
-    groups = []
-    workspace_offsets = {}
-    for value in state["groups"]:
-        block = value["block"]
-        data = value["encoded"]
-        encoded = GPUEncodedBF16(
-            sign_mantissa=data["sign_mantissa"],
-            exponents=GPUEncodedExponents(
-                bitstream=data["bitstream"],
-                bit_length=data["bit_length"],
-                symbol_count=data["symbol_count"],
-                packed_gaps=data["packed_gaps"],
-                output_positions=data["output_positions"],
-            ),
-        )
-        workspace_offset = workspace_offsets.get(block, 0)
-        group_offset = 0
-        bindings = []
-        for binding in value["bindings"]:
-            shape = tuple(binding["shape"])
-            numel = math.prod(shape)
-            bindings.append(
-                LinearWeightBinding(
-                    module_name=binding["module"],
-                    tensor_name=binding["tensor"],
-                    shape=shape,
-                    numel=numel,
-                    workspace_offset=workspace_offset + group_offset,
-                    requires_grad=binding["requires_grad"],
-                    module_kind=binding["kind"],
-                )
-            )
-            group_offset += numel
-        if group_offset != encoded.numel:
-            raise ValueError("Compressed weights do not match their tensor shapes.")
-        groups.append(
-            BF16WeightGroup(
-                block_name=block,
-                codebook_id=value["codebook"],
-                codebook=codebooks[value["codebook"]],
-                encoded=encoded,
-                bindings=tuple(bindings),
-                workspace_offset=workspace_offset,
-            )
-        )
-        workspace_offsets[block] = workspace_offset + encoded.numel
-    return NeuralZipModelExport(tuple(groups))
-
-def save_gpu_pretrained(model, directory, *, tokenizer=None):
-    """Save one trusted export and one resident Safetensors file."""
-
-    runtime = getattr(model, "neuralzip_runtime", None)
-    if not isinstance(runtime, NeuralZipRuntime):
-        raise TypeError("model must have an attached NeuralZip runtime.")
-
-    target = Path(directory).expanduser()
-    target.mkdir(parents=True, exist_ok=True)
-    torch.save(_export_state(runtime.export), target / EXPORT_FILENAME)
-    save_file(_resident_state(runtime), target / RESIDENT_FILENAME)
-
-    config = getattr(model, "config", None)
-    if config is None or not callable(getattr(config, "save_pretrained", None)):
-        raise TypeError("Persistent GPU checkpoints require a Transformers model.")
-    config.save_pretrained(target)
-    generation = getattr(model, "generation_config", None)
-    if generation is not None:
-        generation.save_pretrained(target)
-    elif (target / "generation_config.json").is_file():
-        (target / "generation_config.json").unlink()
-    if tokenizer is not None:
-        tokenizer.save_pretrained(target)
-
-    manifest = {
-        "format": FORMAT_NAME,
-        "version": FORMAT_VERSION,
-        "model_module": type(model).__module__,
-        "model_class": type(model).__name__,
-        "sha256": {
-            filename: _sha256(target / filename)
-            for filename in (
-                EXPORT_FILENAME,
-                RESIDENT_FILENAME,
-                "config.json",
-                "generation_config.json",
-            )
-            if (target / filename).is_file()
-        },
-    }
-    (target / MANIFEST_FILENAME).write_text(
-        json.dumps(manifest, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return target
-
-def attach_gpu_model(
+def _save_pretrained(
     model,
-    setup,
+    directory,
     *,
-    threads=0,
-    device=None,
-    include_embeddings=False,
+    setup=None,
+    save_args=(),
+    save_kwargs=None,
 ):
-    """Compress eligible weights and attach the single-GPU runtime."""
-
-    exported = export_model_for_gpu(
+    runtime = getattr(model, "neuralzip_runtime", None)
+    blob, storage, resident, aliases, sizes, seconds = encode_model_storage(
         model,
         setup,
-        threads=threads,
-        include_embeddings=include_embeddings,
+        runtime if isinstance(runtime, NeuralZipRuntime) else None,
     )
-    NeuralZipRuntime.attach(model, exported, device=device)
-    return model
+    stats = storage_stats(setup, sizes, seconds)
+    setattr(model, STATS_ATTRIBUTE, stats)
+    bound = inspect.signature(_ORIGINAL_SAVE).bind(
+        model,
+        directory,
+        *save_args,
+        **dict(save_kwargs or {}),
+    )
+    bound.apply_defaults()
+    options = dict(bound.arguments.pop("kwargs"))
+    options.update(bound.arguments)
+    options.pop("self")
+    options.pop("save_directory")
+    if options.pop("state_dict") is not None:
+        raise ValueError("NeuralZip cannot compress an alternate state_dict.")
+    if options.pop("variant") is not None:
+        raise ValueError("NeuralZip checkpoints do not support variant filenames.")
+    if options.pop("distributed_checkpoint"):
+        raise ValueError("NeuralZip does not support distributed checkpoint saving.")
+    state = dict(resident)
+    state[STORAGE_DATA] = blob
+    state[STORAGE_METADATA] = _bytes_tensor(
+        json.dumps(storage, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    metadata = {
+        "format": FORMAT_NAME,
+        "version": FORMAT_VERSION,
+        "encoding": "storage",
+        "aliases": aliases,
+        "stats": asdict(stats),
+    }
+    config = model.config
+    previous = getattr(config, "neuralzip", _MISSING)
+    config.neuralzip = metadata
+    options["save_original_format"] = False
+    try:
+        result = _ORIGINAL_SAVE(model, directory, state_dict=state, **options)
+    finally:
+        if previous is _MISSING:
+            delattr(config, "neuralzip")
+        else:
+            config.neuralzip = previous
+    return result
 
-def load_gpu_pretrained(
-    pretrained_model_name_or_path,
-    *,
-    device=None,
-    revision="main",
-    token=None,
-    cache_dir=None,
-    local_files_only=False,
+def _load_storage(
+    directory,
+    device,
+    model_class,
+    model_args,
+    config,
+    metadata,
+    setup,
 ):
-    """Load a trusted local or Hugging Face NeuralZip checkpoint."""
-
-    target = _checkpoint_source(
-        pretrained_model_name_or_path,
-        revision=revision,
-        token=token,
-        cache_dir=cache_dir,
-        local_files_only=local_files_only,
+    special, resident = _checkpoint_state(directory)
+    required = {STORAGE_DATA, STORAGE_METADATA}
+    if set(special) != required:
+        raise ValueError("The NeuralZip storage checkpoint is incomplete.")
+    storage = json.loads(_tensor_bytes(special[STORAGE_METADATA]).decode("utf-8"))
+    started = time.perf_counter()
+    state = decode_model_storage(
+        special[STORAGE_DATA],
+        storage,
+        resident,
+        metadata.get("aliases", {}),
     )
-    manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    if manifest.get("format") != FORMAT_NAME or manifest.get("version") != FORMAT_VERSION:
-        raise ValueError("Unsupported NeuralZip GPU checkpoint.")
-    hashes = manifest["sha256"]
-    if not {EXPORT_FILENAME, RESIDENT_FILENAME, "config.json"} <= hashes.keys():
-        raise ValueError("NeuralZip checkpoint hashes are incomplete.")
-    for filename, expected in hashes.items():
-        path = target / filename
-        if path.parent != target or not path.is_file() or _sha256(path) != expected:
-            raise ValueError(f"Corrupted NeuralZip checkpoint file: {filename}.")
-
-    exported = _load_export(target / EXPORT_FILENAME)
-    model = _transformers_model(
-        target,
-        manifest["model_module"],
-        manifest["model_class"],
+    decoding_seconds = time.perf_counter() - started
+    model, loading_info = _ORIGINAL_LOAD(
+        model_class,
+        None,
+        *model_args,
+        config=config,
+        state_dict=state,
+        output_loading_info=True,
     )
-    resident = load_file(target / RESIDENT_FILENAME, device="cpu")
-    missing, unexpected = model.load_state_dict(resident, strict=False, assign=True)
-    compressed = {binding.tensor_name for binding in exported.bindings}
-    if set(missing) != compressed or unexpected:
-        raise ValueError("The resident state does not match the model architecture.")
-    tie_weights = getattr(model, "tie_weights", None)
-    if callable(tie_weights):
-        tie_weights()
-
-    generation_path = target / "generation_config.json"
-    if generation_path.is_file():
-        from transformers import GenerationConfig
-
+    if any(loading_info.values()):
+        raise ValueError("The decoded state does not match the model architecture.")
+    model.config.name_or_path = str(directory)
+    if (directory / "generation_config.json").is_file():
         model.generation_config = GenerationConfig.from_pretrained(
-            target,
-            local_files_only=True,
+            directory, local_files_only=True
         )
-    NeuralZipRuntime.attach(model, exported, device=device)
+    started = time.perf_counter()
+    exported = export_model_for_gpu(model, setup)
+    runtime_encoding_seconds = time.perf_counter() - started
+    _attach_export(model, exported, device)
+    stats = replace(
+        NeuralZipStats(**metadata["stats"]),
+        decoding_seconds=decoding_seconds,
+        runtime_encoding_seconds=runtime_encoding_seconds,
+    )
+    setattr(model, STATS_ATTRIBUTE, stats)
     return model
 
-__all__ = [
-    "FORMAT_NAME",
-    "FORMAT_VERSION",
-    "MANIFEST_FILENAME",
-    "attach_gpu_model",
-    "load_gpu_pretrained",
-    "save_gpu_pretrained",
-]
+def _patched_save(model, directory, *args, **kwargs):
+    return _save_pretrained(
+        model,
+        directory,
+        setup=_HF_OPTIONS["setup"],
+        save_args=args,
+        save_kwargs=kwargs,
+    )
+
+def _load_device(kwargs):
+    value = kwargs.pop("device_map", None)
+    if value in (None, "auto"):
+        return _HF_OPTIONS["device"]
+    if isinstance(value, int):
+        return f"cuda:{value}"
+    try:
+        device = torch.device(value)
+    except (RuntimeError, TypeError) as error:
+        raise TypeError("NeuralZip inference needs one CUDA device.") from error
+    if device.type != "cuda":
+        raise TypeError("NeuralZip inference needs one CUDA device.")
+    return device
+
+def _patched_load(cls, source, *model_args, config=None, **kwargs):
+    hub_keys = ("revision", "token", "cache_dir", "local_files_only", "force_download")
+    hub = {name: kwargs[name] for name in hub_keys if name in kwargs}
+    if _checkpoint_metadata(config) is None:
+        config_class = getattr(cls, "config_class", None) or AutoConfig
+        try:
+            source_config = config_class.from_pretrained(
+                source,
+                subfolder=kwargs.get("subfolder", ""),
+                **hub,
+            )
+        except (OSError, ValueError):
+            source_config = None
+        if _checkpoint_metadata(source_config) is not None:
+            config = source_config
+    if _checkpoint_metadata(config) is None:
+        if kwargs.get("quantization_config") is not None or getattr(
+            config,
+            "quantization_config",
+            None,
+        ) is not None:
+            raise ValueError("NeuralZip cannot attach to a quantized model.")
+        device = _load_device(kwargs)
+        kwargs.pop("torch_dtype", None)
+        kwargs["dtype"] = torch.bfloat16
+        result = _ORIGINAL_LOAD(cls, source, *model_args, config=config, **kwargs)
+        model = result[0] if isinstance(result, tuple) else result
+        exported = _encode_export(model, _HF_OPTIONS["setup"])
+        _attach_export(model, exported, device)
+        return result
+    device = _load_device(kwargs)
+    output_loading_info = kwargs.pop("output_loading_info", False)
+    if kwargs.pop("use_safetensors", True) is False:
+        raise ValueError("NeuralZip checkpoints require Safetensors.")
+    dtype = kwargs.pop("dtype", kwargs.pop("torch_dtype", None))
+    if dtype not in (None, "auto", "bfloat16", torch.bfloat16):
+        raise ValueError("NeuralZip GPU checkpoints require BF16 weights.")
+    if kwargs.pop("ignore_mismatched_sizes", False):
+        raise ValueError("NeuralZip cannot ignore mismatched tensor sizes.")
+    kwargs.pop("weights_only", None)
+    kwargs.pop("trust_remote_code", None)
+    kwargs.pop("_from_auto", None)
+    adapter_kwargs = kwargs.pop("adapter_kwargs", None)
+    if adapter_kwargs and "_adapter_model_path" in adapter_kwargs:
+        raise ValueError("NeuralZip checkpoints do not support PEFT adapters.")
+    unsupported = sorted(set(kwargs) - set(hub_keys) - {"subfolder"})
+    if unsupported:
+        names = ", ".join(unsupported)
+        raise TypeError(f"Unsupported NeuralZip loading options: {names}.")
+    subfolder = kwargs.get("subfolder", "")
+    pattern = f"{subfolder}/*" if subfolder else "*"
+    directory = _checkpoint_directory(
+        source,
+        allow_patterns=(f"{pattern}.json", f"{pattern}.safetensors"),
+        **hub,
+    ) / subfolder
+    model = _load_storage(
+        directory,
+        device,
+        cls,
+        model_args,
+        config,
+        _checkpoint_metadata(config),
+        _HF_OPTIONS["setup"],
+    )
+    if output_loading_info:
+        return model, {
+            "missing_keys": set(),
+            "unexpected_keys": set(),
+            "mismatched_keys": set(),
+            "error_msgs": [],
+        }
+    return model
+
+def enable(setup=None, *, device=None):
+    _HF_OPTIONS.update(setup=setup, device=device)
+    if PreTrainedModel.save_pretrained is not _patched_save:
+        PreTrainedModel.save_pretrained = _patched_save
+        PreTrainedModel.from_pretrained = classmethod(_patched_load)

@@ -1,18 +1,20 @@
 # NeuralZip
 
-NeuralZip is a lossless compressor for floating-point model weights. It learns
-a reusable setup—tensor groups and Huffman codebooks—from one model, then uses
-that setup to encode later checkpoints or compatible models without repeating
-the statistical analysis.
+NeuralZip is a lossless model-weight compressor with a transparent Hugging Face
+wrapper. Activate it once for the current Python process, then keep using the
+ordinary `from_pretrained()` and `save_pretrained()` APIs; the wrapper performs
+the encode automatically.
 
-It is intended for repeated workloads such as training checkpoints, federated
-updates, model families, and Mixture-of-Experts models.
+It is a research implementation for sequential compressed BF16 inference on
+one NVIDIA GPU. Eligible weights are stored as lossless compressed streams and
+reconstructed only when their transformer block runs.
 
-- Bitwise-exact FP16, BF16, and FP32 round trips.
-- Reusable and transferable setups.
-- PyTorch modules, nested tensor mappings, and Hugging Face Transformers.
-- Separate setup, mapping, encoding, and decoding timings.
-- Sequential compressed BF16 inference on one NVIDIA GPU.
+- Bitwise-exact BF16 weights during inference.
+- A bundled global BF16 codebook for immediate use.
+- Full reusable setups with Jensen--Shannon clustering, measured Huffman mode
+  selection, and packed exponent n-grams.
+- Standard Hugging Face directories and Safetensors shards.
+- No NeuralZip-specific model loader or checkpoint export command.
 
 ## Installation
 
@@ -41,223 +43,156 @@ Install the optional CUDA runtime for compressed inference:
 python -m pip install -e ".[gpu]"
 ```
 
-## Compressed inference
+## Fast path
 
-`NeuralZip.from_pretrained()` loads an ordinary local or Hugging Face
-Transformers checkpoint in BF16, fits a sharing-only setup, compresses eligible
-weights, and returns the native model ready for inference on one GPU.
+Call `neuralzip()` once before loading a model. The activation applies to
+subsequent compatible Transformers loads and saves in that Python process.
 
 ```python
-from transformers import AutoTokenizer, pipeline
-from neuralzip import NeuralZip
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from neuralzip import neuralzip
+
+neuralzip()
 
 model_id = "Qwen/Qwen2.5-0.5B"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = NeuralZip.from_pretrained(model_id, device="cuda:0")
+model = AutoModelForCausalLM.from_pretrained(model_id)
 
 generator = pipeline(
     "text-generation",
     model=model,
     tokenizer=tokenizer,
-    device=model.neuralzip_runtime.device,
-)
-print(generator("Machine learning is", max_new_tokens=20, do_sample=False))
-```
-
-The default loader is `AutoModelForCausalLM`. Use `model_class=` when another
-Transformers auto class is needed. Pass `include_embeddings=True` to include
-eligible block-local embeddings.
-
-When `setup=None`, NeuralZip fits the source model automatically. An existing
-setup object or trusted setup file skips fitting and reuses its codebooks:
-
-```python
-model = NeuralZip.from_pretrained(
-    "Qwen/Qwen2.5-0.5B",
-    setup="qwen-family.setup.pkl",
     device="cuda:0",
 )
+print(generator("Machine learning is", max_new_tokens=20, do_sample=False))
+
+stats = model.neuralzip_stats
+print(stats.representation)  # "gpu" before save, "storage" after save
+print(f"Encode: {stats.encoding_seconds:.3f} s")
+print(f"Ratio: {stats.compression_ratio:.3f}")
+print(f"Exponent ratio: {stats.exponent_ratio:.3f}")
 ```
 
-An incompatible explicit setup fails instead of fitting a replacement. Save a
-compressed checkpoint when another process should avoid loading and
-recompressing the original BF16 model.
+For an ordinary checkpoint, Hugging Face loads the model and NeuralZip then
+compresses its eligible BF16 weights in memory. This path uses the bundled
+global BF16 codebook: it does not analyze the model or construct a setup.
+The wrapper stores setup time, encode time, raw and compressed payload bytes,
+and total and exponent-only ratios in `model.neuralzip_stats`. Its
+`representation` field distinguishes the in-memory GPU layout from the storage
+layout written by `save_pretrained()`. Byte counts use NeuralZip's canonical
+binary layout, excluding filesystem and Safetensors/JSON container overhead.
 
-## Fit, encode, and decode
+## Reusable family setup
 
-Use the explicit API when each phase must be controlled or measured separately.
-`NeuralZip` is stateless: the setup is the reusable compression state and is
-passed explicitly to later operations.
+Build a family-specific setup once from an ordinary reference model, before
+activating NeuralZip:
 
 ```python
 import torch
 from transformers import AutoModelForCausalLM
-from neuralzip import NeuralZip
+from neuralzip import neuralzip
 
-model = AutoModelForCausalLM.from_pretrained(
-    "openai-community/gpt2",
+reference = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen2.5-0.5B",
     dtype=torch.bfloat16,
-).eval()
-
-setup = NeuralZip.fit(model, threads=4)
-encoded, encode_stats = NeuralZip.encode(
-    model,
-    setup=setup,
-    threads=4,
-    return_stats=True,
 )
-restored, decode_stats = NeuralZip.decode(
-    encoded,
-    threads=4,
-    return_stats=True,
-)
-
-print(f"Ratio: {encoded.compression_ratio:.3f}")
-print(f"Setup: {setup.setup_report.setup_seconds:.3f} s")
-print(f"Mapping: {encode_stats.mapping_seconds:.3f} s")
-print(f"Encode: {encode_stats.encode_seconds:.3f} s")
-print(f"Decode: {decode_stats.decode_seconds:.3f} s")
-
-for original, recovered in zip(model.parameters(), restored.parameters(), strict=True):
-    assert torch.equal(
-        original.detach().cpu().view(torch.uint8),
-        recovered.detach().cpu().view(torch.uint8),
-    )
+setup = neuralzip.setup(reference)
+setup.save("qwen-family.setup.pkl")
+print(setup.setup_seconds)
 ```
 
-`fit()` also accepts a model identifier when the loaded model itself is not
-needed: `setup = NeuralZip.fit("openai-community/gpt2")`.
-
-The default setup is sharing-only and can be used by both the storage and GPU
-paths. For storage-only packed exponent n-grams, pass
-`ngram_values=(2, 3, 4)` to `fit()`. `decode()` is self-contained because the
-encoded value carries its codebooks and reconstruction metadata; it does not
-need the original setup.
-
-### Reuse or transfer a setup
+The setup analyzes every floating parameter and persistent floating buffer in
+FP16, BF16, or FP32. It clusters exponent distributions with Jensen--Shannon
+distance, builds reusable Huffman codebooks, measures the real native encoder,
+and selects among raw, shared-Huffman, and packed exponent n-gram modes. Select
+the resulting object or file once in each inference process, then use
+Transformers normally:
 
 ```python
-setup = NeuralZip.fit(reference_model, threads=8)
-NeuralZip.save_setup(setup, "family.setup.pkl")
-
-# Reuse it for another checkpoint in this process.
-encoded_checkpoint = NeuralZip.encode(
-    next_checkpoint,
-    setup=setup,
-    threads=8,
-)
-
-# Or load it for a compatible family member.
-setup = NeuralZip.load_setup("family.setup.pkl")
-mapping = NeuralZip.map_target(related_model, setup=setup)
-encoded_related = NeuralZip.encode(
-    related_model,
-    setup=setup,
-    threads=8,
-)
-
-assert mapping["matched_tensors"] == mapping["target_tensors"]
+neuralzip("qwen-family.setup.pkl")  # neuralzip(setup) also works
+model = AutoModelForCausalLM.from_pretrained("account/related-qwen-model")
 ```
 
-Mapping reads target metadata, not tensor values. Streams match by tensor name,
-dtype, and stream index, with explicit aliases for equivalent structures. The
-caller selects the source setup; NeuralZip does not search for a related model.
-Setup files use pickle and must come from a trusted source.
+For GPU inference, the wrapper uses the setup's compatible shared-Huffman BF16
+exponent modes. Tensors absent from the setup, or assigned a storage-only mode,
+use the bundled global codebook. This lets one setup transfer across related
+models without fitting again. Setup files use pickle and must come from a
+trusted source.
 
-### Inputs and reconstruction
+## Save and load
 
-`encode()` accepts Transformers models, ordinary `torch.nn.Module` objects, and
-nested tensor mappings. A Transformers encode carries enough configuration for
-`decode()` to construct a fresh model. Mappings decode to a flat dictionary.
-
-For an arbitrary module, provide an empty destination or a factory:
+Use the normal Hugging Face methods. Saving encodes every floating parameter and
+persistent floating buffer with the full storage codec. It preserves raw,
+shared-Huffman, and packed exponent modes in ordinary Safetensors shards, with
+the small format marker and statistics in `config.json`.
 
 ```python
-setup = NeuralZip.fit(custom_model)
-encoded = NeuralZip.encode(custom_model, setup=setup)
-restored = NeuralZip.decode(encoded, model_factory=CustomModel)
-# Or: NeuralZip.decode(encoded, destination=CustomModel(...))
+model.save_pretrained("qwen-neuralzip")
+tokenizer.save_pretrained("qwen-neuralzip")
+print(model.neuralzip_stats)
+
+loaded_model = AutoModelForCausalLM.from_pretrained("qwen-neuralzip")
+print(loaded_model.neuralzip_stats.decoding_seconds)
 ```
 
-Floating parameters and persistent floating buffers are encoded. Remaining
-tensor state, aliases, gradient flags, and module training modes are restored.
-Hooks and arbitrary Python attributes are outside this contract.
-
-## Save and load a compressed checkpoint
-
-An attached Transformers model can be saved without restoring its compressed
-weights:
+The same call can load a NeuralZip checkpoint from the Hugging Face Hub:
 
 ```python
-NeuralZip.save_pretrained(
-    model,
-    "my-model-neuralzip",
-    tokenizer=tokenizer,
-)
-
-model = NeuralZip.load_pretrained(
-    "my-model-neuralzip",
-    device="cuda:0",
-)
-```
-
-`load_pretrained()` also accepts the repository ID of a NeuralZip checkpoint on
-the Hugging Face Hub:
-
-```python
-model = NeuralZip.load_pretrained(
+loaded_model = AutoModelForCausalLM.from_pretrained(
     "account/my-model-neuralzip",
     revision="main",
-    device="cuda:0",
 )
 ```
 
-The checkpoint contains a small manifest, the Transformers configuration, one
-resident Safetensors file, and a primitive-only compressed export loaded with
-PyTorch's `weights_only=True` mode. The model files are SHA-256 checked. It is a
-simple research format kept straightforward for local inspection.
+A compressed checkpoint contains the codebooks and metadata needed to restore
+every tensor bit-for-bit. NeuralZip detects the format, decodes the storage
+representation, and converts eligible BF16 linear weights to its GPU runtime
+layout. This never runs setup or rebuilds storage codebooks. The conversion is
+necessary because packed storage streams and the blockwise CUDA decoder use
+different layouts. `model.neuralzip_stats` retains the original storage encode
+measurements and adds `decoding_seconds` for the restoration itself.
+`runtime_encoding_seconds` records the subsequent conversion to the GPU layout.
 
-`from_pretrained()` starts from an ordinary Transformers checkpoint and
-compresses it. `load_pretrained()` starts from an already compressed NeuralZip
-checkpoint and performs neither fitting nor recompression. The setup is not
-embedded, so save it separately when it will be transferred again.
+Call `neuralzip()` once at the start of every new process before loading either
+ordinary or compressed models.
+
+The setup file is needed only when compressing additional ordinary checkpoints.
+A saved NeuralZip checkpoint already contains its required codebooks.
 
 ## How it works
 
-1. Floating-point bytes are rearranged into dtype-aware streams that expose the
-   compressible exponent field.
-2. Tensors are grouped by Jensen–Shannon distance between exponent histograms.
-3. Each group reuses a precomputed Huffman codebook. Storage-oriented setups may
-   additionally use packed exponent n-grams.
-4. The native batched encoder applies those choices and falls back to raw bytes
-   when compression is not worthwhile.
+1. `neuralzip()` installs the transparent Transformers integration for the
+   current process and selects the active setup and CUDA device.
+2. An ordinary BF16 checkpoint is loaded through Transformers. The wrapper then
+   separates eligible weights into exponent and sign-mantissa streams and
+   encodes them automatically with the active precomputed setup.
+3. During inference, the active transformer block is reconstructed bit-for-bit
+   in a reusable GPU workspace immediately before execution.
+4. `save_pretrained()` runs the full storage codec and stores its streams and
+   codebooks in Safetensors; `config.json` identifies the checkpoint format.
+5. A later `from_pretrained()` recognizes that format, restores the exact model
+   state, and prepares its eligible weights for blockwise GPU decoding.
 
-Setup cost is explicit. NeuralZip is most useful when it is amortized across
-checkpoints or transferred between compatible models. Include setup time when
-evaluating an unrelated one-shot model.
-
-For GPU inference, NeuralZip keeps sharing-only BF16 exponent streams and
-decodes the active transformer block into a reusable workspace immediately
-before execution. Ordinary PyTorch layers therefore receive the exact original
-weights. The CUDA decoder is adapted from the
+The CUDA reconstruction path is adapted from the
 [official DFloat11 implementation](https://github.com/LeanModels/DFloat11)
 under Apache-2.0.
 
-## GPU constraints
+## Research limitations
 
 - One NVIDIA CUDA device with BF16 support.
 - Sequential, inference-only execution.
-- BF16 `nn.Linear` weights; block-local embeddings are optional.
-- No concurrent forwards, training, device changes after attachment, or
+- Eligible BF16 `nn.Linear` weights are compressed; other state remains
+  resident.
+- Models without compatible block-local linear weights still use the lossless
+  storage format, but load as ordinary models without a compressed GPU runtime.
+- Packed exponent n-grams remain a storage-codec mode; the current CUDA runtime
+  consumes shared-Huffman streams.
+- No concurrent forwards, training, device changes after loading, or
   `torch.compile`.
-- Packed exponent n-grams are storage-only; GPU inference uses sharing-only
-  codebooks.
-- Weights are decoded into a temporary workspace; this is not a fused compressed
+- Weights use a temporary workspace; this is not a fused compressed
   matrix-multiplication kernel.
-
-Restore ordinary registered BF16 parameters when compressed inference is no
-longer needed:
-
-```python
-model = model.neuralzip_runtime.restore()
-```
+- Compressed checkpoints require Safetensors.
+- Loading a compressed checkpoint still constructs its architecture on CPU,
+  so peak host memory is higher than the final resident model.
+- Activation is process-wide and affects subsequent compatible Transformers
+  model loads and saves.

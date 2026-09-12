@@ -1,24 +1,14 @@
 from dataclasses import dataclass
-
-from . import _huff0_cpp
+from neuralzip import _huff0_cpp
 
 MAX_BLOCK_SIZE = int(_huff0_cpp.MAX_BLOCK_SIZE)
+
 
 @dataclass(frozen=True)
 class Huff0Codebook:
     handle: object
     codebook: bytes
 
-@dataclass(frozen=True)
-class Huff0CodeTable:
-    """Exact canonical symbol codes reconstructed from a Huff0 header."""
-
-    code_lengths: tuple[int, ...]
-    code_values: tuple[int, ...]
-    max_bits: int
-
-def _codebook(result):
-    return Huff0Codebook(*result)
 
 def _normalize_mixed_stream_modes(stream_modes):
     native_modes = []
@@ -37,6 +27,7 @@ def _normalize_mixed_stream_modes(stream_modes):
             )
         )
     return tuple(native_modes)
+
 
 def compress_mixed_streams_many(
     tensor_specs,
@@ -63,28 +54,68 @@ def compress_mixed_streams_many(
         compression_threshold=float(compression_threshold),
     )
 
+
+def compress_bf16_storage(
+    tensor_specs,
+    prefix,
+    *,
+    min_saving_bytes=0,
+    threads=0,
+    compression_threshold=0.95,
+):
+    native_specs = []
+    for data, chunk_size, mode in tensor_specs:
+        kind = str(mode.get("kind"))
+        if kind == "raw":
+            native_mode = (kind, None, -1, b"", 1)
+        elif kind in {"shared_huff0", "packed_huff0"}:
+            native_mode = (
+                kind,
+                mode["codebook"].handle,
+                int(mode["codebook_id"]),
+                mode.get("vocab", b""),
+                int(mode.get("ngram_n", 1)),
+            )
+        else:
+            raise ValueError(
+                "Direct BF16 storage supports raw, shared_huff0, or packed_huff0."
+            )
+        native_specs.append((data, int(chunk_size), native_mode))
+    return _huff0_cpp.compress_bf16_storage(
+        tuple(native_specs),
+        prefix,
+        min_saving_bytes=int(min_saving_bytes),
+        threads=int(threads),
+        compression_threshold=float(compression_threshold),
+    )
+
+
 def decompress_mixed_streams_many(tensor_specs, *, threads=0):
     """Decode ``(element_size, bit_reorder, numel, groups)`` specs."""
-    return _huff0_cpp.decompress_mixed_streams_many(tuple(tensor_specs), threads=int(threads))
+    return _huff0_cpp.decompress_mixed_streams_many(
+        tuple(tensor_specs), threads=int(threads)
+    )
+
 
 def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
     """Build a codebook from a complete byte-symbol histogram."""
-    return _codebook(
-        _huff0_cpp.build_codebook_from_counts(
+    return Huff0Codebook(
+        *_huff0_cpp.build_codebook_from_counts(
             tuple(int(count) for count in symbol_counts),
             prior_count=int(prior_count),
             max_bits=int(max_bits),
         )
     )
 
+
 def build_codebook_from_header(codebook):
     """Restore an encoder handle directly from a serialized Huff0 header."""
-    return _codebook(_huff0_cpp.build_codebook_from_header(codebook))
+    return Huff0Codebook(*_huff0_cpp.build_codebook_from_header(codebook))
+
 
 def build_decodebook(codebook):
     return _huff0_cpp.build_decodebook(codebook)
 
+
 def export_code_table(codebook, *, max_bits=12):
-    """Return all 256 right-aligned canonical codes from a Huff0 header."""
-    lengths, values, actual_max_bits = _huff0_cpp.export_code_table(codebook, max_bits=int(max_bits))
-    return Huff0CodeTable(tuple(lengths), tuple(values), int(actual_max_bits))
+    return _huff0_cpp.export_code_table(codebook, max_bits=int(max_bits))

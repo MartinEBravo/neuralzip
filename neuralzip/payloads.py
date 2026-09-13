@@ -12,6 +12,46 @@ CHUNK_METADATA_BYTES = {
 }
 
 
+@dataclass(frozen=True)
+class NeuralZipStats:
+    setup_seconds: float
+    encoding_seconds: float
+    raw_bytes: int
+    compressed_bytes: int
+    exponent_raw_bytes: int | None
+    exponent_compressed_bytes: int | None
+    representation: str = "storage"
+    decoding_seconds: float = 0.0
+    runtime_encoding_seconds: float = 0.0
+    stream_raw_bytes: int | None = None
+    stream_compressed_bytes: int | None = None
+
+    @property
+    def compression_ratio(self):
+        return self.compressed_bytes / self.raw_bytes if self.raw_bytes else 1.0
+
+    @property
+    def exponent_ratio(self):
+        if self.exponent_raw_bytes is None or self.exponent_compressed_bytes is None:
+            return None
+        return (
+            self.exponent_compressed_bytes / self.exponent_raw_bytes
+            if self.exponent_raw_bytes
+            else 1.0
+        )
+
+    @property
+    def stream_ratio(self):
+        """Selected GPU lanes plus their codebooks; excludes resident lanes."""
+        if not self.stream_raw_bytes or self.stream_compressed_bytes is None:
+            return None
+        return self.stream_compressed_bytes / self.stream_raw_bytes
+
+    @property
+    def total_seconds(self):
+        return self.setup_seconds + self.encoding_seconds
+
+
 def _bytes_size(value):
     return 8 + len(value)
 
@@ -26,9 +66,9 @@ class CodebookPayload:
     stream_id: int
     dtype: str
     mode: str = "shared_huff0"
-    codebook: bytes = b""
+    codebook: bytes | memoryview = b""
     ngram_n: int = 1
-    vocab: bytes = b""
+    vocab: bytes | memoryview = b""
 
     @property
     def metadata_bytes(self):
@@ -39,10 +79,10 @@ class CodebookPayload:
 class StreamChunk:
     mode: str
     symbol_count: int
-    payload: bytes = b""
+    payload: bytes | memoryview = b""
     codebook_id: int | None = None
-    escape_payload: bytes = b""
-    tail_payload: bytes = b""
+    escape_payload: bytes | memoryview = b""
+    tail_payload: bytes | memoryview = b""
 
     @property
     def payload_bytes(self):

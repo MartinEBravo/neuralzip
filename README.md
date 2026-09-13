@@ -199,6 +199,26 @@ No setup file is needed to restore a saved checkpoint's weights: its required
 codebooks are included. Compressing them again for GPU inference uses the active setup or
 available globals; otherwise they stay resident and uncompressed.
 
+## Tensor checkpoints
+
+For explicit CPU checkpoint encoding and decoding, use one compressor interface:
+
+```python
+from neuralzip.compressor import NeuralZipCompressor
+
+compressor = NeuralZipCompressor(setup)
+blob, metadata, sizes, seconds = compressor.encode(reference.named_parameters())
+restored = compressor.decode(blob, metadata)  # dictionary of named CPU tensors
+```
+
+Pass an iterable of `(name, floating_tensor)` pairs. Encoding chooses the direct
+or general backend internally and returns the byte tensor, JSON-safe metadata,
+canonical size counts, and encoding time. The time includes encoding, assembly,
+and size accounting, but excludes codebook preparation and target mapping.
+Decode reads its codebooks from the checkpoint; a fresh `NeuralZipCompressor()`
+can decode the same blob without the original setup. HF saving uses this pair
+internally and additionally preserves persistent buffers and shared-weight aliases.
+
 ## How it works
 
 1. `neuralzip()` installs the transparent Transformers integration for the

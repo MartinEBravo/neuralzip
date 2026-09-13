@@ -9,12 +9,20 @@ from neuralzip.payloads import (
     CodebookPayload,
     StreamChunk,
     TensorPayload,
+    storage_bytes,
 )
 from neuralzip.setup import NeuralZipSetup
+from neuralzip.storage import (
+    _pack_codebooks,
+    pack_direct_storage,
+    pack_storage,
+    unpack_storage,
+)
 from neuralzip.utils import (
     _floating_tensors,
     _stream_chunk_size,
     _tensor_from_raw_bytes,
+    time_call,
 )
 
 _TRANSFER_NAME_FALLBACKS = {
@@ -60,6 +68,114 @@ class NeuralZipCompressor:
         if gpu:
             self._add_global_codebooks()
         self.load_codebooks(self._codebook_payloads)
+
+    def encode(self, named_tensors):
+        """Encode and assemble a checkpoint; prepare target mapping before timing."""
+        named_tensors = tuple(named_tensors)
+        self._add_global_codebooks()
+        self.prepare_storage_transfer_target(named_tensors)
+        encoded, seconds = time_call(self._encode, named_tensors)
+        return *encoded, seconds
+
+    def decode(self, blob, metadata):
+        """Restore named CPU tensors using the checkpoint's own codebooks."""
+        codebooks, payloads = unpack_storage(blob, metadata)
+        previous = self._codebook_payload_by_id, self._decode_codebooks
+        try:
+            self.load_codebooks(codebooks)
+            tensors = self._decompress_tensors(payloads)
+        finally:
+            self._codebook_payload_by_id, self._decode_codebooks = previous
+        return {
+            payload.name: tensor
+            for payload, tensor in zip(payloads, tensors, strict=True)
+        }
+
+    def _encode(self, named_tensors):
+        direct = self._encode_direct(named_tensors)
+        if direct is not None:
+            return direct
+        payloads = self._compress_tensors(named_tensors)
+        used_codebooks = {
+            chunk.codebook_id
+            for tensor in payloads
+            for group in tensor.groups
+            for chunk in group.chunks
+            if chunk.codebook_id is not None
+        }
+        codebooks = tuple(
+            value
+            for value in self.export_codebooks()
+            if value.codebook_id in used_codebooks
+        )
+        blob, metadata = pack_storage(codebooks, payloads)
+        return (
+            blob,
+            metadata,
+            storage_bytes(codebooks, metadata["tensors"], blob.numel()),
+        )
+
+    def _encode_direct(self, named_tensors):
+        specs = []
+        codebook_ids = set()
+        for name, tensor in named_tensors:
+            config = DTYPES[tensor.dtype]
+            chunk_size = _stream_chunk_size(self.chunk_size, config.element_size)
+            if chunk_size > huff0.MAX_BLOCK_SIZE:
+                return None
+            modes = (
+                tuple(
+                    self._mode_for_tensor_stream(name, tensor, stream)
+                    for stream in config.stream_ids
+                )
+                if tensor.numel()
+                else ({"kind": "raw"},) * config.element_size
+            )
+            selected = [
+                stream for stream in config.stream_ids if modes[stream]["kind"] != "raw"
+            ]
+            if len(selected) > 1:
+                return None
+            stream = selected[0] if selected else config.exponent_stream
+            if stream is None:
+                stream = config.element_size - 1
+            mode = modes[stream]
+            if mode["kind"] not in {"raw", "shared_huff0", "packed_huff0"}:
+                return None
+            if selected:
+                codebook_ids.add(int(mode["codebook_id"]))
+            original = tensor.detach().cpu().contiguous()
+            specs.append(
+                (
+                    original.reshape(-1).view(torch.uint8).numpy(),
+                    config,
+                    stream,
+                    chunk_size,
+                    mode,
+                )
+            )
+        codebooks = tuple(
+            value
+            for value in self.export_codebooks()
+            if int(value.codebook_id) in codebook_ids
+        )
+        prefix, codebook_metadata = _pack_codebooks(codebooks)
+        packed, native_groups = huff0.compress_direct_storage(
+            specs,
+            prefix,
+            min_saving_bytes=self.min_saving_bytes,
+            threads=self.threads,
+            compression_threshold=self.compression_threshold,
+        )
+        return pack_direct_storage(
+            named_tensors,
+            specs,
+            codebooks,
+            prefix,
+            codebook_metadata,
+            packed,
+            native_groups,
+        )
 
     def _add_global_codebooks(self):
         codebook_id = (
@@ -172,7 +288,7 @@ class NeuralZipCompressor:
             )
         ]
 
-    def compress_tensors(self, named_tensors):
+    def _compress_tensors(self, named_tensors):
         """Compress a model without retaining target-derived data."""
         named_tensors = list(named_tensors)
         outputs = []
@@ -306,7 +422,7 @@ class NeuralZipCompressor:
             )
         ]
 
-    def decompress_tensors(self, payloads):
+    def _decompress_tensors(self, payloads):
         """Decode tensors through input-size-windowed native queues."""
         outputs = []
         batch = []

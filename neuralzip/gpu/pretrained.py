@@ -9,21 +9,17 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, GenerationConfig, PreTrainedModel
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
+from neuralzip.compressor import NeuralZipCompressor
 from neuralzip.dtypes import DTYPES
 from neuralzip.gpu.inference import (
     GPUEncodedSymbols,
     NeuralZipRuntime,
     export_model_for_gpu,
 )
-from neuralzip.storage import (
-    NeuralZipStats,
-    _bytes_tensor,
-    decode_model_storage,
-    encode_model_storage,
-    setup_seconds,
-    storage_stats,
-)
-from neuralzip.utils import time_call
+from neuralzip.payloads import NeuralZipStats
+from neuralzip.setup import NeuralZipSetup
+from neuralzip.storage import _bytes_tensor
+from neuralzip.utils import _model_tensors, time_call
 
 FORMAT_NAME = "neuralzip"
 FORMAT_VERSION = 2
@@ -39,6 +35,76 @@ _HF_OPTIONS = {}
 
 def _tensor_bytes(tensor):
     return tensor.detach().cpu().contiguous().numpy().tobytes()
+
+
+def _setup_seconds(setup):
+    return (
+        0.0 if setup is None else float(NeuralZipSetup.load(setup).setup_seconds or 0.0)
+    )
+
+
+def _aliases(model):
+    state_names = set(model.state_dict())
+    aliases = {}
+    for values in (
+        model.named_parameters(remove_duplicate=False),
+        model.named_buffers(remove_duplicate=False),
+    ):
+        canonical = {}
+        for name, tensor in values:
+            if name not in state_names:
+                continue
+            source = canonical.setdefault(id(tensor), str(name))
+            if source != name:
+                aliases[str(name)] = source
+    return aliases
+
+
+def _resident_bytes(tensors):
+    seen = set()
+    total = 0
+    for tensor in tensors:
+        key = (
+            tensor.device,
+            tensor.data_ptr(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.dtype,
+        )
+        if key not in seen:
+            seen.add(key)
+            total += tensor.numel() * tensor.element_size()
+    return total
+
+
+def _encode_model_storage(model, setup, runtime=None):
+    """Encode all floating model state and retain only auxiliary tensors."""
+    named_tensors = dict(_model_tensors(model))
+    if runtime is not None:
+        named_tensors.update(runtime.materialized_weights())
+    named_tensors = tuple(sorted(named_tensors.items()))
+    blob, metadata, sizes, seconds = NeuralZipCompressor(setup).encode(named_tensors)
+    encoded_names = {name for name, _ in named_tensors}
+    aliases = _aliases(model)
+    resident = {
+        name: tensor
+        for name, tensor in model.state_dict().items()
+        if name not in aliases
+        and name not in encoded_names
+        and aliases.get(name, name) not in encoded_names
+    }
+    auxiliary_bytes = _resident_bytes(resident.values())
+    sizes["raw_bytes"] += auxiliary_bytes
+    sizes["compressed_bytes"] += auxiliary_bytes
+    return blob, metadata, resident, aliases, sizes, seconds
+
+
+def _decode_model_storage(blob, metadata, resident, aliases):
+    state = dict(resident)
+    state.update(NeuralZipCompressor().decode(blob, metadata))
+    for alias, canonical in aliases.items():
+        state[alias] = state[canonical]
+    return state
 
 
 def _checkpoint_metadata(config):
@@ -105,7 +171,7 @@ def _export_stats(model, exported, setup, encoding_seconds):
     stream_compressed_bytes += codebook_bytes
     exponent_compressed_bytes += 1024 * len(exponent_codebooks)
     return NeuralZipStats(
-        setup_seconds=setup_seconds(setup),
+        setup_seconds=_setup_seconds(setup),
         encoding_seconds=float(encoding_seconds),
         raw_bytes=resident_bytes
         + sum(group.encoded.raw_bytes for group in exported.groups),
@@ -179,12 +245,14 @@ def _save_pretrained(
     save_kwargs=None,
 ):
     runtime = getattr(model, "neuralzip_runtime", None)
-    blob, storage, resident, aliases, sizes, seconds = encode_model_storage(
+    blob, storage, resident, aliases, sizes, seconds = _encode_model_storage(
         model,
         setup,
         runtime if isinstance(runtime, NeuralZipRuntime) else None,
     )
-    stats = storage_stats(setup, sizes, seconds)
+    stats = NeuralZipStats(
+        setup_seconds=_setup_seconds(setup), encoding_seconds=float(seconds), **sizes
+    )
     setattr(model, STATS_ATTRIBUTE, stats)
     bound = inspect.signature(_ORIGINAL_SAVE).bind(
         model,
@@ -245,7 +313,7 @@ def _load_storage(
         raise ValueError("The NeuralZip storage checkpoint is incomplete.")
     storage = json.loads(_tensor_bytes(special[STORAGE_METADATA]).decode("utf-8"))
     state, decoding_seconds = time_call(
-        decode_model_storage,
+        _decode_model_storage,
         special[STORAGE_DATA],
         storage,
         resident,

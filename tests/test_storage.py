@@ -20,7 +20,7 @@ def test_chunk_size_roundtrip(dtype, chunk_size, expected_chunks):
     setup = NeuralZipSetup(
         chunk_size=chunk_size,
         enable_shared_codebooks=False,
-        ngram_values=(),
+        enable_packed_codebooks=False,
         threads=1,
     ).build(named_tensors)
 

@@ -62,10 +62,13 @@ void require(bool condition, const char* message) { if (!condition) throw Error(
 template <nb::builtin_exception (*Error)(const char*)>
 void require(bool condition, const char* message) { if (!condition) throw Error(message); }
 
+struct NGramVocabLookup;
+
 struct Huff0Codebook {
     std::vector<HUF_CElt> ctable;
     std::vector<std::uint8_t> serialized;
     bool covers_all_symbols = false;
+    std::shared_ptr<const NGramVocabLookup> ngram_lookup;
 };
 
 struct Huff0Decodebook {
@@ -92,6 +95,8 @@ enum class MixedMode {
 };
 
 struct NGramVocabLookup {
+    int ngram_n = 1;
+    std::vector<std::uint8_t> vocabulary;
     std::vector<std::uint64_t> keys;
     // Token 255 is reserved for escapes, so it is also a safe empty-slot
     // sentinel: valid vocabulary ids are always in [0, 254].
@@ -103,7 +108,7 @@ struct MixedStreamSpec {
     MixedMode mode = MixedMode::Raw;
     Huff0Codebook* codebook = nullptr;
     nb::object codebook_owner;
-    NGramVocabLookup vocab_lookup;
+    std::shared_ptr<const NGramVocabLookup> vocab_lookup;
     int ngram_n = 1;
     std::size_t chunk_size = 0;
 };

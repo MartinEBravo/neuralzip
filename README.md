@@ -11,8 +11,8 @@ reconstructed only when their transformer block runs.
 
 - Bitwise-exact weights in their loaded dtype during inference.
 - Optional precomputed global codebooks, declared per format in `dtypes.py`.
-- Full reusable setups with Jensen--Shannon clustering, measured Huffman mode
-  selection, and packed exponent n-grams.
+- Full reusable setups with Jensen--Shannon clustering, histogram-based Huffman
+  mode selection, and packed exponent pairs.
 - Standard Hugging Face directories and Safetensors shards.
 - No NeuralZip-specific model loader or checkpoint export command.
 
@@ -113,7 +113,7 @@ print(setup.setup_seconds)
 ```python
 from neuralzip.setup import NeuralZipSetup
 
-setup = NeuralZipSetup(ngram_values=()).build(reference)
+setup = NeuralZipSetup(enable_packed_codebooks=False).build(reference)
 setup.save("qwen-family.setup.pkl")
 setup = NeuralZipSetup.load("qwen-family.setup.pkl")
 ```
@@ -121,13 +121,26 @@ setup = NeuralZipSetup.load("qwen-family.setup.pkl")
 The constructor only configures defaults. `build()` learns the setup, replaces
 any previous learned state, and returns the same instance. Saved setups contain
 configuration, codebooks, assignments, and timing results, not training samples
-or native handles. Setup files from earlier schemas must be rebuilt.
+or native handles. Call sites using removed constructor options must be updated;
+build a setup again to use the new selection policy. The compressed-file format
+is unchanged, so existing compressed checkpoints remain decodable.
 
 The setup analyzes floating parameters and persistent floating buffers in the
-formats registered in `dtypes.py`. It clusters exponent distributions with Jensen--Shannon
-distance, builds reusable Huffman codebooks, measures the real native encoder,
-and selects among raw, shared-Huffman, and packed exponent n-gram modes. Select
-the resulting object or file once in each inference process, then use
+formats registered in `dtypes.py`. It clusters exponent distributions with
+Jensen--Shannon distance and estimates raw, shared-Huffman, and packed-pair sizes
+from histograms and code lengths, including codebook, vocabulary, escape, and
+chunk metadata costs. It does not run trial compressions.
+
+Packed mode is enabled by default for pure exponent streams. It uses consecutive,
+non-overlapping pairs and up to 254 vocabulary entries, and requires an estimated
+size improvement of more than 2% over the better raw/shared candidate
+(`packed_min_gain=0.02`). The example above disables packed mode; omit that option
+to use the default. Actual encoding still checks each chunk and falls back to
+raw when compression does not meet its saving threshold. Native encoders cache a
+64 KiB pair-to-token lookup per packed-pair codebook; this table is derived from
+the vocabulary and is not stored in the compressed file.
+
+Select the resulting object or file once in each inference process, then use
 Transformers normally:
 
 ```python

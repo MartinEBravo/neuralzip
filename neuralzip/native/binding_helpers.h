@@ -88,6 +88,15 @@ nb::tuple build_codebook_from_header(nb::handle header_source) {
         header.data(), header.size()));
 }
 
+void prepare_ngram_codebook(
+    nb::handle codebook_source,
+    nb::handle vocab_source,
+    int n) {
+    auto* codebook = capsule_data<Huff0Codebook>(
+        codebook_source, "neuralzip.Huff0Codebook");
+    prepare_ngram_vocab_lookup(*codebook, vocab_source, n);
+}
+
 nb::capsule build_decodebook(nb::handle header_source) {
     ReadOnlyBuffer header(header_source);
     auto decodebook = make_decodebook_from_header(

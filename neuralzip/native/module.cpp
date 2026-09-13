@@ -51,6 +51,10 @@ NB_MODULE(_huff0_cpp, module) {
         "build_decodebook", &build_decodebook,
         "Build a Huff0 decode table from a serialized codebook.");
     module.def(
+        "prepare_ngram_codebook", &prepare_ngram_codebook,
+        nb::arg("codebook"), nb::arg("vocab"), nb::arg("ngram_n"),
+        "Prepare and retain the vocabulary lookup used by a Huff0 encoder.");
+    module.def(
         "export_code_table", &export_code_table,
         nb::arg("codebook"),
         nb::arg("max_bits") = 12,

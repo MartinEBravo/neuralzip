@@ -40,7 +40,11 @@ class NeuralZipCompressor:
                 "ngram_n": int(payload.ngram_n),
                 "vocab": payload.vocab,
                 "codebook_id": int(payload.codebook_id),
-                "codebook": huff0.build_codebook_from_header(payload.codebook),
+                "codebook": huff0.build_codebook_from_header(
+                    payload.codebook,
+                    vocab=payload.vocab,
+                    ngram_n=payload.ngram_n,
+                ),
             }
             for payload in self._codebook_payloads
         }

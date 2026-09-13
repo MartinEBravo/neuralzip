@@ -10,7 +10,7 @@ struct DirectStorageRequest {
     nb::object codebook_owner;
     Huff0Codebook* codebook = nullptr;
     MixedMode mode = MixedMode::Raw;
-    NGramVocabLookup vocab_lookup;
+    std::shared_ptr<const NGramVocabLookup> vocab_lookup;
     int ngram_n = 1;
     Py_ssize_t codebook_id = -1;
     std::size_t chunk_size = 0;
@@ -155,9 +155,8 @@ nb::tuple compress_direct_storage(
                 require<nb::value_error>(
                     request.ngram_n >= 2 && request.ngram_n <= 8,
                     "packed_huff0 requires ngram_n in [2, 8].");
-                ReadOnlyBuffer vocab(nb::handle(mode[3].ptr()));
-                request.vocab_lookup = build_ngram_vocab_lookup(vocab_from_bytes(
-                    vocab.data(), vocab.size(), request.ngram_n));
+                request.vocab_lookup = prepare_ngram_vocab_lookup(
+                    *request.codebook, nb::handle(mode[3].ptr()), request.ngram_n);
             } else {
                 request.mode = MixedMode::SharedHuff0;
             }
@@ -269,7 +268,7 @@ nb::tuple compress_direct_storage(
                                 0,
                                 static_cast<Py_ssize_t>(job.length),
                                 request.ngram_n,
-                                request.vocab_lookup),
+                                *request.vocab_lookup),
                             *request.codebook,
                             min_saving_bytes,
                             packed_output_budget(job.length, compression_threshold));

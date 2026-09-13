@@ -95,7 +95,7 @@ void process_mixed_packed_block(
             start,
             static_cast<Py_ssize_t>(length),
             spec.ngram_n,
-            spec.vocab_lookup),
+            *spec.vocab_lookup),
         *spec.codebook,
         min_saving_bytes,
         packed_output_budget(length, compression_threshold));
@@ -211,10 +211,8 @@ std::vector<MixedStreamSpec> parse_mixed_stream_specs(
             spec.codebook_owner = nb::borrow<nb::object>(codebook_source);
             spec.codebook = capsule_data<Huff0Codebook>(
                 codebook_source, "neuralzip.Huff0Codebook");
-            ReadOnlyBuffer vocab(vocab_source);
-            std::vector<std::uint64_t> values = vocab_from_bytes(
-                vocab.data(), vocab.size(), ngram_n);
-            spec.vocab_lookup = build_ngram_vocab_lookup(values);
+            spec.vocab_lookup = prepare_ngram_vocab_lookup(
+                *spec.codebook, vocab_source, ngram_n);
         } else {
             throw nb::value_error("Unsupported mixed Huff0 stream mode.");
         }

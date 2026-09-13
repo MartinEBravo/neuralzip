@@ -1,3 +1,4 @@
+import math
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,15 +17,11 @@ from neuralzip.utils import (
     _floating_tensors,
     _model_tensors,
     _stream_chunk_size,
+    _symbol_dtype,
     _tensor_raw_bytes,
-    estimate_mode,
     exponent_distribution,
     jensen_shannon_distance,
-    select_fastest_within_ratio,
-    select_packed_time_budget,
     time_call,
-    tokenize_ngrams,
-    topk_vocab,
 )
 
 
@@ -39,6 +36,13 @@ class NeuralZipSetupReport:
 
 
 class NeuralZipSetup:
+    """Learn clustered raw/shared/packed-pair modes without compression probes.
+
+    Exponent byte histograms are complete; other byte and exponent pair
+    histograms use bounded samples. Size estimates approximate chunk fallback
+    at group level, while the encoder decides the final mode for each chunk.
+    """
+
     def __init__(
         self,
         *,
@@ -51,12 +55,9 @@ class NeuralZipSetup:
         cluster_map=None,
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
-        ngram_values=(2, 3, 4),
-        top_k=254,
-        packed_source_budget_ratio=0.30,
-        packed_time_budget_ratio=1.0,
-        speed_ratio_tolerance=0.03,
+        packed_min_gain=0.02,
         enable_shared_codebooks=True,
+        enable_packed_codebooks=True,
         direct_batch_bytes=128 << 20,
     ):
         self.min_saving_bytes = int(min_saving_bytes)
@@ -70,12 +71,11 @@ class NeuralZipSetup:
         }
         self.cluster_js_threshold = float(cluster_js_threshold)
         self.max_codebook_sample_bytes = int(max_codebook_sample_bytes)
-        self.ngram_values = tuple(sorted({int(value) for value in ngram_values}))
-        self.top_k = int(top_k)
-        self.packed_source_budget_ratio = float(packed_source_budget_ratio)
-        self.packed_time_budget_ratio = float(packed_time_budget_ratio)
-        self.speed_ratio_tolerance = float(speed_ratio_tolerance)
+        self.packed_min_gain = float(packed_min_gain)
+        if not 0 <= self.packed_min_gain < 1:
+            raise ValueError("packed_min_gain must be in [0, 1).")
         self.enable_shared_codebooks = bool(enable_shared_codebooks)
+        self.enable_packed_codebooks = bool(enable_packed_codebooks)
         self.direct_batch_bytes = int(direct_batch_bytes)
 
         self.codebooks = ()
@@ -162,356 +162,190 @@ class NeuralZipSetup:
 
     def _build_codebooks(self, named_tensors, clusters):
         named_tensors = list(named_tensors)
-        sample_parts, total_sizes, stream_info, exponent_counts, chunk_counts = (
-            self._collect_codebook_samples(named_tensors, clusters)
+        groups = self._collect_histograms(named_tensors, clusters)
+        codebooks, mode_by_key = [], {}
+        for key, group in sorted(groups.items()):
+            selected = self._choose_mode(key, group)
+            mode_by_key[key] = self._finalize_mode(key, selected, codebooks)
+        return codebooks, self._prepare_tensor_modes(
+            named_tensors, mode_by_key, clusters
         )
 
-        evaluations = []
-        for key in sorted(sample_parts):
-            element_size, is_exponent = stream_info[key]
-            parts = tuple(sample_parts[key])
-            evaluations.append(
-                self._evaluate_modes(
-                    key,
-                    b"".join(parts),
-                    total_size=total_sizes[key],
-                    element_size=element_size,
-                    is_exponent=is_exponent,
-                    sample_parts=parts,
-                    symbol_counts=exponent_counts.get(key),
-                    chunk_counts=chunk_counts[key],
-                )
-            )
-
-        codebooks, mode_by_key = self._select_modes(evaluations)
-        tensor_modes = self._prepare_tensor_modes(named_tensors, mode_by_key, clusters)
-        return codebooks, tensor_modes
-
-    def _collect_codebook_samples(self, named_tensors, clusters):
-        """Collect bounded timing probes and complete exponent histograms."""
-        sample_parts = {}
-        sample_sizes = {}
-        total_sizes = {}
-        stream_info = {}
-        exponent_counts = {}
-        chunk_counts = {}
+    def _collect_histograms(self, named_tensors, clusters):
+        groups = {}
         for name, tensor in _floating_tensors(named_tensors):
             original = tensor.detach().cpu().contiguous()
             config = DTYPES[original.dtype]
             reordered = config.reorder_bytes(_tensor_raw_bytes(original))
-            element_size = int(config.element_size)
+            raw_step = _stream_chunk_size(self.chunk_size, config.element_size)
+            shared_step = min(raw_step, huff0.MAX_BLOCK_SIZE)
+            packed_step = max(2, min(raw_step, 2 * huff0.MAX_BLOCK_SIZE) // 2 * 2)
             for stream_id in config.stream_ids:
-                is_exponent = stream_id == config.exponent_stream
-                stream = reordered[stream_id::element_size]
                 key = self._codebook_key(name, original, stream_id, clusters)
-                total_sizes[key] = total_sizes.get(key, 0) + len(stream)
-                stream_info[key] = (element_size, is_exponent)
-                raw_step = _stream_chunk_size(self.chunk_size, element_size)
-                shared_step = min(raw_step, huff0.MAX_BLOCK_SIZE)
-                raw_chunks, shared_chunks = chunk_counts.get(key, (0, 0))
-                chunk_counts[key] = (
-                    raw_chunks + (len(stream) + raw_step - 1) // raw_step,
-                    shared_chunks + (len(stream) + shared_step - 1) // shared_step,
-                )
+                is_exponent = stream_id == config.exponent_stream
+                if key not in groups:
+                    groups[key] = {
+                        "is_exponent": is_exponent,
+                        "bytes": np.zeros(256, dtype=np.uint64),
+                        "pairs": np.zeros(65536, dtype=np.uint64)
+                        if is_exponent and self.enable_packed_codebooks
+                        else None,
+                        "size": 0,
+                        "pair_count": 0,
+                        "tails": 0,
+                        "raw_chunks": 0,
+                        "shared_chunks": 0,
+                        "packed_chunks": 0,
+                        "sample_bytes": 0,
+                        "sample_pairs": 0,
+                    }
+                group = groups[key]
+                stream = reordered[stream_id :: config.element_size]
+                size = len(stream)
+                group["size"] += size
+                group["pair_count"] += size // 2
+                group["tails"] += size % 2
+                for kind, step in (
+                    ("raw", raw_step),
+                    ("shared", shared_step),
+                    ("packed", packed_step),
+                ):
+                    group[f"{kind}_chunks"] += (size + step - 1) // step
                 if is_exponent:
-                    counts = np.bincount(
-                        np.frombuffer(stream, dtype=np.uint8), minlength=256
-                    ).astype(np.uint64, copy=False)
-                    if key in exponent_counts:
-                        exponent_counts[key] += counts
-                    else:
-                        exponent_counts[key] = counts
-                remaining = self.max_codebook_sample_bytes - sample_sizes.get(key, 0)
-                if remaining <= 0:
-                    continue
-                part = self._bounded_stream_sample(stream, remaining)
-                if not part:
-                    continue
-                sample_parts.setdefault(key, []).append(bytes(part))
-                sample_sizes[key] = sample_sizes.get(key, 0) + len(part)
-        return sample_parts, total_sizes, stream_info, exponent_counts, chunk_counts
+                    group["bytes"] += self._counts(stream, 256, np.uint8)
+                    if not self.enable_packed_codebooks:
+                        continue
+                remaining = self.max_codebook_sample_bytes - group["sample_bytes"]
+                for start, end in self._sample_ranges(size, remaining):
+                    part = memoryview(stream)[start:end]
+                    group["sample_bytes"] += len(part)
+                    if not is_exponent:
+                        group["bytes"] += self._counts(part, 256, np.uint8)
+                    elif len(part) >= 2:
+                        paired = part[: len(part) // 2 * 2]
+                        group["pairs"] += self._counts(paired, 65536, "<u2")
+                        group["sample_pairs"] += len(paired) // 2
+        return groups
 
     @staticmethod
-    def _bounded_stream_sample(stream, max_bytes, segments=8):
-        stream = bytes(stream)
-        max_bytes = min(len(stream), int(max_bytes))
-        if max_bytes <= 0:
-            return b""
-        if len(stream) <= max_bytes:
-            return stream
-        segment_count = min(int(segments), max_bytes)
-        segment_size = max(1, max_bytes // segment_count)
-        last_start = len(stream) - segment_size
-        starts = np.linspace(0, last_start, segment_count, dtype=np.int64)
-        sample = b"".join(
-            stream[int(start) : int(start) + segment_size] for start in starts
-        )
-        return sample[:max_bytes]
+    def _counts(data, alphabet_size, dtype):
+        return np.bincount(
+            np.frombuffer(data, dtype=dtype), minlength=alphabet_size
+        ).astype(np.uint64)
 
-    def _evaluate_modes(
-        self,
-        key,
-        sample,
-        *,
-        total_size,
-        element_size,
-        is_exponent,
-        sample_parts,
-        symbol_counts=None,
-        chunk_counts,
-    ):
-        raw_mode = {"kind": "raw", "fixed_cost": 0}
-        self._score_mode(raw_mode, element_size, sample_parts=sample_parts)
-        raw_mode["full_cost"] = (
-            int(total_size) + int(chunk_counts[0]) * RAW_CHUNK_METADATA_BYTES
-        )
-        prior_count = self.exponent_prior_count if is_exponent else self.prior_count
+    @staticmethod
+    def _sample_ranges(size, budget):
+        """Even starts preserve pair alignment within tensors and packed chunks.
 
-        shared = None
-        if self.enable_shared_codebooks:
-            shared = self._build_candidate(
-                sample,
-                kind="shared_huff0",
-                prior_count=prior_count,
-                symbol_counts=symbol_counts,
-                max_bits=12 if is_exponent else 11,
-            )
-        if shared is not None:
-            payload = self._candidate_payload(key, shared)
-            if symbol_counts is not None:
-                shared["fixed_cost"] = payload.metadata_bytes
-                _, shared["sample_seconds"] = self._measure_direct_mode(
-                    shared, element_size, tuple(sample_parts)
-                )
-                shared["full_cost"] = self._shared_histogram_cost(
-                    shared,
-                    symbol_counts,
-                    total_size=total_size,
-                    shared_chunk_count=chunk_counts[1],
-                    codebook_payload=payload,
-                )
-            else:
-                self._score_mode(shared, element_size, payload, sample_parts)
-
-        base_candidates = [raw_mode]
-        if shared is not None:
-            base_candidates.append(shared)
-        scale = total_size / len(sample)
-        base, base_cost, base_seconds = select_fastest_within_ratio(
-            (estimate_mode(candidate, scale) for candidate in base_candidates),
-            ratio_tolerance=self.speed_ratio_tolerance,
+        Packed2 chunks have even length, so no aligned pair crosses a chunk
+        boundary. Each segment is counted separately; segments are never joined.
+        """
+        budget = min(size, max(0, int(budget)))
+        if not budget:
+            return ()
+        if size <= budget:
+            return ((0, size),)
+        segments = min(8, max(1, budget // 2))
+        width = max(1, budget // segments)
+        if width > 1:
+            width -= width % 2
+        starts = np.linspace(0, size - width, segments, dtype=np.int64)
+        return tuple(
+            (int(start) // 2 * 2, int(start) // 2 * 2 + width) for start in starts
         )
 
-        packed_candidates = []
-        if is_exponent:
-            for n in self.ngram_values:
-                packed = self._build_candidate(
-                    sample, kind="packed_huff0", prior_count=prior_count, ngram_n=n
-                )
-                if packed is None:
-                    continue
-                payload = self._candidate_payload(key, packed)
-                self._score_mode(packed, element_size, payload, sample_parts)
-                packed_candidates.append(packed)
-
-        packed_scores = (
-            estimate_mode(candidate, scale) for candidate in packed_candidates
-        )
-        improving = [score for score in packed_scores if score[1] < base_cost]
-        packed = None
-        if improving:
-            packed, packed_cost, packed_seconds = select_fastest_within_ratio(
-                improving,
-                ratio_tolerance=self.speed_ratio_tolerance,
-            )
-        opportunity = None
-        if packed is not None:
-            saved_bytes = base_cost - packed_cost
-            opportunity = {
-                "mode": packed,
-                "saved_bytes": saved_bytes,
-                "source_bytes": int(total_size),
-                "savings_per_source_byte": saved_bytes / total_size,
-                "extra_seconds": max(0.0, packed_seconds - base_seconds),
-            }
-        return {
-            "key": key,
-            "base": base,
-            "base_seconds": base_seconds,
-            "total_size": int(total_size),
-            "is_exponent": bool(is_exponent),
-            "opportunity": opportunity,
-        }
-
-    def _build_candidate(
-        self,
-        sample,
-        *,
-        kind,
-        prior_count,
-        ngram_n=1,
-        symbol_counts=None,
-        max_bits=11,
-    ):
-        if kind == "shared_huff0":
-            tokens = sample
-            vocab = b""
-        else:
-            vocab = topk_vocab(sample, ngram_n, self.top_k)
-            if not vocab:
-                return None
-            tokens, _, _ = tokenize_ngrams(sample, ngram_n, vocab)
-        if not tokens:
+    def _table(self, counts, *, is_exponent, packed=False, vocab=b""):
+        if not int(counts.sum()):
             return None
-        counts = symbol_counts
-        if counts is None or kind != "shared_huff0":
-            counts = np.bincount(np.frombuffer(tokens, dtype=np.uint8), minlength=256)
         try:
             codebook = huff0.build_codebook_from_counts(
-                counts, prior_count=prior_count, max_bits=max_bits
+                counts,
+                prior_count=self.exponent_prior_count
+                if is_exponent
+                else self.prior_count,
+                max_bits=12 if is_exponent and not packed else 11,
             )
         except (RuntimeError, ValueError):
             return None
         return {
-            "kind": kind,
-            "ngram_n": int(ngram_n),
+            "kind": "packed_huff0" if packed else "shared_huff0",
+            "ngram_n": 2 if packed else 1,
             "vocab": vocab,
             "codebook": codebook,
         }
 
-    def _score_mode(self, mode, element_size, codebook_payload=None, sample_parts=()):
-        sample_cost, sample_seconds = self._measure_direct_mode(
-            mode, element_size, tuple(sample_parts)
-        )
-        mode["sample_cost"] = sample_cost
-        mode["fixed_cost"] = (
-            codebook_payload.metadata_bytes if codebook_payload is not None else 0
-        )
-        mode["sample_cost"] += mode["fixed_cost"]
-        mode["sample_seconds"] = sample_seconds
-        return mode
+    @staticmethod
+    def _huffman_bytes(mode, counts, scale, chunks):
+        lengths, _, _ = huff0.export_code_table(mode["codebook"].codebook, max_bits=12)
+        lengths = np.frombuffer(lengths, dtype=np.uint8).astype(np.uint64)
+        if np.any((counts > 0) & (lengths == 0)):
+            return math.inf
+        bits = int(np.dot(counts, lengths))
+        return math.ceil(bits * scale / 8) + 10 * chunks
 
-    def _measure_direct_mode(self, mode, element_size, sample_parts):
-        """Measure a mode with the same native primitive used by ``encode``."""
-        element_size = int(element_size)
-        raw_mode = {"kind": "raw"}
-        stream_modes = (mode,) + (raw_mode,) * (element_size - 1)
-        tensor_specs = []
-        for part in sample_parts:
-            part = bytes(part)
-            if not part:
-                continue
-            interleaved = bytearray(len(part) * element_size)
-            interleaved[0::element_size] = part
-            tensor_specs.append(
-                (
-                    interleaved,
-                    element_size,
-                    0,
-                    _stream_chunk_size(self.chunk_size, element_size),
-                    stream_modes,
+    def _choose_mode(self, key, group):
+        total = group["size"]
+        raw_cost = total + RAW_CHUNK_METADATA_BYTES * group["raw_chunks"]
+        selected, best_cost = {"kind": "raw"}, raw_cost
+        if self.enable_shared_codebooks:
+            shared = self._table(group["bytes"], is_exponent=group["is_exponent"])
+            if shared is not None:
+                chunks = group["shared_chunks"]
+                scale = (
+                    1 if group["is_exponent"] else total / max(1, group["sample_bytes"])
                 )
-            )
-        if not tensor_specs:
-            return 0, 0.0
-
-        def encode_once():
-            return huff0.compress_mixed_streams_many(
-                tuple(tensor_specs),
-                min_saving_bytes=self.min_saving_bytes,
-                threads=self.threads,
-                compression_threshold=self.compression_threshold,
-            )
-
-        native_batch, _ = time_call(encode_once)
-        seconds = min(time_call(encode_once)[1] for _ in range(3))
-        metadata_by_mode = {
-            "raw": RAW_CHUNK_METADATA_BYTES,
-            "shared_huff0": SHARED_CHUNK_METADATA_BYTES,
-            "packed_huff0": PACKED_CHUNK_METADATA_BYTES,
-        }
-        encoded_bytes = 0
-        for native_groups in native_batch:
-            for final_kind, body, _, escapes, tail in native_groups[0]:
-                encoded_bytes += (
-                    metadata_by_mode[str(final_kind)]
-                    + len(body)
-                    + len(escapes)
-                    + len(tail)
+                body = self._huffman_bytes(shared, group["bytes"], scale, chunks)
+                compressed = body + SHARED_CHUNK_METADATA_BYTES * chunks
+                viable = (
+                    body + self.min_saving_bytes * chunks < total
+                    and compressed < self.compression_threshold * total
                 )
-        return encoded_bytes, seconds
+                shared_cost = self._candidate_payload(key, shared).metadata_bytes + (
+                    compressed if viable else total + RAW_CHUNK_METADATA_BYTES * chunks
+                )
+                if shared_cost < best_cost:
+                    selected, best_cost = shared, shared_cost
 
-    def _shared_histogram_cost(
-        self,
-        mode,
-        symbol_counts,
-        *,
-        total_size,
-        shared_chunk_count,
-        codebook_payload,
-    ):
-        """Bound shared size from exact counts plus Huff0's 10-byte 4X overhead."""
-        code_lengths, _, _ = huff0.export_code_table(
-            mode["codebook"].codebook, max_bits=12
-        )
-        symbol_bits = sum(
-            int(count) * int(length)
-            for count, length in zip(symbol_counts, code_lengths, strict=True)
-        )
-        symbol_bytes = (symbol_bits + 7) // 8
-        shared_chunks = (
-            symbol_bytes
-            + 10 * int(shared_chunk_count)
-            + int(shared_chunk_count) * SHARED_CHUNK_METADATA_BYTES
-        )
-        fallback_chunks = (
-            int(total_size) + int(shared_chunk_count) * RAW_CHUNK_METADATA_BYTES
-        )
-        return int(codebook_payload.metadata_bytes) + min(
-            shared_chunks, fallback_chunks
-        )
+        if (
+            self.enable_packed_codebooks
+            and group["is_exponent"]
+            and group["sample_pairs"]
+        ):
+            pairs = group["pairs"]
+            observed = np.flatnonzero(pairs)
+            order = np.argsort(-pairs[observed].astype(np.int64), kind="stable")
+            vocabulary = np.sort(observed[order[:254]])
+            token_counts = np.zeros(256, dtype=np.uint64)
+            token_counts[: len(vocabulary)] = pairs[vocabulary]
+            token_counts[255] = pairs.sum() - pairs[vocabulary].sum()
+            packed = self._table(
+                token_counts,
+                is_exponent=True,
+                packed=True,
+                vocab=vocabulary.astype(_symbol_dtype(2)).tobytes(),
+            )
+            if packed is not None:
+                chunks = group["packed_chunks"]
+                scale = group["pair_count"] / group["sample_pairs"]
+                body = self._huffman_bytes(packed, token_counts, scale, chunks)
+                escapes = math.ceil(2 * int(token_counts[255]) * scale)
+                compressed = (
+                    body
+                    + escapes
+                    + group["tails"]
+                    + PACKED_CHUNK_METADATA_BYTES * chunks
+                )
+                viable = (
+                    body + self.min_saving_bytes * chunks < group["pair_count"]
+                    and compressed < self.compression_threshold * total
+                )
+                packed_cost = self._candidate_payload(key, packed).metadata_bytes + (
+                    compressed if viable else total + RAW_CHUNK_METADATA_BYTES * chunks
+                )
+                if packed_cost < best_cost * (1 - self.packed_min_gain):
+                    selected, best_cost = packed, packed_cost
 
-    def _select_modes(self, evaluations):
-        exponent_bytes = sum(
-            row["total_size"] for row in evaluations if row["is_exponent"]
-        )
-        source_budget = int(exponent_bytes * self.packed_source_budget_ratio)
-        time_selected = select_packed_time_budget(
-            evaluations, packed_time_budget_ratio=self.packed_time_budget_ratio
-        )
-        opportunities = [
-            row
-            for row in evaluations
-            if row["opportunity"] is not None and row["key"] in time_selected
-        ]
-        opportunities.sort(
-            key=lambda row: (
-                -row["opportunity"]["savings_per_source_byte"],
-                -row["opportunity"]["saved_bytes"],
-                row["key"],
-            )
-        )
-        packed_used = 0
-        selected_packed = set()
-        for row in opportunities:
-            source_bytes = row["opportunity"]["source_bytes"]
-            if packed_used + source_bytes > source_budget:
-                continue
-            selected_packed.add(row["key"])
-            packed_used += source_bytes
-
-        codebooks = []
-        mode_by_key = {}
-        for row in evaluations:
-            selected = (
-                row["opportunity"]["mode"]
-                if row["key"] in selected_packed
-                else row["base"]
-            )
-            mode_by_key[row["key"]] = self._finalize_mode(
-                row["key"], selected, codebooks
-            )
-        return codebooks, mode_by_key
+        return selected
 
     def _finalize_mode(self, key, selected, codebooks):
         if selected["kind"] == "raw":

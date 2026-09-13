@@ -117,8 +117,20 @@ std::size_t hash_ngram_symbol(std::uint64_t value) {
 }
 
 NGramVocabLookup build_ngram_vocab_lookup(
-    const std::vector<std::uint64_t>& vocab) {
+    const std::vector<std::uint64_t>& vocab,
+    int n) {
     NGramVocabLookup lookup;
+    lookup.ngram_n = n;
+    if (n == 2) {
+        lookup.tokens.assign(1U << 16U, 255);
+        for (std::size_t token = 0; token < vocab.size(); ++token) {
+            const std::uint64_t symbol = vocab[token];
+            if (symbol < lookup.tokens.size() && lookup.tokens[symbol] == 255) {
+                lookup.tokens[symbol] = static_cast<std::uint8_t>(token);
+            }
+        }
+        return lookup;
+    }
     std::size_t required = std::max<std::size_t>(8, vocab.size() * 2);
     std::size_t capacity = 1;
     while (capacity < required) {
@@ -145,11 +157,39 @@ NGramVocabLookup build_ngram_vocab_lookup(
     return lookup;
 }
 
+std::shared_ptr<const NGramVocabLookup> prepare_ngram_vocab_lookup(
+    Huff0Codebook& codebook,
+    nb::handle vocab_source,
+    int n) {
+    require<nb::value_error>(
+        n >= 2 && n <= 8, "packed_huff0 requires ngram_n in [2, 8].");
+    ReadOnlyBuffer vocab(vocab_source);
+    const auto size = static_cast<std::size_t>(vocab.size());
+    // Called with the GIL held. Workers only read immutable shared owners,
+    // including when another call replaces this codebook's cached vocabulary.
+    const auto& cached = codebook.ngram_lookup;
+    if (cached && cached->ngram_n == n && cached->vocabulary.size() == size
+        && (size == 0
+            || std::memcmp(cached->vocabulary.data(), vocab.data(), size) == 0)) {
+        return cached;
+    }
+    auto lookup = std::make_shared<NGramVocabLookup>(build_ngram_vocab_lookup(
+        vocab_from_bytes(vocab.data(), size, n), n));
+    if (size != 0) {
+        lookup->vocabulary.assign(vocab.data(), vocab.data() + size);
+    }
+    codebook.ngram_lookup = lookup;
+    return lookup;
+}
+
 std::uint8_t find_ngram_token(
     const NGramVocabLookup& lookup,
     std::uint64_t symbol) {
     if (lookup.tokens.empty()) {
         return 255;
+    }
+    if (lookup.ngram_n == 2) {
+        return lookup.tokens[static_cast<std::uint16_t>(symbol)];
     }
     std::size_t slot = hash_ngram_symbol(symbol) & lookup.mask;
     for (std::size_t probe = 0; probe < lookup.tokens.size(); ++probe) {

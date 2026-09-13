@@ -120,9 +120,12 @@ def build_codebook_from_counts(symbol_counts, *, prior_count=0, max_bits=11):
     )
 
 
-def build_codebook_from_header(codebook):
+def build_codebook_from_header(codebook, *, vocab=b"", ngram_n=1):
     """Restore an encoder handle directly from a serialized Huff0 header."""
-    return Huff0Codebook(*_huff0_cpp.build_codebook_from_header(codebook))
+    result = Huff0Codebook(*_huff0_cpp.build_codebook_from_header(codebook))
+    if ngram_n != 1:
+        _huff0_cpp.prepare_ngram_codebook(result.handle, vocab, int(ngram_n))
+    return result
 
 
 def build_decodebook(codebook):

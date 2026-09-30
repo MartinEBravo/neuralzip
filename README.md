@@ -219,6 +219,18 @@ Decode reads its codebooks from the checkpoint; a fresh `NeuralZipCompressor()`
 can decode the same blob without the original setup. HF saving uses this pair
 internally and additionally preserves persistent buffers and shared-weight aliases.
 
+Execution options belong to the compressor, not the setup:
+
+```python
+compressor = NeuralZipCompressor(setup, threads=4, direct_batch_bytes=64 << 20)
+```
+
+Defaults are `threads=0` (automatic) and `direct_batch_bytes=128 << 20` for
+the general-path encode/decode batch budget. Setup uses one `prior_count`
+(default `1`) to smooth every Huffman table, including packed-token tables.
+These execution options are no longer accepted by `NeuralZipSetup`, and
+`prior_count` replaces the separate `exponent_prior_count` option.
+
 ## How it works
 
 1. `neuralzip()` installs the transparent Transformers integration for the

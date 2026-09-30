@@ -33,13 +33,15 @@ _TRANSFER_NAME_FALLBACKS = {
 class NeuralZipCompressor:
     """Encode and decode using detached setup data and private runtime handles."""
 
-    def __init__(self, setup=None, *, threads=None, gpu=False):
+    def __init__(
+        self, setup=None, *, threads=0, direct_batch_bytes=128 << 20, gpu=False
+    ):
         setup = NeuralZipSetup() if setup is None else NeuralZipSetup.load(setup)
         self.min_saving_bytes = int(setup.min_saving_bytes)
         self.chunk_size = int(setup.chunk_size)
         self.compression_threshold = float(setup.compression_threshold)
-        self.threads = int(setup.threads if threads is None else threads)
-        self.direct_batch_bytes = int(setup.direct_batch_bytes)
+        self.threads = int(threads)
+        self.direct_batch_bytes = int(direct_batch_bytes)
 
         self._codebook_payloads = list(setup.codebooks)
         modes = {

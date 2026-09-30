@@ -17,18 +17,18 @@ def test_setup():
     assert setup.min_saving_bytes == 0
     assert setup.chunk_size == 256 << 10
     assert setup.compression_threshold == 0.95
-    assert setup.threads == 0
     assert setup.prior_count == 1
-    assert setup.exponent_prior_count == 1
     assert setup.cluster_map == {}
     assert setup.cluster_js_threshold == 0.05
     assert setup.max_codebook_sample_bytes == 8 << 20
     assert setup.packed_min_gain == 0.02
     assert setup.enable_shared_codebooks is True
     assert setup.enable_packed_codebooks is True
-    assert setup.direct_batch_bytes == 128 << 20
 
     assert setup.codebooks == ()
     assert setup.tensor_codebooks == {}
     assert setup.global_codebooks == {}
-    assert setup.setup_report is None
+    assert setup.setup_report.setup_seconds == 0.0
+    
+    # Test build
+    

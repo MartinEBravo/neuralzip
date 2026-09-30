@@ -58,7 +58,7 @@ bfloat16 = DTypeSpec(
     bit_reorder=1,
     mantissa_bits=7,
     exponent_mask=0xFF,
-    exponent_stream=1
+    exponent_stream=1,
 )
 
 float16 = DTypeSpec(

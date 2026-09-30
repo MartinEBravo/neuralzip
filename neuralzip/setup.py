@@ -49,23 +49,18 @@ class NeuralZipSetup:
         min_saving_bytes=0,
         chunk_size=256 << 10,
         compression_threshold=0.95,
-        threads=0,
         prior_count=1,
-        exponent_prior_count=1,
         cluster_map=None,
         cluster_js_threshold=0.05,
         max_codebook_sample_bytes=8 << 20,
         packed_min_gain=0.02,
         enable_shared_codebooks=True,
         enable_packed_codebooks=True,
-        direct_batch_bytes=128 << 20,
     ):
         self.min_saving_bytes = int(min_saving_bytes)
         self.chunk_size = int(chunk_size)
         self.compression_threshold = float(compression_threshold)
-        self.threads = int(threads)
         self.prior_count = int(prior_count)
-        self.exponent_prior_count = int(exponent_prior_count)
         self.cluster_map = {
             str(name): str(value) for name, value in (cluster_map or {}).items()
         }
@@ -76,12 +71,11 @@ class NeuralZipSetup:
             raise ValueError("packed_min_gain must be in [0, 1).")
         self.enable_shared_codebooks = bool(enable_shared_codebooks)
         self.enable_packed_codebooks = bool(enable_packed_codebooks)
-        self.direct_batch_bytes = int(direct_batch_bytes)
 
         self.codebooks = ()
         self.tensor_codebooks = {}
         self.global_codebooks = {}
-        self.setup_report = None
+        self.setup_report = NeuralZipSetupReport(0.0, 0.0)
 
     def build(self, model):
         named_tensors = _model_tensors(model)
@@ -99,10 +93,6 @@ class NeuralZipSetup:
             clustering_seconds, codebook_setup_seconds
         )
         return self
-
-    @property
-    def setup_seconds(self):
-        return None if self.setup_report is None else self.setup_report.setup_seconds
 
     def save(self, path):
         path = Path(path)
@@ -260,9 +250,7 @@ class NeuralZipSetup:
         try:
             codebook = huff0.build_codebook_from_counts(
                 counts,
-                prior_count=self.exponent_prior_count
-                if is_exponent
-                else self.prior_count,
+                prior_count=self.prior_count,
                 max_bits=12 if is_exponent and not packed else 11,
             )
         except (RuntimeError, ValueError):

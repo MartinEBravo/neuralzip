@@ -243,8 +243,7 @@ class NeuralZipSetup:
             ).metadata_bytes
             sizes[index] = sizes[index] * group["weight"] / sampled + overhead
         times = tuple(map(median, timings))
-        # A 5% timing margin avoids choosing packing on a near-parity sample.
-        keep = sizes[1] < sizes[0] and times[1] < 0.95 * times[0]
+        keep = sizes[1] < sizes[0]
         return {"mode": "mixed_huffman" if keep else modes[0],
                 "singleton_bytes_estimate": sizes[0], "mixed_bytes_estimate": sizes[1],
                 "singleton_seconds": times[0], "mixed_seconds": times[1]}

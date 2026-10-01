@@ -140,11 +140,11 @@ All singleton bytes remain encodable, with pseudocount one.
 During setup, the two encoders are compared on up to four chunks spread across the samples, using
 one worker, one warmup and five alternating measured repetitions. Mixed coding
 is kept only when its estimated cluster size, including table, vocabulary and
-fragment metadata, is smaller and its median encoding time is at least 5%
-lower. The choice is frozen; encode performs no fitting or benchmarking.
-`setup.packing_report` records the scores and selected modes. Calibration is
-hardware-dependent and is not a guarantee for unseen weights or full-model
-timings. Its cost is included in setup time.
+fragment metadata, is smaller. Encoding time is recorded for diagnostics and
+does not affect selection. The choice is frozen; encode performs no fitting
+or benchmarking. `setup.packing_report` records size estimates, timings and
+selected modes. Sample measurements do not guarantee savings for unseen
+weights or full-model timings. Their cost is included in setup time.
 
 At encode time, each chunk falls back to raw if its payload plus fragment
 record is not below 95% of its uncompressed stream size. There are no escape

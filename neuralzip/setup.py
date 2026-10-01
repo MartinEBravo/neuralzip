@@ -1,12 +1,13 @@
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
 import numpy as np
 
 from neuralzip import huff0
 from neuralzip.dtypes import DTYPES
-from neuralzip.payloads import CodebookPayload
+from neuralzip.payloads import CHUNK_METADATA_BYTES, CodebookPayload
 from neuralzip.utils import (
     _floating_tensors,
     _model_tensors,
@@ -49,6 +50,7 @@ class NeuralZipSetup:
         self.chunk_codebooks = {}
         self.tensor_codebooks = {}
         self.global_codebooks = {}
+        self.packing_report = ()
         self.setup_report = NeuralZipSetupReport(0.0, 0.0)
 
     @property
@@ -59,13 +61,14 @@ class NeuralZipSetup:
         (groups, assignments, parents), clustering_seconds = time_call(
             self._cluster_chunks, _model_tensors(model)
         )
-        (books, chunks, tensors), codebook_seconds = time_call(
+        (books, chunks, tensors, report), codebook_seconds = time_call(
             self._build_codebooks, groups, assignments, parents
         )
         self.codebooks = tuple(books)
         self.chunk_codebooks = chunks
         self.tensor_codebooks = tensors
         self.global_codebooks = {}
+        self.packing_report = tuple(report)
         self.setup_report = NeuralZipSetupReport(clustering_seconds, codebook_seconds)
         return self
 
@@ -138,19 +141,12 @@ class NeuralZipSetup:
         return groups, assignments, parents
 
     def _build_codebooks(self, groups, assignments, parents):
-        books, cache = [], {}
+        books, cache, report = [], {}, []
         specs = {spec.name: spec for spec in DTYPES.values()}
 
-        def add(counts, dtype, stream, vocab=b""):
-            if not (self.enable_shared_codebooks or self.enable_packed_codebooks):
+        def add(book, dtype, stream, vocab=b""):
+            if book is None or not (self.enable_shared_codebooks or self.enable_packed_codebooks):
                 return None
-            if vocab:
-                book = huff0.build_mixed_codebook(counts, vocab, prior_count=self.prior_count)
-            else:
-                try:
-                    book = huff0.build_codebook_from_counts(counts, prior_count=self.prior_count, max_bits=12)
-                except RuntimeError:
-                    return None  # Huff0 cannot serialize some uniform alphabets; store raw.
             mode = "mixed_huffman" if vocab else "shared_huff0"
             key = dtype, stream, mode, book.codebook, vocab
             if not self.enable_shared_codebooks:
@@ -162,19 +158,93 @@ class NeuralZipSetup:
 
         cluster_ids = []
         for group in groups:
-            vocab = b""
-            samples = group["samples"]
-            if self.enable_packed_codebooks and specs[group["dtype"]].exponent_stream is not None:
-                pairs = np.zeros(65536, dtype=np.int64)
-                for sample in samples:
-                    values = np.frombuffer(sample, dtype=np.uint8).astype(np.uint16)
-                    pairs += np.bincount(values[:-1] | (values[1:] << 8), minlength=65536)
-                observed = np.flatnonzero(pairs)
-                order = np.argsort(-pairs[observed], kind="stable")
-                vocab = np.sort(observed[order[:254]]).astype("<u2").tobytes()
-            counts = huff0.count_mixed_tokens(samples, vocab)
-            cluster_ids.append(add(counts, group["dtype"], group["stream"], vocab))
+            book, vocab, scores = self._prepare_codebook(group, specs[group["dtype"]])
+            if scores is not None:
+                report.append({"cluster": len(cluster_ids), **scores})
+            cluster_ids.append(add(book, group["dtype"], group["stream"], vocab))
         chunks = {key: tuple(cluster_ids[i] for i in ids) for key, ids in assignments.items()}
         # Pool original counts once: shape-independent transfer and the byte-only CUDA ABI.
-        tensors = {key: add(counts, key[1], key[2]) for key, counts in parents.items()}
-        return books, chunks, tensors
+        tensors = {key: add(self._singleton_codebook(counts), key[1], key[2]) for key, counts in parents.items()}
+        return books, chunks, tensors, report
+
+    def _singleton_codebook(self, counts):
+        if not (self.enable_shared_codebooks or self.enable_packed_codebooks):
+            return None
+        try:
+            return huff0.build_codebook_from_counts(counts, prior_count=self.prior_count, max_bits=12)
+        except RuntimeError:
+            return None  # Huff0 cannot serialize some uniform alphabets; store raw.
+
+    def _prepare_codebook(self, group, spec):
+        if not (self.enable_shared_codebooks or self.enable_packed_codebooks):
+            return None, b"", None
+        samples = group["samples"]
+        singleton = self._singleton_codebook(huff0.count_mixed_tokens(samples, b""))
+        if not self.enable_packed_codebooks or spec.exponent_stream is None:
+            return singleton, b"", None
+        pairs = np.zeros(65536, dtype=np.int64)
+        for sample in samples:
+            values = np.frombuffer(sample, dtype=np.uint8).astype(np.uint16)
+            pairs += np.bincount(values[:-1] | (values[1:] << 8), minlength=65536)
+        observed = np.flatnonzero(pairs)
+        order = np.argsort(-pairs[observed], kind="stable")
+        selected = np.sort(observed[order[:254]]).astype("<u2")
+        candidate_pairs = len(selected)
+        while len(selected):
+            vocab = selected.tobytes()
+            mixed = huff0.build_mixed_codebook(
+                huff0.count_mixed_tokens(samples, vocab), vocab, prior_count=self.prior_count,
+            )
+            lengths = np.frombuffer(mixed.codebook[4:], dtype=np.uint8).astype(np.uint16)
+            keep = lengths[256:] <= lengths[selected & 255] + lengths[selected >> 8]
+            if keep.all():
+                scores = self._compare_codebooks(group, spec, singleton, mixed, vocab)
+                scores.update(candidate_pairs=candidate_pairs, kept_pairs=len(selected))
+                return (mixed, vocab, scores) if scores["mode"] == "mixed_huffman" else (singleton, b"", scores)
+            selected = selected[keep]
+        return singleton, b"", None
+
+    def _compare_codebooks(self, group, spec, singleton, mixed, vocab):
+        # Spread four source chunks across the sample, preserving their boundaries.
+        available = group["samples"]
+        samples = [available[i] for i in np.linspace(0, len(available) - 1, min(4, len(available)), dtype=int)]
+        data = []
+        for sample in samples:
+            lanes = np.zeros(len(sample) * spec.element_size, dtype=np.uint8)
+            lanes[group["stream"]::spec.element_size] = np.frombuffer(sample, dtype=np.uint8)
+            raw = spec.reorder_bytes(lanes.tobytes(), restore=True)
+            data.append(np.frombuffer(raw, dtype=np.uint8))
+        options = (singleton, mixed)
+        modes = ("shared_huff0" if singleton is not None else "raw", "mixed_huffman")
+        specs = [tuple((raw, spec, group["stream"],
+                        _stream_chunk_size(self.chunk_size, spec.element_size),
+                        ({"kind": mode, "codebook": book, "codebook_id": 0} if book is not None
+                         else {"kind": "raw"},))
+                       for raw in data) for book, mode in zip(options, modes)]
+        timings = [[], []]
+        sizes = [0, 0]
+        used = [False, False]
+        for repeat in range(6):
+            for index in (0, 1) if repeat % 2 == 0 else (1, 0):
+                (output, groups), seconds = time_call(
+                    huff0.compress_direct_storage, specs[index], b"", threads=1,
+                    min_saving_bytes=self.min_saving_bytes, compression_threshold=self.compression_threshold,
+                )
+                if repeat:
+                    timings[index].append(seconds)
+                sizes[index] = sum(chunk[4] + CHUNK_METADATA_BYTES[chunk[0]]
+                                   for streams in groups for chunk in streams[group["stream"]])
+                used[index] = any(chunk[0] != "raw" for streams in groups for chunk in streams[group["stream"]])
+                del output
+        sampled = sum(map(len, samples))
+        for index, (book, mode, vocabulary) in enumerate(zip(options, modes, (b"", vocab))):
+            overhead = 0 if book is None or not used[index] else CodebookPayload(
+                0, group["stream"], spec.name, mode, book.codebook, vocab=vocabulary,
+            ).metadata_bytes
+            sizes[index] = sizes[index] * group["weight"] / sampled + overhead
+        times = tuple(map(median, timings))
+        # A 5% timing margin avoids choosing packing on a near-parity sample.
+        keep = sizes[1] < sizes[0] and times[1] < 0.95 * times[0]
+        return {"mode": "mixed_huffman" if keep else modes[0],
+                "singleton_bytes_estimate": sizes[0], "mixed_bytes_estimate": sizes[1],
+                "singleton_seconds": times[0], "mixed_seconds": times[1]}

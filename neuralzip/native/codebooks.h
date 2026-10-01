@@ -50,7 +50,7 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_header(
 
     auto codebook = std::make_unique<Huff0Codebook>();
     if (is_mixed_header(header, header_len)) {
-        codebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size);
+        codebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size, true);
         codebook->serialized.assign(header, header + header_len);
         return codebook;
     }
@@ -150,7 +150,7 @@ std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(
 
     auto decodebook = std::make_unique<Huff0Decodebook>();
     if (is_mixed_header(header, header_len)) {
-        decodebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size);
+        decodebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size, false);
         return decodebook;
     }
     decodebook->dtable_x1.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX - 1));

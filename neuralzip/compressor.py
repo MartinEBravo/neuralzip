@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -50,12 +51,8 @@ class NeuralZipCompressor:
 
     def decode(self, blob, metadata):
         codebooks, payloads = unpack_storage(blob, metadata)
-        previous = self._codebook_payload_by_id, self._decode_codebooks
-        try:
-            self.load_codebooks(codebooks)
-            tensors = self._decompress_tensors(payloads)
-        finally:
-            self._codebook_payload_by_id, self._decode_codebooks = previous
+        self.load_codebooks(codebooks)
+        tensors = self._decompress_tensors(payloads)
         return {payload.name: tensor for payload, tensor in zip(payloads, tensors, strict=True)}
 
     def _encode(self, named_tensors):
@@ -105,8 +102,16 @@ class NeuralZipCompressor:
         return tuple(self._codebook_payloads)
 
     def load_codebooks(self, codebooks):
-        self._codebook_payload_by_id = {book.codebook_id: book for book in codebooks}
-        self._decode_codebooks = {}
+        # Own only the small tables, not views retaining an entire checkpoint.
+        payloads = {book.codebook_id: replace(
+            book, codebook=bytes(book.codebook), vocab=bytes(book.vocab),
+        ) for book in codebooks}
+        previous = getattr(self, "_codebook_payload_by_id", {})
+        self._decode_codebooks = {
+            key: handle for key, handle in getattr(self, "_decode_codebooks", {}).items()
+            if previous[key] == payloads.get(key)
+        }
+        self._codebook_payload_by_id = payloads
 
     @staticmethod
     def _transfer_plan_key(name, tensor, stream_id):

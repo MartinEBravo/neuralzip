@@ -69,7 +69,8 @@ struct MixedHuffmanTable {
     std::vector<std::uint16_t> vocabulary;
     std::vector<std::uint16_t> pair_tokens;
     std::vector<Node> nodes;
-    std::array<std::uint32_t, 4096> fast{};
+    // Low 32 bits: up to four output bytes; then bit, byte and token counts.
+    std::vector<std::uint64_t> fast;
 };
 
 struct Huff0Codebook {

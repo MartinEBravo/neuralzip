@@ -131,19 +131,38 @@ Each chunk joins the nearest same-dtype exponent centroid within JS distance
 tables; chunks from different tensors can share them.
 
 For each cluster, up to 8 MiB of stream data are sampled without joining chunk
-boundaries. The setup selects up to 254 frequent adjacent exponent pairs and
-greedily parses pairs when matched, otherwise singletons. One Huffman alphabet
-contains all 256 singleton bytes plus the selected pairs, with pseudocount one.
-There are no sample encodes, competing-mode rankings, escape streams, or raw
-tails. At encode time, each chunk falls back to raw if its payload plus fragment
-record is not below 95% of its uncompressed stream size.
+boundaries. Singleton Huffman is the baseline. A mixed candidate starts with up
+to 254 frequent adjacent exponent pairs and greedily parses matched pairs,
+otherwise singletons. Pairs whose codes are longer than their two singleton
+codes are removed and the candidate is rebuilt until that condition holds.
+All singleton bytes remain encodable, with pseudocount one.
+
+During setup, the two encoders are compared on up to four chunks spread across the samples, using
+one worker, one warmup and five alternating measured repetitions. Mixed coding
+is kept only when its estimated cluster size, including table, vocabulary and
+fragment metadata, is smaller and its median encoding time is at least 5%
+lower. The choice is frozen; encode performs no fitting or benchmarking.
+`setup.packing_report` records the scores and selected modes. Calibration is
+hardware-dependent and is not a guarantee for unseen weights or full-model
+timings. Its cost is included in setup time.
+
+At encode time, each chunk falls back to raw if its payload plus fragment
+record is not below 95% of its uncompressed stream size. There are no escape
+streams or raw tails.
 
 Disable packing with `enable_packed_codebooks=False` for sharing-only, or sharing
-with `enable_shared_codebooks=False` for one mixed table per chunk. Disabling
+with `enable_shared_codebooks=False` for one selected table per chunk. Disabling
 both stores raw streams. Pair packing applies only to pure exponent lanes;
 FP16 currently retains its reversible byte layout and singleton-only coding.
 Singleton tables use upstream Zstd Huff0; mixed alphabets use the native
 canonical Huffman encoder with four independently delimited streams.
+Mixed encoding parses and writes in one pass. Its four stream boundaries may
+cross a source pair, but never split or restart its greedy tokenization.
+
+The decoder retains tables for matching codebook contents across calls, not
+just matching IDs. It owns copies of the small headers and vocabularies, not
+the checkpoint buffer. A fresh decoder still constructs tables from the archive;
+cold and repeated decoding should therefore be measured separately.
 
 Matching tensor names, dtypes, and element counts reuse frozen chunk assignments.
 For differently sized tensors, the setup also builds a singleton projection by

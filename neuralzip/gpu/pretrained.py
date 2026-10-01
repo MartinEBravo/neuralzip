@@ -22,7 +22,7 @@ from neuralzip.storage import _bytes_tensor
 from neuralzip.utils import _model_tensors, time_call
 
 FORMAT_NAME = "neuralzip"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 PREFIX = "__neuralzip__."
 STORAGE_DATA = f"{PREFIX}storage.data"
 STORAGE_METADATA = f"{PREFIX}storage.metadata"

@@ -11,8 +11,7 @@ reconstructed only when their transformer block runs.
 
 - Bitwise-exact weights in their loaded dtype during inference.
 - Optional precomputed global codebooks, declared per format in `dtypes.py`.
-- Full reusable setups with Jensen--Shannon clustering, histogram-based Huffman
-  mode selection, and packed exponent pairs.
+- Reusable chunk-level Jensen--Shannon clusters and adaptive pair/singleton Huffman.
 - Standard Hugging Face directories and Safetensors shards.
 - No NeuralZip-specific model loader or checkpoint export command.
 
@@ -121,24 +120,36 @@ setup = NeuralZipSetup.load("qwen-family.setup.pkl")
 The constructor only configures defaults. `build()` learns the setup, replaces
 any previous learned state, and returns the same instance. Saved setups contain
 configuration, codebooks, assignments, and timing results, not training samples
-or native handles. Call sites using removed constructor options must be updated;
-build a setup again to use the new selection policy. The compressed-file format
-is unchanged, so existing compressed checkpoints remain decodable.
+or native handles. Rebuild tensor-level setups for this algorithm. Storage format
+version 2 and HF checkpoint version 3 replace the old fixed-pair format;
+old setups and compressed checkpoints are not supported on this branch.
 
 The setup analyzes floating parameters and persistent floating buffers in the
-formats registered in `dtypes.py`. It clusters exponent distributions with
-Jensen--Shannon distance and estimates raw, shared-Huffman, and packed-pair sizes
-from histograms and code lengths, including codebook, vocabulary, escape, and
-chunk metadata costs. It does not run trial compressions.
+formats registered in `dtypes.py`. Source-weight chunks default to 256 KiB.
+Each chunk joins the nearest same-dtype exponent centroid within JS distance
+0.05, or starts a new cluster. Different chunks of one tensor can use different
+tables; chunks from different tensors can share them.
 
-Packed mode is enabled by default for pure exponent streams. It uses consecutive,
-non-overlapping pairs and up to 254 vocabulary entries, and requires an estimated
-size improvement of more than 2% over the better raw/shared candidate
-(`packed_min_gain=0.02`). The example above disables packed mode; omit that option
-to use the default. Actual encoding still checks each chunk and falls back to
-raw when compression does not meet its saving threshold. Native encoders cache a
-64 KiB pair-to-token lookup per packed-pair codebook; this table is derived from
-the vocabulary and is not stored in the compressed file.
+For each cluster, up to 8 MiB of stream data are sampled without joining chunk
+boundaries. The setup selects up to 254 frequent adjacent exponent pairs and
+greedily parses pairs when matched, otherwise singletons. One Huffman alphabet
+contains all 256 singleton bytes plus the selected pairs, with pseudocount one.
+There are no sample encodes, competing-mode rankings, escape streams, or raw
+tails. At encode time, each chunk falls back to raw if its payload plus fragment
+record is not below 95% of its uncompressed stream size.
+
+Disable packing with `enable_packed_codebooks=False` for sharing-only, or sharing
+with `enable_shared_codebooks=False` for one mixed table per chunk. Disabling
+both stores raw streams. Pair packing applies only to pure exponent lanes;
+FP16 currently retains its reversible byte layout and singleton-only coding.
+Singleton tables use upstream Zstd Huff0; mixed alphabets use the native
+canonical Huffman encoder with four independently delimited streams.
+
+Matching tensor names, dtypes, and element counts reuse frozen chunk assignments.
+For differently sized tensors, the setup also builds a singleton projection by
+pooling original source counts per tensor. This projection requires no target
+histogram or fitting, but discards chunk distinctions and pair packing. Unmapped
+tensors use compatible global codebooks or raw storage.
 
 Select the resulting object or file once in each inference process, then use
 Transformers normally:
@@ -150,16 +161,16 @@ model = AutoModelForCausalLM.from_pretrained("account/related-qwen-model")
 
 For GPU inference, the wrapper uses one compatible shared-Huffman byte stream
 per group, preferring a pure exponent stream when the layout provides one.
-Tensors absent from the setup, or assigned a storage-only mode, use an available
-global codebook or remain uncompressed. This lets a compatible setup transfer
-across related models without fitting again. Setup files use pickle and must
-come from a trusted source.
+It consumes the precomputed tensor-level singleton projection, not the mixed
+CPU representation; the existing CUDA kernel remains unchanged. Tensors absent
+from the setup use an available global codebook or remain uncompressed. Setup
+files use pickle and must come from a trusted source.
 
 ## Save and load
 
 Use the normal Hugging Face methods. Saving encodes every floating parameter and
 persistent floating buffer with the full storage codec. It preserves raw,
-shared-Huffman, and packed exponent modes in ordinary Safetensors shards, with
+singleton-Huffman, and mixed pair/singleton modes in ordinary Safetensors shards, with
 the small format marker and statistics in `config.json`.
 
 ```python
@@ -211,8 +222,8 @@ blob, metadata, sizes, seconds = compressor.encode(reference.named_parameters())
 restored = compressor.decode(blob, metadata)  # dictionary of named CPU tensors
 ```
 
-Pass an iterable of `(name, floating_tensor)` pairs. Encoding chooses the direct
-or general backend internally and returns the byte tensor, JSON-safe metadata,
+Pass an iterable of `(name, floating_tensor)` pairs. Encoding uses the native
+chunk job queue and returns the byte tensor, JSON-safe metadata,
 canonical size counts, and encoding time. The time includes encoding, assembly,
 and size accounting, but excludes codebook preparation and target mapping.
 Decode reads its codebooks from the checkpoint; a fresh `NeuralZipCompressor()`
@@ -226,8 +237,8 @@ compressor = NeuralZipCompressor(setup, threads=4, direct_batch_bytes=64 << 20)
 ```
 
 Defaults are `threads=0` (automatic) and `direct_batch_bytes=128 << 20` for
-the general-path encode/decode batch budget. Setup uses one `prior_count`
-(default `1`) to smooth every Huffman table, including packed-token tables.
+the decode batch budget. Setup uses one `prior_count`
+(default `1`) to smooth every Huffman table, including mixed-token tables.
 These execution options are no longer accepted by `NeuralZipSetup`, and
 `prior_count` replaces the separate `exponent_prior_count` option.
 

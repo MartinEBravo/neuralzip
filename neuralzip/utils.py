@@ -102,8 +102,6 @@ def jensen_shannon_distance(left, right):
     return float(np.sqrt(max(float(divergence), 0.0)))
 
 
-def _symbol_dtype(n):
-    return np.dtype("<u4" if n <= 4 else "<u8")
 
 
 def _stream_chunk_size(chunk_size, element_size):

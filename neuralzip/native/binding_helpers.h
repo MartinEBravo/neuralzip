@@ -82,25 +82,18 @@ nb::tuple build_codebook_from_counts(
         counts, static_cast<unsigned>(max_bits)));
 }
 
-nb::tuple build_codebook_from_header(nb::handle header_source) {
+nb::tuple build_codebook_from_header(nb::handle header_source, nb::handle vocab_source) {
     ReadOnlyBuffer header(header_source);
+    ReadOnlyBuffer vocab(vocab_source);
     return codebook_to_python(make_codebook_from_header(
-        header.data(), header.size()));
+        header.data(), header.size(), vocab.data(), vocab.size()));
 }
 
-void prepare_ngram_codebook(
-    nb::handle codebook_source,
-    nb::handle vocab_source,
-    int n) {
-    auto* codebook = capsule_data<Huff0Codebook>(
-        codebook_source, "neuralzip.Huff0Codebook");
-    prepare_ngram_vocab_lookup(*codebook, vocab_source, n);
-}
-
-nb::capsule build_decodebook(nb::handle header_source) {
+nb::capsule build_decodebook(nb::handle header_source, nb::handle vocab_source) {
     ReadOnlyBuffer header(header_source);
+    ReadOnlyBuffer vocab(vocab_source);
     auto decodebook = make_decodebook_from_header(
-        header.data(), header.size());
+        header.data(), header.size(), vocab.data(), vocab.size());
     Huff0Decodebook* native = decodebook.get();
     nb::capsule handle(native, "neuralzip.Huff0Decodebook", delete_capsule<Huff0Decodebook>);
     decodebook.release();

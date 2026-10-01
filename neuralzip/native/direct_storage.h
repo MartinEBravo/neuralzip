@@ -1,5 +1,12 @@
 constexpr std::size_t kSharedChunkMetadataBytes = 25;
 
+struct DirectStorageMode {
+    nb::object owner;
+    Huff0Codebook* codebook = nullptr;
+    MixedMode kind = MixedMode::Raw;
+    Py_ssize_t id = -1;
+};
+
 struct DirectStorageRequest {
     ReadOnlyBuffer raw;
     unsigned element_size = 0;
@@ -7,30 +14,14 @@ struct DirectStorageRequest {
     unsigned mantissa_bits = 0;
     unsigned exponent_bits = 0;
     unsigned stream_id = 0;
-    nb::object codebook_owner;
-    Huff0Codebook* codebook = nullptr;
-    MixedMode mode = MixedMode::Raw;
-    std::shared_ptr<const NGramVocabLookup> vocab_lookup;
-    int ngram_n = 1;
-    Py_ssize_t codebook_id = -1;
-    std::size_t chunk_size = 0;
-    std::size_t symbol_count = 0;
-    std::size_t symbol_offset = 0;
-    std::size_t raw_offset = 0;
-    std::size_t first_job = 0;
-    std::size_t job_count = 0;
+    std::vector<DirectStorageMode> modes;
+    std::size_t chunk_size = 0, symbol_count = 0;
+    std::size_t symbol_offset = 0, raw_offset = 0, first_job = 0, job_count = 0;
 };
 
 struct DirectStorageJob {
-    std::size_t request_index = 0;
-    std::size_t start = 0;
-    std::size_t length = 0;
-    std::size_t payload_size = 0;
-    std::size_t payload_offset = 0;
-    std::size_t escape_size = 0;
-    std::size_t escape_offset = 0;
-    std::size_t tail_size = 0;
-    std::size_t tail_offset = 0;
+    std::size_t request_index = 0, start = 0, length = 0;
+    std::size_t payload_size = 0, payload_offset = 0;
     MixedMode mode = MixedMode::Raw;
     std::string error;
 };
@@ -77,292 +68,143 @@ void extract_direct_streams(
     }
 }
 
-nb::tuple compress_direct_storage(
-    nb::handle tensor_source,
-    nb::handle prefix_source,
-    Py_ssize_t min_saving_bytes,
-    int requested_threads,
-    double compression_threshold) {
-    require<nb::value_error>(
-        min_saving_bytes >= 0 && requested_threads >= 0,
-        "min_saving_bytes and threads must be non-negative.");
-    require<nb::value_error>(
-        compression_threshold > 0.0 && compression_threshold <= 1.0,
-        "compression_threshold must be in (0, 1].");
 
+nb::tuple compress_direct_storage(nb::handle tensor_source, nb::handle prefix_source,
+    Py_ssize_t min_saving_bytes, int requested_threads, double compression_threshold) {
+    require<nb::value_error>(min_saving_bytes >= 0 && requested_threads >= 0,
+        "min_saving_bytes and threads must be non-negative.");
+    require<nb::value_error>(compression_threshold > 0 && compression_threshold <= 1,
+        "compression_threshold must be in (0, 1].");
     nb::tuple tensor_sequence(tensor_source);
     std::vector<DirectStorageRequest> requests(tensor_sequence.size());
     std::vector<DirectStorageJob> jobs;
-    std::size_t total_symbols = 0;
-    std::size_t total_input_bytes = 0;
-
-    for (std::size_t tensor_index = 0;
-         tensor_index < tensor_sequence.size();
-         ++tensor_index) {
-        nb::tuple item(nb::handle(tensor_sequence[tensor_index].ptr()));
-        require<nb::type_error>(
-            item.size() == 8,
-            "Each direct spec needs data, width, reorder, mantissa/exponent bits, "
-            "stream_id, chunk_size, and mode.");
-        DirectStorageRequest& request = requests[tensor_index];
+    std::size_t total_symbols = 0, total_input_bytes = 0;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        nb::tuple item(nb::handle(tensor_sequence[i].ptr()));
+        require<nb::type_error>(item.size() == 8, "Direct tensor spec must have eight fields.");
+        auto& request = requests[i];
         request.raw.acquire(nb::handle(item[0].ptr()));
         request.element_size = nb::cast<unsigned>(nb::handle(item[1].ptr()));
         request.bit_reorder = nb::cast<bool>(nb::handle(item[2].ptr()));
         request.mantissa_bits = nb::cast<unsigned>(nb::handle(item[3].ptr()));
         request.exponent_bits = nb::cast<unsigned>(nb::handle(item[4].ptr()));
         request.stream_id = nb::cast<unsigned>(nb::handle(item[5].ptr()));
-        require<nb::value_error>(
-            request.element_size == 2 || request.element_size == 4,
+        const auto chunk_size = nb::cast<Py_ssize_t>(nb::handle(item[6].ptr()));
+        require<nb::value_error>(request.element_size == 2 || request.element_size == 4,
             "Direct storage element_size must be 2 or 4.");
-        require<nb::value_error>(
-            request.mantissa_bits < 8U * request.element_size
-                && request.exponent_bits > 0
-                && request.exponent_bits < 8U * request.element_size
-                && request.mantissa_bits + request.exponent_bits + 1U
-                    == 8U * request.element_size,
+        require<nb::value_error>(request.mantissa_bits < 8U * request.element_size
+            && request.exponent_bits > 0 && request.exponent_bits < 8U * request.element_size
+            && request.mantissa_bits + request.exponent_bits + 1U == 8U * request.element_size,
             "Sign, exponent and mantissa fields must fill the element.");
-        require<nb::value_error>(
-            request.stream_id < request.element_size, "stream_id is out of range.");
-        require<nb::value_error>(
-            request.raw.size() >= 0 && request.raw.size() % request.element_size == 0,
+        require<nb::value_error>(request.stream_id < request.element_size && chunk_size > 0,
+            "Invalid selected stream or chunk size.");
+        require<nb::value_error>(request.raw.size() % request.element_size == 0,
             "Direct storage input must contain complete elements.");
-        const Py_ssize_t requested_chunk_size =
-            nb::cast<Py_ssize_t>(nb::handle(item[6].ptr()));
-        require<nb::value_error>(
-            requested_chunk_size > 0
-                && requested_chunk_size <= static_cast<Py_ssize_t>(kMaxBlockSize),
-            "Direct storage chunk_size must be in the Huff0 block range.");
-        request.chunk_size = static_cast<std::size_t>(requested_chunk_size);
-
-        nb::tuple mode(nb::handle(item[7].ptr()));
-        require<nb::type_error>(
-            mode.size() == 5,
-            "The direct stream mode must contain kind, codebook, id, "
-            "vocabulary, and ngram_n.");
-        const std::string kind = nb::cast<std::string>(nb::handle(mode[0].ptr()));
-        if (kind == "shared_huff0" || kind == "packed_huff0") {
-            request.codebook_owner = nb::borrow<nb::object>(
-                nb::handle(mode[1].ptr()));
-            request.codebook = capsule_data<Huff0Codebook>(
-                nb::handle(mode[1].ptr()), "neuralzip.Huff0Codebook");
-            request.codebook_id = nb::cast<Py_ssize_t>(nb::handle(mode[2].ptr()));
-            require<nb::value_error>(
-                request.codebook_id >= 0,
-                "Compressed direct mode requires a non-negative codebook id.");
-            if (kind == "packed_huff0") {
-                request.mode = MixedMode::PackedHuff0;
-                request.ngram_n = nb::cast<int>(nb::handle(mode[4].ptr()));
-                require<nb::value_error>(
-                    request.ngram_n >= 2 && request.ngram_n <= 8,
-                    "packed_huff0 requires ngram_n in [2, 8].");
-                request.vocab_lookup = prepare_ngram_vocab_lookup(
-                    *request.codebook, nb::handle(mode[3].ptr()), request.ngram_n);
-            } else {
-                request.mode = MixedMode::SharedHuff0;
-            }
-        } else {
-            require<nb::value_error>(
-                kind == "raw",
-                "Direct encode supports raw, shared_huff0, or packed_huff0.");
-        }
-
-        if (request.mode == MixedMode::PackedHuff0) {
-            const std::size_t n = static_cast<std::size_t>(request.ngram_n);
-            const std::size_t limit = std::min(
-                request.chunk_size, kMaxBlockSize * n);
-            request.chunk_size = std::max(n, (limit / n) * n);
-        }
-
-        request.symbol_count =
-            static_cast<std::size_t>(request.raw.size()) / request.element_size;
-        require<std::overflow_error>(
-            static_cast<std::size_t>(request.raw.size())
-                <= std::numeric_limits<std::size_t>::max() - total_input_bytes,
+        request.chunk_size = static_cast<std::size_t>(chunk_size);
+        request.symbol_count = static_cast<std::size_t>(request.raw.size()) / request.element_size;
+        const auto raw_size = static_cast<std::size_t>(request.raw.size());
+        require<std::overflow_error>(raw_size <= std::numeric_limits<std::size_t>::max() - total_input_bytes,
             "Total direct input size overflowed.");
         request.symbol_offset = total_symbols;
         request.raw_offset = total_input_bytes - total_symbols;
         total_symbols += request.symbol_count;
-        total_input_bytes += static_cast<std::size_t>(request.raw.size());
+        total_input_bytes += raw_size;
         request.first_job = jobs.size();
-        for (std::size_t start = 0;
-             start < request.symbol_count;
-             start += request.chunk_size) {
-            jobs.push_back({
-                tensor_index,
-                start,
-                std::min(request.chunk_size, request.symbol_count - start),
-            });
-        }
+        for (std::size_t start = 0; start < request.symbol_count; start += request.chunk_size)
+            jobs.push_back({i, start, std::min(request.chunk_size, request.symbol_count - start)});
         request.job_count = jobs.size() - request.first_job;
+        nb::tuple modes(nb::handle(item[7].ptr()));
+        require<nb::value_error>(modes.size() == request.job_count,
+            "Each source chunk needs exactly one frozen mode.");
+        request.modes.resize(modes.size());
+        for (std::size_t j = 0; j < modes.size(); ++j) {
+            nb::tuple source(nb::handle(modes[j].ptr()));
+            require<nb::type_error>(source.size() == 3, "Chunk mode needs kind, table, and id.");
+            auto& mode = request.modes[j];
+            const auto kind = nb::cast<std::string>(nb::handle(source[0].ptr()));
+            if (kind == "raw") continue;
+            require<nb::value_error>(kind == "shared_huff0" || kind == "mixed_huffman",
+                "Unsupported chunk encoding mode.");
+            mode.owner = nb::borrow<nb::object>(nb::handle(source[1].ptr()));
+            mode.codebook = capsule_data<Huff0Codebook>(nb::handle(source[1].ptr()), "neuralzip.Huff0Codebook");
+            mode.id = nb::cast<Py_ssize_t>(nb::handle(source[2].ptr()));
+            require<nb::value_error>(mode.id >= 0, "Compressed chunks need a codebook id.");
+            mode.kind = kind == "mixed_huffman" ? MixedMode::MixedHuffman : MixedMode::SharedHuff0;
+            require<nb::value_error>(static_cast<bool>(mode.codebook->mixed) == (kind == "mixed_huffman"),
+                "Codebook format does not match chunk mode.");
+        }
     }
-
     ReadOnlyBuffer prefix(prefix_source);
-    const std::size_t prefix_size = static_cast<std::size_t>(prefix.size());
-    require<std::overflow_error>(
-        total_input_bytes <= static_cast<std::size_t>(PY_SSIZE_T_MAX) - prefix_size,
+    const auto prefix_size = static_cast<std::size_t>(prefix.size());
+    require<std::overflow_error>(prefix_size <= static_cast<std::size_t>(PY_SSIZE_T_MAX)
+        && total_input_bytes <= static_cast<std::size_t>(PY_SSIZE_T_MAX) - prefix_size,
         "Direct output exceeds Python's buffer limit.");
-    const std::size_t staging_size = prefix_size + total_input_bytes;
-    PyObject* raw_output = PyByteArray_FromStringAndSize(
-        nullptr, static_cast<Py_ssize_t>(staging_size));
-    if (raw_output == nullptr) {
-        throw nb::python_error();
-    }
-    nb::object output = nb::steal<nb::object>(raw_output);
-    auto* output_data = reinterpret_cast<std::uint8_t*>(
-        PyByteArray_AsString(output.ptr()));
-    if (prefix_size > 0) {
-        std::memcpy(output_data, prefix.data(), prefix_size);
-    }
+    nb::bytearray output(static_cast<const void*>(nullptr), prefix_size + total_input_bytes);
+    auto* output_data = static_cast<std::uint8_t*>(output.data());
+    if (prefix_size) std::memcpy(output_data, prefix.data(), prefix_size);
     const std::size_t raw_base = prefix_size;
     const std::size_t selected_base = prefix_size + total_input_bytes - total_symbols;
-
     {
         nb::gil_scoped_release release;
-        run_parallel_jobs(
-            jobs.size(),
-            total_input_bytes,
-            requested_threads,
-            [&](std::size_t job_index) {
-                DirectStorageJob& job = jobs[job_index];
-                const DirectStorageRequest& request = requests[job.request_index];
-                try {
-                    std::uint8_t* __restrict selected_destination =
-                        output_data + selected_base + request.symbol_offset + job.start;
-                    thread_local std::vector<std::uint8_t> symbols;
-                    symbols.resize(job.length);
-                    const bool aligned = request.bit_reorder && request.exponent_bits == 8
-                        && request.stream_id == request.element_size - 1U;
-                    const auto extract = request.element_size == 2
-                        ? (aligned ? extract_direct_streams<2, true> : extract_direct_streams<2, false>)
-                        : (aligned ? extract_direct_streams<4, true> : extract_direct_streams<4, false>);
-                    extract(request, job, output_data + raw_base + request.raw_offset, symbols.data());
-
-                    job.payload_size = job.length;
-                    if (request.mode == MixedMode::SharedHuff0) {
-                        const std::size_t compressed_size = encode_huff0_block_into(
-                            symbols.data(),
-                            symbols.size(),
-                            *request.codebook,
-                            selected_destination,
-                            job.length,
-                            job.length);
-                        if (
-                            compressed_size > 0
-                            && compressed_size
-                                + static_cast<std::size_t>(min_saving_bytes)
-                                < job.length
-                            && static_cast<double>(kSharedChunkMetadataBytes)
-                                    + static_cast<double>(compressed_size)
-                                < static_cast<double>(job.length)
-                                    * compression_threshold) {
-                            job.mode = MixedMode::SharedHuff0;
-                            job.payload_size = compressed_size;
-                        }
-                    } else if (request.mode == MixedMode::PackedHuff0) {
-                        NGramBlockResult packed = encode_tokenized_ngram_block(
-                            tokenize_byte_group_stream_ngrams(
-                                symbols.data(),
-                                1,
-                                false,
-                                0,
-                                0,
-                                static_cast<Py_ssize_t>(job.length),
-                                request.ngram_n,
-                                *request.vocab_lookup),
-                            *request.codebook,
-                            min_saving_bytes,
-                            packed_output_budget(job.length, compression_threshold));
-                        const std::size_t packed_size = packed.payload.size()
-                            + packed.escapes.size() + packed.tail.size();
-                        if (
-                            !packed.payload.empty()
-                            && static_cast<double>(kPackedMetadataBytes)
-                                    + static_cast<double>(packed_size)
-                                < static_cast<double>(job.length)
-                                    * compression_threshold) {
-                            job.mode = MixedMode::PackedHuff0;
-                            job.payload_size = packed.payload.size();
-                            job.escape_size = packed.escapes.size();
-                            job.tail_size = packed.tail.size();
-                            std::uint8_t* destination = selected_destination;
-                            std::memcpy(
-                                destination,
-                                packed.payload.data(),
-                                packed.payload.size());
-                            destination += packed.payload.size();
-                            if (!packed.escapes.empty()) {
-                                std::memcpy(
-                                    destination,
-                                    packed.escapes.data(),
-                                    packed.escapes.size());
-                            }
-                            destination += packed.escapes.size();
-                            if (!packed.tail.empty()) {
-                                std::memcpy(
-                                    destination,
-                                    packed.tail.data(),
-                                    packed.tail.size());
-                            }
-                        }
-                    }
-                    if (job.mode == MixedMode::Raw && job.length > 0) {
-                        std::memcpy(
-                            selected_destination, symbols.data(), job.length);
-                    }
-                } catch (const std::exception& error) {
-                    job.error = error.what();
-                } catch (...) {
-                    job.error = "Unknown direct encoding failure.";
-                }
-            });
+        run_parallel_jobs(jobs.size(), total_input_bytes, requested_threads, [&](std::size_t j) {
+            auto& job = jobs[j];
+            const auto& request = requests[job.request_index];
+            const auto& mode = request.modes[j - request.first_job];
+            try {
+                auto* destination = output_data + selected_base + request.symbol_offset + job.start;
+                thread_local std::vector<std::uint8_t> symbols;
+                symbols.resize(job.length);
+                const bool aligned = request.bit_reorder && request.exponent_bits == 8
+                    && request.stream_id == request.element_size - 1U;
+                const auto extract = request.element_size == 2
+                    ? (aligned ? extract_direct_streams<2, true> : extract_direct_streams<2, false>)
+                    : (aligned ? extract_direct_streams<4, true> : extract_direct_streams<4, false>);
+                extract(request, job, output_data + raw_base + request.raw_offset, symbols.data());
+                job.payload_size = job.length;
+                const auto budget = static_cast<Py_ssize_t>(job.length * compression_threshold)
+                    - static_cast<Py_ssize_t>(kSharedChunkMetadataBytes);
+                std::size_t size = 0;
+                if (budget > 0 && mode.kind == MixedMode::SharedHuff0)
+                    size = encode_huff0_block_into(symbols.data(), symbols.size(), *mode.codebook,
+                        destination, job.length, static_cast<std::size_t>(budget));
+                else if (budget > 0 && mode.kind == MixedMode::MixedHuffman)
+                    size = encode_mixed_block_into(symbols.data(), symbols.size(), *mode.codebook->mixed,
+                        destination, static_cast<std::size_t>(budget));
+                if (size && size + static_cast<std::size_t>(min_saving_bytes) < job.length
+                    && size + kSharedChunkMetadataBytes < job.length * compression_threshold) {
+                    job.mode = mode.kind;
+                    job.payload_size = size;
+                } else if (job.length) std::memcpy(destination, symbols.data(), job.length);
+            } catch (const std::exception& error) { job.error = error.what(); }
+            catch (...) { job.error = "Unknown native encoding failure."; }
+        });
     }
-
-    for (const auto& job : jobs) {
-        if (!job.error.empty()) {
-            throw nb::value_error(job.error.c_str());
-        }
-    }
-
+    for (const auto& job : jobs)
+        if (!job.error.empty()) throw nb::value_error(job.error.c_str());
     std::size_t cursor = selected_base;
     for (auto& job : jobs) {
-        const DirectStorageRequest& request = requests[job.request_index];
-        const std::size_t source_offset = selected_base
-            + request.symbol_offset + job.start;
+        const auto& request = requests[job.request_index];
+        const auto source = selected_base + request.symbol_offset + job.start;
         job.payload_offset = cursor;
-        job.escape_offset = cursor + job.payload_size;
-        job.tail_offset = job.escape_offset + job.escape_size;
-        const std::size_t body_size =
-            job.payload_size + job.escape_size + job.tail_size;
-        std::memmove(
-            output_data + cursor,
-            output_data + source_offset,
-            body_size);
-        cursor += body_size;
+        std::memmove(output_data + cursor, output_data + source, job.payload_size);
+        cursor += job.payload_size;
     }
-    if (PyByteArray_Resize(output.ptr(), static_cast<Py_ssize_t>(cursor)) < 0) {
-        throw nb::python_error();
-    }
-
+    if (PyByteArray_Resize(output.ptr(), static_cast<Py_ssize_t>(cursor)) < 0) throw nb::python_error();
     nb::list tensor_groups;
     for (const auto& request : requests) {
         nb::list groups;
         for (unsigned lane = 0; lane < request.element_size; ++lane) {
             nb::list chunks;
-            for (std::size_t index = 0; index < request.job_count; ++index) {
-                const DirectStorageJob& job = jobs[request.first_job + index];
-                if (lane == request.stream_id) {
-                    chunks.append(nb::make_tuple(
-                        mixed_mode_name(job.mode), job.length,
-                        job.mode == MixedMode::Raw ? -1 : request.codebook_id,
-                        job.payload_offset, job.payload_size,
-                        job.escape_offset, job.escape_size, job.tail_offset, job.tail_size));
-                } else {
-                    chunks.append(nb::make_tuple(
-                        "raw", job.length, -1,
+            for (std::size_t j = 0; j < request.job_count; ++j) {
+                const auto& job = jobs[request.first_job + j];
+                if (lane == request.stream_id)
+                    chunks.append(nb::make_tuple(mixed_mode_name(job.mode), job.length,
+                        job.mode == MixedMode::Raw ? -1 : request.modes[j].id,
+                        job.payload_offset, job.payload_size));
+                else
+                    chunks.append(nb::make_tuple("raw", job.length, -1,
                         raw_base + request.raw_offset + job.start
-                            + (lane - (lane > request.stream_id)) * request.symbol_count,
-                        job.length, 0, 0, 0, 0));
-                }
+                            + (lane - (lane > request.stream_id)) * request.symbol_count, job.length));
             }
             groups.append(std::move(chunks));
         }

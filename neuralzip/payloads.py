@@ -4,11 +4,10 @@ from neuralzip.dtypes import DTYPES
 
 RAW_CHUNK_METADATA_BYTES = 17
 SHARED_CHUNK_METADATA_BYTES = 25
-PACKED_CHUNK_METADATA_BYTES = 41
 CHUNK_METADATA_BYTES = {
     "raw": RAW_CHUNK_METADATA_BYTES,
     "shared_huff0": SHARED_CHUNK_METADATA_BYTES,
-    "packed_huff0": PACKED_CHUNK_METADATA_BYTES,
+    "mixed_huffman": SHARED_CHUNK_METADATA_BYTES,
 }
 
 
@@ -67,7 +66,6 @@ class CodebookPayload:
     dtype: str
     mode: str = "shared_huff0"
     codebook: bytes | memoryview = b""
-    ngram_n: int = 1
     vocab: bytes | memoryview = b""
 
     @property
@@ -81,12 +79,10 @@ class StreamChunk:
     symbol_count: int
     payload: bytes | memoryview = b""
     codebook_id: int | None = None
-    escape_payload: bytes | memoryview = b""
-    tail_payload: bytes | memoryview = b""
 
     @property
     def payload_bytes(self):
-        return len(self.payload) + len(self.escape_payload) + len(self.tail_payload)
+        return len(self.payload)
 
     @property
     def metadata_bytes(self):
@@ -123,7 +119,6 @@ def _codebook_size(codebook):
         + 4
         + _text_size(codebook.dtype)
         + _text_size(codebook.mode)
-        + 1
         + _bytes_size(codebook.codebook)
         + _bytes_size(codebook.vocab)
     )
@@ -161,7 +156,7 @@ def storage_bytes(codebooks, tensors, blob_bytes):
             structural_bytes += 8 + metadata_bytes
             if stream == spec.exponent_stream:
                 exponent_compressed_bytes += metadata_bytes + sum(
-                    chunk["payload"][1] + chunk["escapes"][1] + chunk["tail"][1]
+                    chunk["payload"][1]
                     for chunk in group
                 )
     exponent_compressed_bytes += sum(

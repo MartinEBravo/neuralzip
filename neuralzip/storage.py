@@ -8,7 +8,7 @@ from neuralzip.payloads import (
     storage_bytes,
 )
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 def _bytes_tensor(data):
@@ -32,7 +32,6 @@ def _pack_codebooks(codebooks):
                 "stream": int(value.stream_id),
                 "dtype": str(value.dtype),
                 "mode": str(value.mode),
-                "ngram": int(value.ngram_n),
                 "codebook": [codebook_offset, len(value.codebook)],
                 "vocab": [vocab_offset, len(value.vocab)],
             }
@@ -40,54 +39,6 @@ def _pack_codebooks(codebooks):
     return prefix, codebook_metadata
 
 
-def pack_storage(codebooks, tensors):
-    """Pack the full storage codec into one byte tensor and JSON-safe metadata."""
-    data, codebook_metadata = _pack_codebooks(codebooks)
-
-    def append(value):
-        value = bytes(value)
-        span = [len(data), len(value)]
-        data.extend(value)
-        return span
-
-    tensor_metadata = []
-    for value in tensors:
-        groups = []
-        for group in value.groups:
-            chunks = []
-            for chunk in group.chunks:
-                chunks.append(
-                    {
-                        "mode": str(chunk.mode),
-                        "symbols": int(chunk.symbol_count),
-                        "codebook": (
-                            None
-                            if chunk.codebook_id is None
-                            else int(chunk.codebook_id)
-                        ),
-                        "payload": append(chunk.payload),
-                        "escapes": append(chunk.escape_payload),
-                        "tail": append(chunk.tail_payload),
-                    }
-                )
-            groups.append(chunks)
-        tensor_metadata.append(
-            {
-                "name": str(value.name),
-                "shape": [int(dimension) for dimension in value.shape],
-                "dtype": str(value.dtype),
-                "element_size": int(value.element_size),
-                "numel": int(value.numel),
-                "bit_reorder": int(value.bit_reorder),
-                "groups": groups,
-            }
-        )
-    metadata = {
-        "version": FORMAT_VERSION,
-        "codebooks": codebook_metadata,
-        "tensors": tensor_metadata,
-    }
-    return _bytes_tensor(data), metadata
 
 
 def unpack_storage(blob, metadata):
@@ -117,7 +68,6 @@ def unpack_storage(blob, metadata):
             dtype=value["dtype"],
             mode=value["mode"],
             codebook=take(value["codebook"]),
-            ngram_n=value["ngram"],
             vocab=take(value["vocab"]),
         )
         for value in metadata["codebooks"]
@@ -132,8 +82,6 @@ def unpack_storage(blob, metadata):
                         symbol_count=chunk["symbols"],
                         codebook_id=chunk["codebook"],
                         payload=take(chunk["payload"]),
-                        escape_payload=take(chunk["escapes"]),
-                        tail_payload=take(chunk["tail"]),
                     )
                     for chunk in group
                 )
@@ -181,24 +129,7 @@ def pack_direct_storage(
             "bit_reorder": int(config.bit_reorder),
         }
         encoded_groups = []
-        for stream, group in enumerate(groups):
-            if stream != spec[2] and group:
-                offset = group[0][3]
-                # Raw sibling lanes are contiguous, so rechunk only their spans.
-                group = [
-                    (
-                        "raw",
-                        min(spec[3], info["numel"] - start),
-                        -1,
-                        offset + start,
-                        min(spec[3], info["numel"] - start),
-                        0,
-                        0,
-                        0,
-                        0,
-                    )
-                    for start in range(0, info["numel"], spec[3])
-                ]
+        for group in groups:
             encoded_groups.append(
                 [
                     {
@@ -206,8 +137,6 @@ def pack_direct_storage(
                         "symbols": int(symbols),
                         "codebook": None if int(codebook_id) < 0 else int(codebook_id),
                         "payload": [int(offset), int(size)],
-                        "escapes": [int(escape_offset), int(escape_size)],
-                        "tail": [int(tail_offset), int(tail_size)],
                     }
                     for (
                         mode,
@@ -215,10 +144,6 @@ def pack_direct_storage(
                         codebook_id,
                         offset,
                         size,
-                        escape_offset,
-                        escape_size,
-                        tail_offset,
-                        tail_size,
                     ) in group
                 ]
             )
@@ -227,10 +152,9 @@ def pack_direct_storage(
         for info in tensors:
             for group in info["groups"]:
                 for chunk in group:
-                    for field in ("payload", "escapes", "tail"):
-                        span = chunk[field]
-                        if span[0] >= len(prefix):
-                            span[0] -= removed_prefix_bytes
+                    span = chunk["payload"]
+                    if span[0] >= len(prefix):
+                        span[0] -= removed_prefix_bytes
     blob = _bytes_tensor(packed)
     metadata = {
         "version": FORMAT_VERSION,

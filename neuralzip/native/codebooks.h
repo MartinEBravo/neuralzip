@@ -43,10 +43,17 @@ std::unique_ptr<Huff0Codebook> make_codebook_from_counts(
 
 std::unique_ptr<Huff0Codebook> make_codebook_from_header(
     const std::uint8_t* header,
-    Py_ssize_t header_len) {
+    Py_ssize_t header_len,
+    const std::uint8_t* vocab = nullptr,
+    std::size_t vocab_size = 0) {
     require(header_len > 0, "Huff0 codebook header is empty.");
 
     auto codebook = std::make_unique<Huff0Codebook>();
+    if (is_mixed_header(header, header_len)) {
+        codebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size);
+        codebook->serialized.assign(header, header + header_len);
+        return codebook;
+    }
     codebook->ctable.resize(HUF_CTABLE_SIZE_ST(kMaxSymbolValue));
     unsigned max_symbol_value = kMaxSymbolValue;
     unsigned has_zero_weights = 0;
@@ -74,6 +81,7 @@ ExportedCodeTable export_code_table_from_header(
     Py_ssize_t header_len,
     unsigned max_bits) {
     auto codebook = make_codebook_from_header(header, header_len);
+    require(!codebook->mixed, "GPU export requires a singleton Huff0 table.");
     require(
         max_bits > 0 && max_bits <= HUF_TABLELOG_ABSOLUTEMAX,
         "max_bits must be in [1, HUF_TABLELOG_ABSOLUTEMAX].");
@@ -102,42 +110,6 @@ ExportedCodeTable export_code_table_from_header(
     return output;
 }
 
-std::vector<std::uint8_t> encode_huff0_block(
-    const std::uint8_t* data,
-    Py_ssize_t data_len,
-    const Huff0Codebook& codebook,
-    std::size_t max_output_bytes) {
-    if (data_len <= 0 || static_cast<std::size_t>(data_len) > kMaxBlockSize) {
-        return {};
-    }
-    if (!codebook.covers_all_symbols) {
-        for (Py_ssize_t index = 0; index < data_len; ++index) {
-            if (HUF_getNbBitsFromCTable(codebook.ctable.data(), data[index]) == 0) {
-                return {};
-            }
-        }
-    }
-    const std::size_t capacity = HUF_compressBound(
-        static_cast<std::size_t>(data_len));
-    if (capacity == 0) {
-        return {};
-    }
-    std::vector<std::uint8_t> output(capacity);
-    const size_t size = HUF_compress4X_usingCTable(
-        output.data(), output.size(), data,
-        static_cast<std::size_t>(data_len), codebook.ctable.data(), kFlags);
-    if (HUF_isError(size)) {
-        if (max_output_bytes != std::numeric_limits<std::size_t>::max()) {
-            return {};
-        }
-        check_huf(size);
-    }
-    if (size == 0 || size > max_output_bytes) {
-        return {};
-    }
-    output.resize(size);
-    return output;
-}
 
 std::size_t encode_huff0_block_into(
     const std::uint8_t* data,
@@ -171,10 +143,16 @@ std::size_t encode_huff0_block_into(
 
 std::unique_ptr<Huff0Decodebook> make_decodebook_from_header(
     const std::uint8_t* header,
-    Py_ssize_t header_len) {
+    Py_ssize_t header_len,
+    const std::uint8_t* vocab = nullptr,
+    std::size_t vocab_size = 0) {
     require(header_len > 0, "Huff0 codebook header is empty.");
 
     auto decodebook = std::make_unique<Huff0Decodebook>();
+    if (is_mixed_header(header, header_len)) {
+        decodebook->mixed = make_mixed_table(header, header_len, vocab, vocab_size);
+        return decodebook;
+    }
     decodebook->dtable_x1.resize(HUF_DTABLE_SIZE(HUF_TABLELOG_MAX - 1));
     decodebook->dtable_x1[0] = static_cast<HUF_DTable>(
         (HUF_TABLELOG_MAX - 1) * 0x01000001U);

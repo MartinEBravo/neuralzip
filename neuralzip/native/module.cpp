@@ -24,13 +24,11 @@ namespace {
 namespace nb = nanobind;
 
 #include "common.h"
+#include "mixed_huffman.h"
 #include "codebooks.h"
 #include "gpu_layout.h"
-#include "ngrams.h"
-#include "mixed_encode.h"
 #include "binding_helpers.h"
 #include "direct_storage.h"
-#include "encode_queue.h"
 #include "decode_queue.h"
 
 }  // namespace
@@ -46,14 +44,16 @@ NB_MODULE(_huff0_cpp, module) {
         "Build a Huff0 codebook from a complete 256-bin histogram.");
     module.def(
         "build_codebook_from_header", &build_codebook_from_header,
+        nb::arg("codebook"), nb::arg("vocab") = nb::bytes("", 0),
         "Rebuild a Huff0 encoder table from its serialized header.");
     module.def(
         "build_decodebook", &build_decodebook,
+        nb::arg("codebook"), nb::arg("vocab") = nb::bytes("", 0),
         "Build a Huff0 decode table from a serialized codebook.");
     module.def(
-        "prepare_ngram_codebook", &prepare_ngram_codebook,
-        nb::arg("codebook"), nb::arg("vocab"), nb::arg("ngram_n"),
-        "Prepare and retain the vocabulary lookup used by a Huff0 encoder.");
+        "count_mixed_tokens", &count_mixed_tokens,
+        nb::arg("chunks"), nb::arg("vocab"),
+        "Count greedy pairs and singletons without crossing chunk boundaries.");
     module.def(
         "export_code_table", &export_code_table,
         nb::arg("codebook"),
@@ -71,13 +71,6 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("bytes_per_thread") = 8,
         nb::arg("threads_per_block") = 512,
         "Encode one byte lane with Huffman and preserve the other lanes raw.");
-    module.def(
-        "compress_mixed_streams_many", &compress_mixed_streams_many,
-        nb::arg("tensor_specs"),
-        nb::arg("min_saving_bytes") = 0,
-        nb::arg("threads") = 0,
-        nb::arg("compression_threshold") = 0.95,
-        "Encode many tensors with one mixed-stream Huff0 native job queue.");
     module.def(
         "compress_direct_storage", &compress_direct_storage,
         nb::arg("tensor_specs"),

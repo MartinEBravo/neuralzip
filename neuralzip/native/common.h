@@ -62,65 +62,33 @@ void require(bool condition, const char* message) { if (!condition) throw Error(
 template <nb::builtin_exception (*Error)(const char*)>
 void require(bool condition, const char* message) { if (!condition) throw Error(message); }
 
-struct NGramVocabLookup;
+struct MixedHuffmanTable {
+    struct Node { std::array<int, 2> children{-1, -1}; int symbol = -1; };
+    std::vector<std::uint8_t> lengths;
+    std::vector<std::uint64_t> codes;
+    std::vector<std::uint16_t> vocabulary;
+    std::vector<std::uint16_t> pair_tokens;
+    std::vector<Node> nodes;
+    std::array<std::uint32_t, 4096> fast{};
+};
 
 struct Huff0Codebook {
     std::vector<HUF_CElt> ctable;
     std::vector<std::uint8_t> serialized;
     bool covers_all_symbols = false;
-    std::shared_ptr<const NGramVocabLookup> ngram_lookup;
+    std::shared_ptr<const MixedHuffmanTable> mixed;
 };
 
 struct Huff0Decodebook {
     std::vector<HUF_DTable> dtable_x1;
     std::vector<HUF_DTable> dtable_x2;
-};
-
-struct NGramBlockResult {
-    std::vector<std::uint8_t> payload;
-    std::vector<std::uint8_t> escapes;
-    std::vector<std::uint8_t> tail;
-};
-
-struct NGramTokenization {
-    std::vector<std::uint8_t> tokens;
-    std::vector<std::uint8_t> escapes;
-    std::vector<std::uint8_t> tail;
+    std::shared_ptr<const MixedHuffmanTable> mixed;
 };
 
 enum class MixedMode {
     Raw,
     SharedHuff0,
-    PackedHuff0,
-};
-
-struct NGramVocabLookup {
-    int ngram_n = 1;
-    std::vector<std::uint8_t> vocabulary;
-    std::vector<std::uint64_t> keys;
-    // Token 255 is reserved for escapes, so it is also a safe empty-slot
-    // sentinel: valid vocabulary ids are always in [0, 254].
-    std::vector<std::uint8_t> tokens;
-    std::size_t mask = 0;
-};
-
-struct MixedStreamSpec {
-    MixedMode mode = MixedMode::Raw;
-    Huff0Codebook* codebook = nullptr;
-    nb::object codebook_owner;
-    std::shared_ptr<const NGramVocabLookup> vocab_lookup;
-    int ngram_n = 1;
-    std::size_t chunk_size = 0;
-};
-
-struct MixedBlockResult {
-    MixedMode mode = MixedMode::Raw;
-    std::vector<std::uint8_t> raw;
-    std::vector<std::uint8_t> payload;
-    std::vector<std::uint8_t> escapes;
-    std::vector<std::uint8_t> tail;
-    Py_ssize_t symbol_count = 0;
-    std::string error;
+    MixedHuffman,
 };
 
 struct MixedStreamDecodeChunk {
@@ -128,21 +96,26 @@ struct MixedStreamDecodeChunk {
     ReadOnlyBuffer payload;
     nb::object decodebook_owner;
     Huff0Decodebook* decodebook = nullptr;
-    std::vector<std::uint64_t> vocab;
-    ReadOnlyBuffer escapes;
-    ReadOnlyBuffer tail;
-    int ngram_n = 1;
-    std::size_t tensor_index = 0;
-    int stream = 0;
     std::size_t output_offset = 0;
     std::size_t symbol_count = 0;
-    std::string error;
 };
+
+template <typename T>
+void delete_capsule(void* pointer) noexcept { delete static_cast<T*>(pointer); }
+
+template <typename T>
+T* capsule_data(nb::handle source, const char* name) {
+    return static_cast<T*>(nb::borrow<nb::capsule>(source).data(name));
+}
+
+const char* mixed_mode_name(MixedMode mode) {
+    static constexpr const char* names[] = {"raw", "shared_huff0", "mixed_huffman"};
+    return names[static_cast<unsigned>(mode)];
+}
 
 struct MixedStreamDecodeTensor {
     int element_size = 0;
     bool bit_reorder = false;
-    std::vector<std::vector<std::uint8_t>> lanes;
     nb::object output;
     std::uint8_t* output_data = nullptr;
 };
@@ -155,11 +128,6 @@ struct MixedStreamAlignedDecodeJob {
     std::string error;
 };
 
-struct MixedStreamCombineJob {
-    std::size_t tensor_index = 0;
-    std::size_t start = 0;
-    std::size_t length = 0;
-};
 
 template <typename Worker>
 void run_parallel_jobs(
@@ -224,56 +192,6 @@ nb::bytes bytes_from_vector(const std::vector<std::uint8_t>& data) {
     return nb::bytes(data.data(), data.size());
 }
 
-inline std::uint8_t byte_group_stream_byte(
-    const std::uint8_t* raw,
-    int element_size,
-    bool bit_reorder,
-    int stream,
-    std::size_t position) {
-    std::size_t source = position * static_cast<std::size_t>(element_size);
-    if (!bit_reorder || stream < element_size - 2) {
-        return raw[source + static_cast<std::size_t>(stream)];
-    }
-    if (stream == element_size - 2) {
-        return static_cast<std::uint8_t>(
-            (raw[source + static_cast<std::size_t>(stream)] & 0x7FU)
-            | (raw[source + static_cast<std::size_t>(element_size - 1)] & 0x80U));
-    }
-    return static_cast<std::uint8_t>(
-        ((raw[source + static_cast<std::size_t>(element_size - 1)] << 1U) & 0xFEU)
-        | (raw[source + static_cast<std::size_t>(element_size - 2)] >> 7U));
-}
-
-void extract_byte_group_stream_block(
-    std::vector<std::uint8_t>& output,
-    const std::uint8_t* raw,
-    int element_size,
-    bool bit_reorder,
-    int stream,
-    std::size_t start,
-    std::size_t length) {
-    output.resize(length);
-    const std::size_t width = static_cast<std::size_t>(element_size);
-    const std::uint8_t* source = raw + start * width;
-    if (!bit_reorder || stream < element_size - 2) {
-        for (std::size_t offset = 0; offset < length; ++offset) {
-            output[offset] = source[
-                offset * width + static_cast<std::size_t>(stream)];
-        }
-        return;
-    }
-
-    const std::size_t penultimate = width - 2U;
-    const std::size_t last = width - 1U;
-    for (std::size_t offset = 0; offset < length; ++offset) {
-        const std::uint8_t* value = source + offset * width;
-        output[offset] = stream == element_size - 2
-            ? static_cast<std::uint8_t>(
-                  (value[penultimate] & 0x7FU) | (value[last] & 0x80U))
-            : static_cast<std::uint8_t>(
-                  ((value[last] << 1U) & 0xFEU) | (value[penultimate] >> 7U));
-    }
-}
 
 void restore_mixed_stream_chunk(
     const MixedStreamDecodeTensor& request,
@@ -334,23 +252,4 @@ void restore_mixed_stream_chunk(
         output[target + 3U] = static_cast<std::uint8_t>(
             (last >> 1U) | (penultimate & 0x80U));
     }
-}
-
-void restore_mixed_stream_tensor_range(
-    const MixedStreamDecodeTensor& request,
-    std::size_t start,
-    std::size_t length) {
-    if (length == 0) {
-        return;
-    }
-    std::array<const std::uint8_t*, 4> lanes{};
-    for (int stream = 0; stream < request.element_size; ++stream) {
-        lanes[static_cast<std::size_t>(stream)] = request.lanes[
-            static_cast<std::size_t>(stream)].data() + start;
-    }
-    restore_mixed_stream_chunk(request, lanes, start, length);
-}
-
-void release_vector(std::vector<std::uint8_t>& data) {
-    std::vector<std::uint8_t>().swap(data);
 }

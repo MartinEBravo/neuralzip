@@ -86,6 +86,16 @@ def check(rows):
                     or row.get("inference_ms") != median(samples)
                 ):
                     errors.append(f"{label}: invalid timing samples or median")
+                if row["method"] != "bf16":
+                    samples = row.get("decode_trials_ms", [])
+                    if (
+                        len(samples) != 5
+                        or not all(math.isfinite(s) and s > 0 for s in samples)
+                        or row.get("decode_ms") != median(samples)
+                    ):
+                        errors.append(
+                            f"{label}: invalid decoder-only samples or median"
+                        )
                 if row.get("protocol") != expected_protocol:
                     errors.append(f"{label}: protocol changed")
                 if (
@@ -232,6 +242,8 @@ def self_test():
                     inference_ms=1,
                     **dict.fromkeys(FLAGS, True),
                 )
+                if method != "bf16":
+                    row.update(decode_trials_ms=[0.2] * 5, decode_ms=0.2)
                 rows.append(row)
     assert check(rows)["passed"]
     assert not check(rows[:-1])["passed"]
@@ -246,6 +258,8 @@ def self_test():
         ("profiling_in_timing", True),
         ("functional_consumer_adapter", "unapproved"),
         ("functional_hook_targets", {"projection": "changed"}),
+        ("decode_trials_ms", []),
+        ("decode_ms", 0.3),
     ):
         altered = copy.deepcopy(rows)
         altered[-1][field] = value

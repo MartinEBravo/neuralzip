@@ -5,15 +5,15 @@ Only GPU runtime/decoding may change. CPU setup, codebooks, archives, compressed
 payloads, restart metadata, selected weights and model arithmetic stay frozen.
 Do not merge or update the paper from this experiment.
 
-Current status: **draft, incomplete**. Five models pass the first campaign's
-ten own/transfer comparisons, with unchanged allocation and exact results.
-SigLIP exposed a pre-existing functional-consumer hook problem in both the
-unchanged NeuralZip baseline and the DFloat11 control adapter. Martin approved
-the same general hook correction for both controls and candidate. Two new full
-campaigns use separately captured sources and keep the original records intact.
-See [RESULTS.md](RESULTS.md) for every completed measurement, the untimed
-diagnosis and preserved failure/measurement archives. No failed or missing
-control counts as passing.
+Current status: **acceptance passed**. All 24 own/transfer comparisons pass in
+two complete, independent campaigns. The worst latency is 1.026630× DFloat11;
+live and forward-peak allocation exactly match baseline and remain below BF16.
+Martin approved the same general functional-consumer hook correction for
+baseline, candidate and the DFloat11 control adapter. CPU setup, archives,
+payload/restart bytes, coverage and arithmetic remain unchanged.
+See [RESULTS.md](RESULTS.md) for every model's measurements, exact validation,
+reproduction commands and lossless raw evidence, including preserved failures.
+The PR may be marked ready; do not merge it or update Overleaf automatically.
 
 ## Inputs and environment
 

@@ -4,6 +4,41 @@ All **24 own/transfer comparisons** passed in **two complete independent campaig
 
 Shared-memory exponent-byte staging was sufficient. No output-count cache, prefix-width change, packing removal, decoded-weight retention, offload or fused matrix-multiplication redesign was added. CPU setup, codebooks, CPU archives, GPU payload/restart bytes, selected/compressed coverage and model arithmetic remain unchanged. The only additional production correction routes functional `MultiheadAttention.out_proj` decoding through its consuming attention module; Martin approved the same adapter for original-main NeuralZip and the DFloat11 control.
 
+## Matched Qwen BF16 / Packing Only follow-up
+
+Martin requested a fresh comparison after the isolated Qwen ablation appeared
+slightly faster than the earlier BF16 control. Four fresh processes now run
+BF16, Packing Only, Packing Only, BF16 on physical GPU 0, with the unchanged
+benchmark, pinned inputs, frozen setup and original timing protocol. These are
+additional controls; no historical record is overwritten.
+
+| Pair / order | BF16 ms | Packing Only ms | Packing slowdown |
+| --- | ---: | ---: | ---: |
+| 1 / BF16 then Packing | 39.944926 | 41.518792 | 3.9401% |
+| 2 / Packing then BF16 | 39.068771 | 41.201415 | 5.4587% |
+
+Packing Only is slower than the fresh BF16 baseline in both orders. The earlier
+apparent BF16 speedup does not reproduce in this matched follow-up. The paper
+uses the first pair consistently (39.94 and 41.52 ms), not the faster repeat.
+Only these two Qwen latency cells are replaced; CPU results, GPU allocations
+and other methods' measured latencies remain unchanged. Updating the BF16
+reference changes the table-derived own/BF16 latency range to 5.2--65.7%.
+
+All four controls pass bitwise weights/outputs and immutable-input checks.
+Sources, environment, frozen setup, payload/restart bytes and compressed
+coverage match the previous validated records. Packing live/peak allocation
+remains 1484759040/1548591104 bytes, below BF16's 1745055744/1808887808 bytes.
+The original six-model DFloat11 acceptance is unchanged.
+
+Lossless evidence: `evidence/qwen-paired-20261006/qwen-paired-metadata.tar.gz`,
+SHA256 `47d62a4c5b4ad61ff20a61f539575714cd39721eab200d6d7a3a99dedcd88a12`.
+It contains four original GPU JSONs, the validator/launcher, the original log
+and validation report. No weights, setup pickles or credentials are archived.
+Fresh BF16 output references remain on the server; both match byte-for-byte.
+The validator supports `--check-only` on that retained server directory.
+Independent local checks recompute both medians and ratios, bind the fresh
+BF16 record hashes and verify unchanged historical archives and identities.
+
 ## Frozen Sharing Only / Packing Only rerun
 
 Both isolated ablations now have two complete GPU runs: **48 fresh controls**,

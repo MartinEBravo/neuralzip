@@ -415,7 +415,7 @@ class NeuralZipRuntime:
                         + group.encoded.numel
                     ],
                     group.codebook.max_bits,
-                    0 if group.codebook.vocab or not group.codebook.max_bits else max(
+                    0 if not group.codebook.max_bits else max(
                         (right - left for left, right in pairwise(positions)),
                         default=0,
                     ),

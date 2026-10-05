@@ -99,7 +99,7 @@ __device__ __forceinline__ Word assemble_value(
     return static_cast<Word>(value);
 }
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, typename Entry>
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool StageSymbols, typename Entry>
 __device__ __forceinline__ uint32_t write_entry(
     const Entry entry,
     Word* __restrict__ buffer,
@@ -107,12 +107,20 @@ __device__ __forceinline__ uint32_t write_entry(
     uint32_t index,
     const uint32_t offset,
     const uint32_t end) {
-    buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-        entry & 255U, raw_streams, index);
+    if (StageSymbols) {
+        reinterpret_cast<uint8_t*>(buffer)[index - offset] = entry & 255U;
+    } else {
+        buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            entry & 255U, raw_streams, index);
+    }
     ++index;
     if (sizeof(Entry) == 4 && entry_count(entry) == 2U && index < end) {
-        buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-            (entry >> 8U) & 255U, raw_streams, index);
+        if (StageSymbols) {
+            reinterpret_cast<uint8_t*>(buffer)[index - offset] = (entry >> 8U) & 255U;
+        } else {
+            buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+                (entry >> 8U) & 255U, raw_streams, index);
+        }
         ++index;
     }
     return index;
@@ -166,7 +174,7 @@ __device__ __forceinline__ uint32_t exclusive_block_prefix(
     return warp_offsets[warp_id] + inclusive - value;
 }
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, typename Entry>
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, bool StageSymbols, typename Entry>
 __device__ __forceinline__ void decode_short_block(
     const Entry* __restrict__ lut,
     const int max_bits,
@@ -224,14 +232,14 @@ __device__ __forceinline__ void decode_short_block(
     }
     const uint32_t end_output_idx = static_cast<uint32_t>(requested_end);
 
-    // Pair expansion can exceed shared-memory capacity; write packed groups directly.
-    Word* write_buffer = Mixed ? outputs + write_offset : reinterpret_cast<Word*>(
-        shared_mem + static_cast<uint64_t>(warp_count) * sizeof(uint32_t));
+    // Stage only exponent bytes, not dense words. Large groups retain direct writes.
+    Word* write_buffer = StageSymbols ? reinterpret_cast<Word*>(
+        shared_mem + static_cast<uint64_t>(warp_count) * sizeof(uint32_t)) : outputs + write_offset;
     buffer = high << gap;
     free_bits = gap;
     while (free_bits < 32U && output_idx < end_output_idx) {
         const Entry entry = decode_lut_entry(lut, buffer, max_bits);
-        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId, StageSymbols>(
             entry, write_buffer, raw_streams, output_idx, write_offset, end_output_idx);
         buffer <<= entry_nbits(entry);
         free_bits += entry_nbits(entry);
@@ -241,22 +249,23 @@ __device__ __forceinline__ void decode_short_block(
     }
     while (output_idx < end_output_idx) {
         const Entry entry = decode_lut_entry(lut, buffer, max_bits);
-        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId, StageSymbols>(
             entry, write_buffer, raw_streams, output_idx, write_offset, end_output_idx);
         buffer <<= entry_nbits(entry);
     }
-    if (Mixed) return;
+    if (!StageSymbols) return;
     __syncthreads();
 
     const uint32_t block_output_count =
         block_end > write_offset ? block_end - write_offset : 0U;
     for (uint32_t index = THREAD_ID; index < block_output_count;
          index += N_THREADS) {
-        outputs[index + write_offset] = write_buffer[index];
+        outputs[index + write_offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            reinterpret_cast<uint8_t*>(write_buffer)[index], raw_streams, index + write_offset);
     }
 }
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool StageSymbols>
 __device__ __forceinline__ void decode_long_pairs_block(
     const uint32_t* __restrict__ lut,
     const int max_bits,
@@ -292,18 +301,26 @@ __device__ __forceinline__ void decode_long_pairs_block(
     uint32_t index = start + exclusive_block_prefix(count, reinterpret_cast<uint32_t*>(shared_mem));
     const uint32_t end = static_cast<uint32_t>(
         min(static_cast<uint64_t>(index) + count, static_cast<uint64_t>(block_end)));
+    Word* write_buffer = StageSymbols ? reinterpret_cast<Word*>(
+        shared_mem + ((N_THREADS + 31U) >> 5U) * sizeof(uint32_t)) : outputs + start;
     consumed = gap;
     while (index < end) {
         const uint32_t entry = decode_lut_entry(lut, peek_bits(high, low, consumed), max_bits);
-        index = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-            entry, outputs + start, raw_streams, index, start, end);
+        index = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId, StageSymbols>(
+            entry, write_buffer, raw_streams, index, start, end);
         consumed += entry_nbits(entry);
+    }
+    if (!StageSymbols) return;
+    __syncthreads();
+    for (uint32_t output = start + THREAD_ID; output < block_end; output += N_THREADS) {
+        outputs[output] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            reinterpret_cast<uint8_t*>(write_buffer)[output - start], raw_streams, output);
     }
 }
 
 }  // namespace
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, bool LongCodes>
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, bool LongCodes, bool StageSymbols>
 __global__ void decode_batched(
     const uint64_t* __restrict__ lut_ptrs,
     const uint64_t* __restrict__ code_ptrs,
@@ -349,15 +366,15 @@ __global__ void decode_batched(
                 codes[index], raw_streams, index);
         }
     } else if (!Mixed) {
-        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, false>(
+        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, false, StageSymbols>(
             reinterpret_cast<const uint16_t*>(lut_address), group_max_bits, codes,
             raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
     } else if (!LongCodes) {
-        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, true>(
+        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, true, StageSymbols>(
             reinterpret_cast<const uint32_t*>(lut_address), group_max_bits, codes,
             raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
     } else {
-        decode_long_pairs_block<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+        decode_long_pairs_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, StageSymbols>(
             reinterpret_cast<const uint32_t*>(lut_address), group_max_bits, codes,
             raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
     }

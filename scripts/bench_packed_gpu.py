@@ -12,6 +12,7 @@ import gc
 import hashlib
 import json
 import os
+import subprocess
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -207,6 +208,25 @@ def decode_many(calls):
         call()
 
 
+def check_exclusive_gpu(gpu):
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "-i",
+            str(gpu),
+            "--query-compute-apps=pid",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    pids = {int(value) for value in result.stdout.split()}
+    assert not pids - {os.getpid()}, (
+        "Another GPU job started; this control is not valid"
+    )
+
+
 @torch.inference_mode()
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -219,8 +239,12 @@ def main():
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--gpu", type=int, choices=(0, 1), default=1)
     args = parser.parse_args()
-    assert os.environ.get("CUDA_VISIBLE_DEVICES") == "1", "Use physical GPU 1 only"
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") == str(args.gpu), (
+        "Physical GPU selection differs"
+    )
+    PROTOCOL["physical_gpu"] = args.gpu
     assert (args.variant == "control") == (args.method in ("bf16", "dfloat11"))
     destination = (
         args.output / args.campaign / f"{args.model}-{args.variant}-{args.method}.json"
@@ -429,9 +453,11 @@ def main():
     torch.cuda.reset_peak_memory_stats()
     trials = []
     for _ in range(PROTOCOL["trials"]):
+        check_exclusive_gpu(args.gpu)
         torch.cuda.synchronize()
         _, seconds = time_call(forward_many, model, inputs)
         trials.append(seconds * 1000 / PROTOCOL["forwards_per_trial"])
+        check_exclusive_gpu(args.gpu)
     row.update(
         inference_trials_ms=trials,
         inference_ms=median(trials),

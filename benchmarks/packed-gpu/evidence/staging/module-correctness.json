@@ -1,0 +1,63 @@
+{
+  "resnet18": {
+    "candidates": 21,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 21,
+    "packed_chunks": 97
+  },
+  "convnext_tiny": {
+    "candidates": 59,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 59,
+    "packed_chunks": 254
+  },
+  "efficientnet_b0": {
+    "candidates": 82,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 77,
+    "packed_chunks": 64
+  },
+  "conv2d": {
+    "candidates": 1,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 1,
+    "packed_chunks": 0
+  },
+  "sequential": {
+    "candidates": 2,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 1,
+    "packed_chunks": 0
+  },
+  "nested": {
+    "candidates": 5,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 3,
+    "packed_chunks": 0
+  },
+  "gpt2": {
+    "candidates": 8,
+    "discovery": true,
+    "weights_bitwise": true,
+    "outputs_bitwise": true,
+    "compressed": 8,
+    "packed_chunks": 0
+  },
+  "_runtime_sha256": {
+    "gpu/inference.py": "a82371273672f827f1d75a9c3be857c710a69149cf03ea358af2ce47239d539c",
+    "gpu/decoder.py": "473737d8c1b0cec0c86cf25ce96fe9a150220a33daf9e118552bbe9c1a0498bd",
+    "gpu/cuda/decode.cu": "4dd6e493f60ab77143444c7afcddc819164fca424966a267a55b0fa8d57d51ff"
+  }
+}

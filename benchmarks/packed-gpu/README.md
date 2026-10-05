@@ -7,8 +7,11 @@ Do not merge or update the paper from this experiment.
 
 ## Inputs and environment
 
-On `multi_vm`, use physical GPU **1** only. Wait for other compute jobs to finish;
-never signal them or use GPU 0. Use separate immutable baseline/candidate source
+On `multi_vm`, select one physical GPU explicitly with `--gpu`. The original
+plan selected GPU 1; Martin subsequently authorized GPU **0** and releasing
+his idle Jupyter kernel's GPU memory. The experiment uses GPU 0 throughout.
+The launcher never signals another process and waits if the selected GPU is
+occupied. Use separate immutable baseline/candidate source
 captures, the existing native extension, and the same installed dependencies.
 Do not run historical launch/recovery scripts: some suspend unrelated queues.
 
@@ -56,7 +59,7 @@ separately from reservation; validation references remain on CPU. Every
 compressed weight is reconstructed on each forward. Runtime descriptor and
 additional metadata allocations are included in CUDA memory measurements.
 
-`python scripts/check_packed_gpu_results.py "$OUTPUT"` exits nonzero unless
+`python scripts/check_packed_gpu_results.py "$OUTPUT" --baseline-cpu "$BASELINE_CPU_JSON"` exits nonzero unless
 all **24 comparisons** (12 own/transfer comparisons in each of two campaigns)
 meet: candidate latency ≤1.10× DFloat11; candidate live and peak allocation
 ≤1.05× unchanged NeuralZip and each below BF16; exact weights/outputs, frozen
@@ -66,3 +69,12 @@ identical weight coverage, identical versions across campaigns.
 Run the CUDA correctness script and existing supported-module/save-reload
 checks before campaigns. CPU archive identity is checked against the baseline
 fixture, not inferred from a latency improvement. A speedup alone is not a pass.
+
+`scripts/run_packed_gpu_campaign.py` runs the edge/module checks and a serial
+three-model pilot (`--phase pilot`), or both full campaigns (`--phase campaigns`).
+Use it in tmux `kt` with explicit baseline/candidate, data, input, official
+DFloat11, dependency and HF-cache paths. It holds a lock to prevent duplicate
+launches and checks device occupancy before each subprocess. The benchmark
+also rejects another process appearing during a timed control. Source captures
+are immutable: use a new candidate directory for each optimization, not an
+in-place edit of a running experiment. Measurements are never overwritten.

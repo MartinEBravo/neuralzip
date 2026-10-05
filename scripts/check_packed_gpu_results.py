@@ -49,6 +49,10 @@ def check(rows):
         "trials": 5,
         "forwards_per_trial": 50,
     }
+    if rows:
+        expected_protocol["physical_gpu"] = rows[0]["protocol"]["physical_gpu"]
+        if expected_protocol["physical_gpu"] not in (0, 1):
+            errors.append("Invalid physical GPU")
     for campaign in ("1", "2"):
         for model in MODELS:
             keys = [
@@ -246,6 +250,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--baseline-cpu", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -258,6 +263,73 @@ def main():
         for p in sorted((args.root / c).glob("*.json"))
     ]
     result = check(rows)
+    proof_paths = (
+        args.root / "correctness.json",
+        args.root / "module-correctness.json",
+    )
+    if (
+        not args.baseline_cpu
+        or not args.baseline_cpu.exists()
+        or not all(p.exists() for p in proof_paths)
+    ):
+        result["errors"].append(
+            "Missing independent CPU archive, CUDA edge-case or supported-module proof"
+        )
+    else:
+        baseline = json.loads(args.baseline_cpu.read_text())
+        proof, modules = (json.loads(p.read_text()) for p in proof_paths)
+        if proof["cpu"] != baseline["cpu"] or set(proof["cpu"]) != {
+            "float16",
+            "bfloat16",
+            "float32",
+        }:
+            result["errors"].append("CPU archives are not byte-identical")
+        segments = proof["gpu"].get("segment_boundaries", {})
+        if segments.get("code_bits") != [12, 32, 33, 56] or not all(
+            segments.get(f) is True
+            for f in ("bitwise", "odd_tails", "staged_and_direct")
+        ):
+            result["errors"].append("Missing long-code/tail/direct-fallback coverage")
+        wrapper = proof["gpu"].get("public_hf_wrapper", {})
+        if not all(
+            wrapper.get(f) is True
+            for f in (
+                "packed",
+                "ordinary_load",
+                "compressed_reload",
+                "weights_bitwise",
+                "output_bitwise",
+            )
+        ):
+            result["errors"].append("Compressed public save/reload failed")
+        for name in (
+            "resnet18",
+            "convnext_tiny",
+            "efficientnet_b0",
+            "conv2d",
+            "sequential",
+            "nested",
+            "gpt2",
+        ):
+            if not all(
+                modules.get(name, {}).get(f) is True
+                for f in ("discovery", "weights_bitwise", "outputs_bitwise")
+            ):
+                result["errors"].append(f"Missing supported-module proof: {name}")
+        for row in rows:
+            if row["variant"] == "candidate":
+                if any(
+                    row["source_hashes"].get(n) != h
+                    for n, h in proof["runtime_sha256"].items()
+                ):
+                    result["errors"].append(
+                        "CUDA proof did not test the measured candidate"
+                    )
+                if modules["_runtime_sha256"] != proof["runtime_sha256"]:
+                    result["errors"].append(
+                        "Module proof did not test the measured candidate"
+                    )
+    result["passed"] = result["passed"] and not result["errors"]
     print(json.dumps(result, indent=2))
     raise SystemExit(0 if result["passed"] else 1)
 

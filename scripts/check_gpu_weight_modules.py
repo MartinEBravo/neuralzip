@@ -52,8 +52,8 @@ class Nested(nn.Module):
 class FunctionalAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        self.before = nn.Linear(32, 32)
-        self.attention = nn.MultiheadAttention(32, 4, batch_first=True)
+        self.before = nn.Linear(256, 256)
+        self.attention = nn.MultiheadAttention(256, 4, batch_first=True)
 
     def forward(self, inputs):
         inputs = self.before(inputs)
@@ -211,7 +211,7 @@ def main():
     rows["multihead_attention"] = check(
         "multihead_attention",
         FunctionalAttention(),
-        {"inputs": torch.randn(1, 17, 32)},
+        {"inputs": torch.randn(1, 17, 256)},
         args.cuda,
     )
     rows["gpt2"] = check(

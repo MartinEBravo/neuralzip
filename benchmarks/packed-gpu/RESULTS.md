@@ -4,6 +4,22 @@ PR #18 remains draft. Shared-memory exponent-byte staging is implemented, but
 the required two complete, independent six-model campaigns have **not** passed.
 This report is a first-campaign result, not final acceptance.
 
+## Approved functional-consumer correction
+
+The candidate now hooks `MultiheadAttention.out_proj` decoding on its consuming
+attention module. The benchmark applies that same adapter to original-main
+NeuralZip and the official DFloat11 integration, preserving both original
+source captures. The adapter identity is recorded in every new control and
+required by the acceptance checker. No original measurement is replaced.
+
+The separate `staging-functional` CUDA and module proofs pass, including a
+packed functional projection checked at use with poisoned shared storage and
+an existing user hook. CPU archives match the original baseline byte-for-byte.
+The first small regression fixture did not select packing; that failed
+untimed check is preserved remotely. Enlarging the fixture exercises the
+unchanged setup's packed route. Production code and setup rules were not
+changed for that test adjustment. Two fresh full campaigns are in progress.
+
 ## First campaign
 
 Physical GPU 0, NVIDIA RTX A5500. Baseline decoder: main

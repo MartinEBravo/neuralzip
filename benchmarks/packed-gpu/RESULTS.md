@@ -72,9 +72,8 @@ library source, codec, kernel, codebook, payload, arithmetic, frozen setup or
 published result was changed. The general correction would use module type,
 not model-name-specific shortcuts.
 
-Because accepting this correction in the **baseline control** adjusts the
-explicit unchanged-baseline boundary, it requires Martin's approval before
-implementation and two fresh full campaigns. The baseline source captures,
+Martin approved applying the same general correction to the **baseline control**,
+DFloat11 adapter and candidate, then running two fresh full campaigns. The baseline source captures,
 first-campaign measurements and failure history remain preserved. Do not treat
 these diagnostics or the three-model pilots as acceptance campaigns, mark the
 PR ready, merge it or edit Overleaf.
@@ -103,7 +102,7 @@ cd benchmarks/packed-gpu/evidence/staging
 shasum -a 256 -c first-campaign-incomplete.sha256
 unzip -n first-campaign-incomplete.zip
 cd ../../../..
-python scripts/check_packed_gpu_results.py benchmarks/packed-gpu/evidence/staging \\
+python scripts/check_packed_gpu_results.py benchmarks/packed-gpu/evidence/staging \
   --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
 ```
 

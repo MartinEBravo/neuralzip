@@ -21,6 +21,7 @@ IDENTITY = (
     "cuda_version",
     "cupy_version",
     "runner_sha256",
+    "functional_consumer_adapter",
     "exporter_ast_sha256",
 )
 FLAGS = (
@@ -87,6 +88,11 @@ def check(rows):
                     errors.append(f"{label}: invalid timing samples or median")
                 if row.get("protocol") != expected_protocol:
                     errors.append(f"{label}: protocol changed")
+                if (
+                    row.get("functional_consumer_adapter")
+                    != "multihead-attention-out-proj-v1"
+                ):
+                    errors.append(f"{label}: functional-consumer adapter changed")
                 if any(
                     row.get(field) != bf16.get(field) or field not in row
                     for field in IDENTITY
@@ -102,6 +108,7 @@ def check(rows):
                     "compressed_names",
                     "packed_chunks",
                     "groups",
+                    "functional_hook_targets",
                 )
                 if any(
                     candidate.get(f) != baseline.get(f) or f not in candidate
@@ -216,6 +223,8 @@ def self_test():
                     compressed_names=["weight"],
                     packed_chunks=1,
                     groups=1,
+                    functional_hook_targets={},
+                    functional_consumer_adapter="multihead-attention-out-proj-v1",
                     profiling_in_timing=False,
                     allocated_gpu_bytes=200 if method == "bf16" else 100,
                     peak_gpu_bytes=220 if method == "bf16" else 120,
@@ -235,6 +244,8 @@ def self_test():
         ("output_bitwise", False),
         ("forward_input_sha256", "changed"),
         ("profiling_in_timing", True),
+        ("functional_consumer_adapter", "unapproved"),
+        ("functional_hook_targets", {"projection": "changed"}),
     ):
         altered = copy.deepcopy(rows)
         altered[-1][field] = value
@@ -310,12 +321,20 @@ def main():
             "sequential",
             "nested",
             "gpt2",
+            "multihead_attention",
         ):
             if not all(
                 modules.get(name, {}).get(f) is True
                 for f in ("discovery", "weights_bitwise", "outputs_bitwise")
             ):
                 result["errors"].append(f"Missing supported-module proof: {name}")
+        if (
+            modules.get("multihead_attention", {}).get("functional_consumer_bitwise")
+            is not True
+        ):
+            result["errors"].append(
+                "Missing packed functional-consumer regression proof"
+            )
         for row in rows:
             if row["variant"] == "candidate":
                 if any(

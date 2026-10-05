@@ -47,6 +47,7 @@ PROTOCOL = {
     "trials": 5,
     "forwards_per_trial": 50,
 }
+FUNCTIONAL_ADAPTER = "multihead-attention-out-proj-v1"
 
 
 def sha(data):
@@ -112,6 +113,34 @@ def export_identity(exported):
     return sha(
         json.dumps({"groups": groups, "bindings": bindings}, sort_keys=True).encode()
     )
+
+
+def decode_hook_module(model, block_name):
+    """Same approved functional-consumer adapter for every compressed control."""
+    parent_name, _, child_name = block_name.rpartition(".")
+    parent = model.get_submodule(parent_name)
+    if child_name == "out_proj" and isinstance(parent, torch.nn.MultiheadAttention):
+        return parent
+    return model.get_submodule(block_name)
+
+
+def correct_functional_hooks(runtime):
+    targets = {}
+    for index, block_name in enumerate(runtime.export.block_order):
+        block = runtime.model.get_submodule(block_name)
+        target = decode_hook_module(runtime.model, block_name)
+        if target is not block:
+            # Remove only this runtime's own hook, not pre-existing user hooks.
+            runtime._hook_handles[index].remove()
+            runtime._hook_handles[index] = target.register_forward_pre_hook(
+                partial(runtime._decode_block, block_name), prepend=True
+            )
+            targets[block_name] = block_name.rpartition(".")[0]
+    return targets
+
+
+def decode_functional_dfloat(block, _consumer, args):
+    decode_dfloat(block, args)
 
 
 def decode_dfloat(block, _args):
@@ -192,7 +221,13 @@ def attach_dfloat(model, candidates):
         block.weight_shapes = [tuple(m.parameter.shape) for m in members]
         for module in block.weight_injection_modules:
             delattr(module, "weight")
-        block.register_forward_pre_hook(decode_dfloat)
+        target = decode_hook_module(model, name)
+        hook = (
+            decode_dfloat
+            if target is block
+            else partial(decode_functional_dfloat, block)
+        )
+        target.register_forward_pre_hook(hook, prepend=True)
         hooks.append(partial(decode_dfloat, block, ()))
     return hooks, fallback
 
@@ -307,6 +342,7 @@ def main():
         "ignored_checkpoint_keys": list(ignored),
         "source_hashes": source_hashes(),
         "runner_sha256": sha(Path(__file__).read_bytes()),
+        "functional_consumer_adapter": FUNCTIONAL_ADAPTER,
         "reference_sha256": REFERENCE_SHA,
         "official_commit": OFFICIAL_COMMIT,
         "official_sha256": OFFICIAL_SHA,
@@ -366,6 +402,7 @@ def main():
             groups=len(exported.groups),
         )
         runtime = inference.NeuralZipRuntime.attach(model, exported, device="cuda:0")
+        row["functional_hook_targets"] = correct_functional_hooks(runtime)
         for workspace in runtime.workspaces.values():
             workspace.view(torch.uint8).fill_(0xA5)
         for name, actual in runtime.materialized_weights():

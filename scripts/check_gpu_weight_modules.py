@@ -49,6 +49,17 @@ class Nested(nn.Module):
         return inputs
 
 
+class FunctionalAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.before = nn.Linear(32, 32)
+        self.attention = nn.MultiheadAttention(32, 4, batch_first=True)
+
+    def forward(self, inputs):
+        inputs = self.before(inputs)
+        return self.attention(inputs, inputs, inputs, need_weights=False)[0]
+
+
 def exact(left, right):
     return (
         left.shape == right.shape
@@ -63,12 +74,14 @@ def exact(left, right):
 @torch.inference_mode()
 def check(name, model, inputs, cuda):
     model = model.eval().bfloat16()
-    if name in ("conv2d", "sequential", "nested"):
-        for module in model.modules():
+    if name in ("conv2d", "sequential", "nested", "multihead_attention"):
+        for index, module in enumerate(model.modules(), 1):
             if isinstance(module, (nn.Linear, nn.Conv2d)):
                 pattern = torch.tensor(
                     [0.03125, 0.03125, -0.0625, -0.0625], dtype=torch.bfloat16
                 )
+                if name == "multihead_attention":
+                    pattern *= index  # Different blocks must overwrite shared storage.
                 module.weight.copy_(
                     pattern.repeat((module.weight.numel() + 3) // 4)[
                         : module.weight.numel()
@@ -105,9 +118,28 @@ def check(name, model, inputs, cuda):
         output = reference(**inputs)
         output = (output if isinstance(output, torch.Tensor) else output.logits).cpu()
         del reference
+        uses = []
+        if name == "multihead_attention":
+
+            def check_projection(consumer, _args):
+                assert exact(
+                    consumer.out_proj.weight, expected["attention.out_proj.weight"]
+                )
+                uses.append(True)
+
+            def reject_child_forward(_module, _args):
+                raise AssertionError("The projection must be consumed functionally")
+
+            model.attention.register_forward_pre_hook(check_projection)
+            model.attention.out_proj.register_forward_pre_hook(reject_child_forward)
         setup = NeuralZipSetup().build(model)
         exported = export_model_for_gpu(model, setup)
         assert exported.groups, name
+        if name == "multihead_attention":
+            assert any(
+                g.block_name == "attention.out_proj" and g.codebook.vocab
+                for g in exported.groups
+            ), "Functional projection must remain packed, not excluded"
         for binding in exported.bindings:
             assert _binding_module(model, binding).weight.shape == binding.shape
         runtime = NeuralZipRuntime.attach(model, exported, device="cuda:0")
@@ -132,6 +164,9 @@ def check(name, model, inputs, cuda):
             compressed=len(restored),
             packed_chunks=sum(bool(group.codebook.vocab) for group in exported.groups),
         )
+        if name == "multihead_attention":
+            assert len(uses) == 2
+            row["functional_consumer_bitwise"] = True
     print(json.dumps({name: row}), flush=True)
     return row
 
@@ -172,6 +207,12 @@ def main():
     )
     rows["nested"] = check(
         "nested", Nested(), {"inputs": torch.randn(1, 32, 16, 16)}, args.cuda
+    )
+    rows["multihead_attention"] = check(
+        "multihead_attention",
+        FunctionalAttention(),
+        {"inputs": torch.randn(1, 17, 32)},
+        args.cuda,
     )
     rows["gpt2"] = check(
         "gpt2",

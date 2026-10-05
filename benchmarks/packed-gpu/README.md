@@ -8,8 +8,9 @@ Do not merge or update the paper from this experiment.
 Current status: **draft, incomplete**. Five models pass the first campaign's
 ten own/transfer comparisons, with unchanged allocation and exact results.
 SigLIP exposed a pre-existing functional-consumer hook problem in both the
-unchanged NeuralZip baseline and the DFloat11 control adapter. Correcting that
-baseline-control boundary needs approval before two new full campaigns.
+unchanged NeuralZip baseline and the DFloat11 control adapter. Martin approved
+the same general hook correction for both controls and candidate. Two new full
+campaigns use separately captured sources and keep the original records intact.
 See [RESULTS.md](RESULTS.md) for every completed measurement, the untimed
 diagnosis and preserved failure/measurement archives. No failed or missing
 control counts as passing.
@@ -38,7 +39,10 @@ checks and deterministic inputs. Its SHA256 is checked by the benchmark, as are
 the official DFloat11 Python, encoder, CUDA source and PTX files. The official
 source corresponds to commit `457733886ce6ebc6d8dda1621fad1ffa2661e028`.
 The harness changes only the DFloat11 injection adapter to restore original
-Linear/Conv2d/Conv1D shapes; its codec and kernel are untouched. Any genuine
+Linear/Conv2d/Conv1D shapes and hook functional MultiheadAttention projections
+on their consuming parent. That same hook-placement adapter is applied to the
+baseline and candidate NeuralZip controls, without altering baseline source,
+packing, selected weights or persistent GPU storage. Codec and kernel are untouched. Any genuine
 official singleton/LUT fallback remains BF16 and is reported explicitly.
 
 ## Campaigns

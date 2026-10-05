@@ -109,3 +109,29 @@ Pilot measurements are not counted toward the two full acceptance campaigns.
 
 Every pilot candidate has exactly its baseline's live and peak allocation,
 both below BF16, with bitwise weights/outputs and unchanged compressed bytes.
+
+## Sharing-only and packing-only GPU ablations
+
+The separately authorized ablation rerun uses the frozen own setups from
+Godel's `/data/mbravo/shared-table1-ablations-20261005`, which supplied the
+current paper's CPU rows. Copy only the twelve `*-sharing-own.setup.pkl` /
+`*-packing-own.setup.pkl` files and their original method JSONs directly to
+the GPU server; never rebuild a setup or copy weights/setup pickles to the Mac.
+The benchmark verifies each pickle against the original CPU record's
+`own_setup_sha256` and the exact pinned BF16 manifest before export.
+
+Use `run_packed_gpu_campaign.py --phase ablations` with the same explicit
+source/input/environment arguments as above, a new output `--root`,
+`--ablation-root` pointing to those frozen files, and `--reference-root`
+pointing to the completed full campaigns. This runs only sharing/packing
+baseline/candidate controls on all six models twice, reversing order in run 2.
+The unchanged BF16 outputs and 72 validated full-suite records are reused,
+not rerun or overwritten. CPU setup/compression measurements are unchanged.
+
+`check_packed_gpu_results.py OUTPUT --ablations --reference-root FULL_OUTPUT
+--baseline-cpu BASELINE_CPU_JSON` checks all 48 fresh ablation controls,
+recomputes all medians, verifies bitwise weights/outputs and frozen
+input/setup/payload/coverage/source identities, and checks live/peak memory.
+DFloat11 ratios are reported honestly; the full-method 10% speed target is
+not imposed on the isolated ablations. The original full-method acceptance
+checker and evidence remain unchanged in scope.

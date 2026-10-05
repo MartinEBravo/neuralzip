@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -269,6 +270,108 @@ def self_test():
     print(
         "PASS: all-model, two-campaign acceptance checks reject incomplete or noncompliant results"
     )
+    for row in rows:
+        row["record_sha256"] = "reference"
+    ablations = []
+    for row in rows:
+        if row["variant"] == "control":
+            continue
+        row = copy.deepcopy(row)
+        row["method"] = "sharing" if row["method"] == "own" else "packing"
+        row["packed_chunks"] = 0 if row["method"] == "sharing" else 1
+        row["ablation_cpu_record_sha256"] = "frozen-cpu-record"
+        row["bf16_reference_record_sha256"] = "reference"
+        row["bf16_reference_output_sha256"] = "frozen-output"
+        ablations.append(row)
+    assert check_ablations(ablations, rows)["passed"]
+    assert not check_ablations(ablations[:-1], rows)["passed"]
+    for field, value in (("setup_sha256", "changed"), ("payload_sha256", "changed"),
+                         ("packed_chunks", 0), ("output_bitwise", False),
+                         ("bf16_reference_record_sha256", "changed"),
+                         ("inference_ms", 2), ("allocated_gpu_bytes", 106)):
+        altered = copy.deepcopy(ablations)
+        altered[-1][field] = value
+        assert not check_ablations(altered, rows)["passed"], field
+    print("PASS: frozen sharing/packing controls reject incomplete, changed or incorrect records")
+
+
+def check_ablations(rows, references):
+    """Ablations have no DFloat11 speed target; preserve every measured outcome."""
+    errors, comparisons = [], []
+    records = {(r["campaign"], r["model"], r["variant"], r["method"]): r for r in rows}
+    refs = {(r["campaign"], r["model"], r["variant"], r["method"]): r for r in references}
+    expected = {(c, m, v, method) for c in ("1", "2") for m in MODELS
+                for v in ("baseline", "candidate") for method in ("sharing", "packing")}
+    if len(records) != len(rows) or set(records) != expected:
+        errors.append("Incomplete, duplicate or unexpected ablation records")
+    if len({r.get("runner_sha256") for r in rows}) != 1:
+        errors.append("Ablation runner versions differ")
+    protected = ("setup_sha256", "payload_sha256", "compressed_names", "packed_chunks", "groups",
+                 "functional_hook_targets", "ablation_cpu_record_sha256", "bf16_reference_output_sha256")
+    for campaign in ("1", "2"):
+        for model in MODELS:
+            bf = refs.get((campaign, model, "control", "bf16"))
+            df = refs.get((campaign, model, "control", "dfloat11"))
+            if not bf or not df:
+                errors.append(f"{campaign}/{model}: missing validated references")
+                continue
+            for method in ("sharing", "packing"):
+                baseline, candidate = (records.get((campaign, model, v, method)) for v in ("baseline", "candidate"))
+                if not baseline or not candidate:
+                    continue
+                label = f"{campaign}/{model}/{method}"
+                for row in (baseline, candidate):
+                    if (any(row.get(f) is not True for f in FLAGS)
+                            or row.get("profiling_in_timing") is not False):
+                        errors.append(f"{label}: correctness/timing flags")
+                    for samples_key, median_key in (("inference_trials_ms", "inference_ms"),
+                                                    ("decode_trials_ms", "decode_ms")):
+                        samples = row.get(samples_key, [])
+                        if (len(samples) != 5 or not all(math.isfinite(s) and s > 0 for s in samples)
+                                or row.get(median_key) != median(samples)):
+                            errors.append(f"{label}: invalid {samples_key}")
+                    if any(row.get(f) != bf.get(f) or f not in row for f in IDENTITY if f != "runner_sha256"):
+                        errors.append(f"{label}: pinned input/environment mismatch")
+                    source = refs.get((campaign, model, row["variant"], "own"))
+                    if not source or row.get("source_hashes") != source["source_hashes"]:
+                        errors.append(f"{label}: runtime/CPU source changed")
+                    if row.get("bf16_reference_record_sha256") != bf.get("record_sha256"):
+                        errors.append(f"{label}: BF16 reference changed")
+                    if (method == "sharing" and row.get("packed_chunks") != 0
+                            or method == "packing" and row.get("packed_chunks", 0) <= 0):
+                        errors.append(f"{label}: incorrect sharing/packing route")
+                if any(candidate.get(f) != baseline.get(f) or f not in candidate for f in protected):
+                    errors.append(f"{label}: frozen setup/payload/coverage changed")
+                limits = []
+                for field in ("allocated_gpu_bytes", "peak_gpu_bytes"):
+                    valid = 0 < candidate[field] <= baseline[field] * 1.05 and candidate[field] < bf[field]
+                    limits.append(valid)
+                    if not valid:
+                        errors.append(f"{label}: {field} memory limit")
+                comparisons.append(dict(campaign=campaign, model=model, method=method,
+                                        baseline_ms=baseline["inference_ms"], candidate_ms=candidate["inference_ms"],
+                                        dfloat_ms=df["inference_ms"], dfloat_ratio=candidate["inference_ms"] / df["inference_ms"],
+                                        baseline_live=baseline["allocated_gpu_bytes"], candidate_live=candidate["allocated_gpu_bytes"],
+                                        baseline_peak=baseline["peak_gpu_bytes"], candidate_peak=candidate["peak_gpu_bytes"],
+                                        bf16_live=bf["allocated_gpu_bytes"], bf16_peak=bf["peak_gpu_bytes"],
+                                        memory_pass=all(limits), correctness=all(candidate.get(f) is True for f in FLAGS)))
+    for model in MODELS:
+        for variant in ("baseline", "candidate"):
+            for method in ("sharing", "packing"):
+                a, b = (records.get((c, model, variant, method)) for c in ("1", "2"))
+                if a and b and (a["source_hashes"] != b["source_hashes"]
+                                or any(a.get(f) != b.get(f) for f in (*IDENTITY, *protected))):
+                    errors.append(f"{model}/{variant}/{method}: campaign identities differ")
+    return dict(passed=not errors and len(comparisons) == 24, errors=errors, comparisons=comparisons)
+
+
+def read_records(root):
+    rows = []
+    for campaign in ("1", "2"):
+        for path in sorted((root / campaign).glob("*.json")):
+            data = path.read_bytes()
+            rows.append(dict(json.loads(data), record_sha256=hashlib.sha256(data).hexdigest()))
+    return rows
 
 
 def main():
@@ -276,21 +379,27 @@ def main():
     parser.add_argument("root", type=Path, nargs="?")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--baseline-cpu", type=Path)
+    parser.add_argument("--ablations", action="store_true")
+    parser.add_argument("--reference-root", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return
     if not args.root:
         parser.error("root is required")
-    rows = [
-        json.loads(p.read_text())
-        for c in ("1", "2")
-        for p in sorted((args.root / c).glob("*.json"))
-    ]
-    result = check(rows)
+    rows = read_records(args.root)
+    if args.ablations:
+        if not args.reference_root:
+            parser.error("--ablations requires --reference-root")
+        references = read_records(args.reference_root)
+        result = check_ablations(rows, references)
+        result["errors"].extend(check(references)["errors"])
+    else:
+        result = check(rows)
+    proof_root = args.reference_root if args.ablations else args.root
     proof_paths = (
-        args.root / "correctness.json",
-        args.root / "module-correctness.json",
+        proof_root / "correctness.json",
+        proof_root / "module-correctness.json",
     )
     if (
         not args.baseline_cpu

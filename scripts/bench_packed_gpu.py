@@ -27,6 +27,7 @@ from neuralzip.setup import NeuralZipSetup
 from neuralzip.utils import time_call
 
 MODELS = ("qwen35", "gemma3", "dinov3-convnext", "dinov3-vit", "siglip2", "parakeet")
+SETUP_LABELS = {"own": "new", "transfer": "foreign", "sharing": "sharing", "packing": "packing"}
 REFERENCE_SHA = "d570384eb28a6a148929e1aef6ceeb64309f87c75cb44d158dcd1a45453885f3"
 OFFICIAL_COMMIT = "457733886ce6ebc6d8dda1621fad1ffa2661e028"
 OFFICIAL_SHA = {
@@ -266,7 +267,7 @@ def check_exclusive_gpu(gpu):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", choices=MODELS)
-    parser.add_argument("method", choices=("bf16", "dfloat11", "own", "transfer"))
+    parser.add_argument("method", choices=("bf16", "dfloat11", *SETUP_LABELS))
     parser.add_argument(
         "--variant", choices=("baseline", "candidate", "control"), required=True
     )
@@ -274,6 +275,8 @@ def main():
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--ablation-root", type=Path)
+    parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--gpu", type=int, choices=(0, 1), default=1)
     args = parser.parse_args()
     assert os.environ.get("CUDA_VISIBLE_DEVICES") == str(args.gpu), (
@@ -281,6 +284,8 @@ def main():
     )
     PROTOCOL["physical_gpu"] = args.gpu
     assert (args.variant == "control") == (args.method in ("bf16", "dfloat11"))
+    if args.method in ("sharing", "packing"):
+        assert args.ablation_root and args.reference_root, "Frozen ablation and BF16 references required"
     destination = (
         args.output / args.campaign / f"{args.model}-{args.variant}-{args.method}.json"
     )
@@ -354,14 +359,23 @@ def main():
         "runtime_metadata_bytes": 0,
     }
     calls = []
-    if args.method in ("own", "transfer"):
-        label = "new" if args.method == "own" else "foreign"
-        path = cpu / "six" / f"{args.model}-{label}.setup.pkl"
+    if args.method in SETUP_LABELS:
+        label = SETUP_LABELS[args.method]
+        if args.method in ("sharing", "packing"):
+            record_path = args.ablation_root / f"{args.model}-{label}.json"
+            cpu_record = json.loads(record_path.read_text())
+            assert cpu_record["input"]["bf16_manifest_sha256"] == expected_manifest
+            assert cpu_record["input"]["id"] == spec["id"]
+            assert cpu_record["input"]["revision"] == spec["revision"]
+            assert all(cpu_record[f] is True for f in ("roundtrip_bitwise", "input_unchanged", "encode_never_fits"))
+            path = args.ablation_root / f"{args.model}-{label}-own.setup.pkl"
+            frozen_setup_sha = cpu_record["own_setup_sha256"]
+            row["ablation_cpu_record_sha256"] = sha(record_path.read_bytes())
+        else:
+            path = cpu / "six" / f"{args.model}-{label}.setup.pkl"
+            frozen_setup_sha = frozen_protocol["frozen_server_local_setup_sha256"][path.name]
         row["setup_sha256"] = sha(path.read_bytes())
-        assert (
-            row["setup_sha256"]
-            == frozen_protocol["frozen_server_local_setup_sha256"][path.name]
-        )
+        assert row["setup_sha256"] == frozen_setup_sha
         setup = copy.deepcopy(NeuralZipSetup.load(path))
         by_digest = defaultdict(list)
         for item in manifest:
@@ -401,6 +415,10 @@ def main():
             packed_chunks=sum(bool(g.codebook.vocab) for g in exported.groups),
             groups=len(exported.groups),
         )
+        if args.method == "sharing":
+            assert row["packed_chunks"] == 0, "Sharing-only unexpectedly packs exponents"
+        elif any(book.vocab for book in setup.codebooks):
+            assert row["packed_chunks"] > 0, "Packing was silently discarded"
         runtime = inference.NeuralZipRuntime.attach(model, exported, device="cuda:0")
         row["functional_hook_targets"] = correct_functional_hooks(runtime)
         for workspace in runtime.workspaces.values():
@@ -450,7 +468,7 @@ def main():
                 in {item["name"] for item in row["dfloat_raw_fallbacks"]}
             )
             or (
-                args.method in ("own", "transfer")
+                args.method in SETUP_LABELS
                 and candidate.tensor_name not in row["compressed_names"]
             )
         )
@@ -468,11 +486,21 @@ def main():
     assert output and all(
         torch.isfinite(t).all() for t in output.values() if t.is_floating_point()
     )
-    reference_path = destination.parent / f"{args.model}-reference.pt"
+    reference_folder = args.reference_root / args.campaign if args.reference_root else destination.parent
+    reference_path = reference_folder / f"{args.model}-reference.pt"
     if args.method == "bf16":
         assert not reference_path.exists()
         torch.save(output, reference_path)
     else:
+        if args.reference_root:
+            reference_record_path = reference_folder / f"{args.model}-control-bf16.json"
+            reference_record = json.loads(reference_record_path.read_text())
+            for field in ("pinned_model", "manifest_sha256", "input_file_sha256", "selected_weight_sha256",
+                          "forward_input_sha256", "protocol", "gpu_uuid", "torch_version", "cuda_version",
+                          "cupy_version", "official_sha256", "functional_consumer_adapter"):
+                assert row[field] == reference_record[field], field
+            row["bf16_reference_record_sha256"] = sha(reference_record_path.read_bytes())
+            row["bf16_reference_output_sha256"] = file_sha(reference_path)
         baseline = torch.load(reference_path, weights_only=True, map_location="cpu")
         assert output.keys() == baseline.keys() and all(
             reference.exact(t, baseline[n]) for n, t in output.items()
@@ -525,6 +553,8 @@ def main():
         for n, t in inputs.items()
         if isinstance(t, torch.Tensor)
     }
+    if args.method in SETUP_LABELS:
+        assert sha(path.read_bytes()) == row["setup_sha256"], "Frozen setup file changed"
     row.update(
         weight_bitwise=True,
         output_bitwise=True,

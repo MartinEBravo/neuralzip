@@ -78,6 +78,7 @@ struct Huff0Codebook {
     std::vector<std::uint8_t> serialized;
     bool covers_all_symbols = false;
     std::shared_ptr<const MixedHuffmanTable> mixed;
+    std::shared_ptr<const MixedHuffmanTable> gpu;
 };
 
 struct Huff0Decodebook {

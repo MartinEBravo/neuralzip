@@ -29,7 +29,7 @@ DESCRIPTOR_NAMES = (
 class PreparedBatch:
     descriptor_tensors: tuple[torch.Tensor, ...] = field(repr=False)
     device: torch.device
-    layout: tuple[int, bool, int, int, int]
+    layout: tuple[int, bool, int, int, int, bool, bool]
     shared_memory: int
     kernel_grid: tuple[int, ...]
     kernel_args: tuple[object, ...] = field(repr=False)
@@ -69,9 +69,9 @@ class CuPyDecoder:
     def _kernel(self, device_index, layout):
         key = device_index, layout
         if key not in self._kernels:
-            width, reorder, mantissa_bits, exponent_bits, stream_id = layout
+            width, reorder, mantissa_bits, exponent_bits, stream_id, mixed, long_codes = layout
             word = {2: "uint16_t", 4: "uint32_t"}[width]
-            name = f"decode_batched<{word}, {int(reorder)}, {mantissa_bits}, {exponent_bits}, {stream_id}>"
+            name = f"decode_batched<{word}, {int(reorder)}, {mantissa_bits}, {exponent_bits}, {stream_id}, {int(mixed)}, {int(long_codes)}>"
             cupy = self.cupy
             with cupy.cuda.Device(device_index):
                 module = cupy.RawModule(
@@ -111,8 +111,8 @@ class CuPyDecoder:
 
     def prepare_group(self, device_index, group):
         layout = group.layout
-        positions = group.encoded.streams[layout[-1]].output_positions
-        max_elements = max(
+        positions = group.encoded.streams[layout[4]].output_positions
+        max_elements = 0 if layout[5] or not group.codebook.max_bits else max(
             (right - left for left, right in pairwise(positions)), default=0
         )
         return self.prepare_kernel(

@@ -102,21 +102,24 @@ nb::capsule build_decodebook(nb::handle header_source, nb::handle vocab_source) 
 
 nb::tuple export_code_table(
     nb::handle header_source,
-    Py_ssize_t max_bits) {
+    Py_ssize_t max_bits,
+    nb::handle vocab_source) {
     require<nb::value_error>(
-        max_bits > 0 && max_bits <= 12,
-        "max_bits must be in [1, 12].");
+        max_bits > 0 && max_bits <= kGPUCodeMaxBits,
+        "max_bits must be in [1, 56].");
     ReadOnlyBuffer header(header_source);
-    const ExportedCodeTable table = export_code_table_from_header(
-        header.data(), header.size(), static_cast<unsigned>(max_bits));
+    ReadOnlyBuffer vocab(vocab_source);
+    const auto table = gpu_code_table(header.data(), header.size(), vocab.data(), vocab.size());
+    const unsigned longest = *std::max_element(table->lengths.begin(), table->lengths.end());
+    require(longest <= max_bits, "GPU codebook exceeds the requested max_bits limit.");
     nb::list values;
-    for (const auto value : table.code_values) {
+    for (const auto value : table->codes) {
         values.append(value);
     }
     return nb::make_tuple(
-        nb::bytes(table.code_lengths.data(), table.code_lengths.size()),
+        nb::bytes(table->lengths.data(), table->lengths.size()),
         nb::tuple(values),
-        table.max_bits);
+        longest);
 }
 
 nb::tuple encode_gpu_tensor(
@@ -128,12 +131,15 @@ nb::tuple encode_gpu_tensor(
     unsigned exponent_bits,
     unsigned stream_id,
     Py_ssize_t bytes_per_thread,
-    Py_ssize_t threads_per_block) {
+    Py_ssize_t threads_per_block,
+    nb::handle vocab_source,
+    nb::handle codebook_handle) {
     require<nb::value_error>(
         bytes_per_thread == 8 && threads_per_block == 512,
         "The GPU ABI requires 8 bytes per thread and 512 threads per block.");
     ReadOnlyBuffer raw(raw_source);
     ReadOnlyBuffer header(header_source);
+    ReadOnlyBuffer vocab(vocab_source);
     require<nb::value_error>(
         element_size == 2 || element_size == 4,
         "GPU element_size must be 2 or 4.");
@@ -150,17 +156,24 @@ nb::tuple encode_gpu_tensor(
         "Element count exceeds the int32 CUDA decoder ABI limit.");
 
     GPULayoutEncoding encoded;
+    std::shared_ptr<const MixedHuffmanTable> table;
+    if (codebook_handle.is_none()) {
+        table = gpu_code_table(header.data(), header.size(), vocab.data(), vocab.size());
+    } else {
+        auto* book = capsule_data<Huff0Codebook>(codebook_handle, "neuralzip.Huff0Codebook");
+        if (!book->gpu) book->gpu = book->mixed ? book->mixed
+            : gpu_code_table(header.data(), header.size(), vocab.data(), vocab.size());
+        table = book->gpu;
+    }
     {
         nb::gil_scoped_release release;
-        const ExportedCodeTable table = export_code_table_from_header(
-            header.data(), header.size(), kGPUCodeMaxBits);
         // Select constant layout parameters outside the symbol loops.
         const bool aligned_exponent = bit_reorder && exponent_bits == 8
             && stream_id == element_size - 1U;
         const auto encode = element_size == 2
             ? (aligned_exponent ? encode_gpu_layout<2, true> : encode_gpu_layout<2, false>)
             : (aligned_exponent ? encode_gpu_layout<4, true> : encode_gpu_layout<4, false>);
-        encoded = encode(raw.data(), numel, table, stream_id,
+        encoded = encode(raw.data(), numel, *table, stream_id,
             bit_reorder, mantissa_bits, exponent_bits);
     }
 

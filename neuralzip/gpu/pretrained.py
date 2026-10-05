@@ -166,10 +166,13 @@ def _export_stats(model, exported, setup, encoding_seconds):
                 if isinstance(stream, GPUEncodedSymbols)
                 else len(stream)
             )
-    # Canonical representation accounting, not allocated CUDA LUT memory.
-    codebook_bytes = 1024 * len({group.codebook_id for group in exported.groups})
+    # Count the uploaded decode tables, including suffixes for long pair codes.
+    codebooks = {group.codebook_id: group.codebook for group in exported.groups}
+    table_sizes = {key: (4 if book.vocab else 2) * len(book.decode_lut)
+                   for key, book in codebooks.items()}
+    codebook_bytes = sum(table_sizes.values())
     stream_compressed_bytes += codebook_bytes
-    exponent_compressed_bytes += 1024 * len(exponent_codebooks)
+    exponent_compressed_bytes += sum(table_sizes[i] for i in exponent_codebooks)
     return NeuralZipStats(
         setup_seconds=_setup_seconds(setup),
         encoding_seconds=float(encoding_seconds),
@@ -269,7 +272,7 @@ def _save_pretrained(
         raise ValueError("NeuralZip cannot compress an alternate state_dict.")
     if options.pop("variant") is not None:
         raise ValueError("NeuralZip checkpoints do not support variant filenames.")
-    if options.pop("distributed_checkpoint"):
+    if options.pop("distributed_checkpoint", False):
         raise ValueError("NeuralZip does not support distributed checkpoint saving.")
     state = dict(resident)
     state[STORAGE_DATA] = blob
@@ -306,6 +309,7 @@ def _load_storage(
     metadata,
     setup,
     dtype,
+    attn_implementation=None,
 ):
     special, resident = _checkpoint_state(directory)
     required = {STORAGE_DATA, STORAGE_METADATA}
@@ -326,6 +330,7 @@ def _load_storage(
         config=config,
         state_dict=state,
         dtype=dtype,
+        attn_implementation=attn_implementation,
         output_loading_info=True,
     )
     if any(loading_info.values()):
@@ -416,6 +421,7 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
     if kwargs.pop("use_safetensors", True) is False:
         raise ValueError("NeuralZip checkpoints require Safetensors.")
     dtype = kwargs.pop("dtype", None)
+    attn_implementation = kwargs.pop("attn_implementation", None)
     torch_dtype = kwargs.pop("torch_dtype", None)
     if dtype is None:
         dtype = torch_dtype
@@ -450,6 +456,7 @@ def _patched_load(cls, source, *model_args, config=None, **kwargs):
         _checkpoint_metadata(config),
         _HF_OPTIONS["setup"],
         dtype,
+        attn_implementation=attn_implementation,
     )
     if output_loading_info:
         return model, {

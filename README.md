@@ -7,7 +7,7 @@ the encode automatically.
 
 It is a research implementation for sequential compressed floating-point inference on
 one NVIDIA GPU. Eligible weights are stored as lossless compressed streams and
-reconstructed only when their transformer block runs.
+reconstructed only when their block or individual layer runs.
 
 - Bitwise-exact weights in their loaded dtype during inference.
 - Optional precomputed global codebooks, declared per format in `dtypes.py`.
@@ -112,7 +112,7 @@ print(setup.setup_seconds)
 ```python
 from neuralzip.setup import NeuralZipSetup
 
-setup = NeuralZipSetup(enable_packed_codebooks=False).build(reference)
+setup = NeuralZipSetup().build(reference)
 setup.save("qwen-family.setup.pkl")
 setup = NeuralZipSetup.load("qwen-family.setup.pkl")
 ```
@@ -180,8 +180,8 @@ model = AutoModelForCausalLM.from_pretrained("account/related-qwen-model")
 
 For GPU inference, the wrapper uses one compatible shared-Huffman byte stream
 per group, preferring a pure exponent stream when the layout provides one.
-It consumes the precomputed tensor-level singleton projection, not the mixed
-CPU representation; the existing CUDA kernel remains unchanged. Tensors absent
+It consumes the frozen chunk assignments, including adaptive singleton/pair
+codebooks, and expands pair symbols during CUDA decoding. Tensors absent
 from the setup use an available global codebook or remain uncompressed. Setup
 files use pickle and must come from a trusted source.
 
@@ -212,7 +212,7 @@ loaded_model = AutoModelForCausalLM.from_pretrained(
 
 A compressed checkpoint contains the codebooks and metadata needed to restore
 every tensor bit-for-bit. NeuralZip detects the format, decodes the storage
-representation, and converts eligible linear weights to its GPU runtime
+representation, and converts eligible weights to its GPU runtime
 layout. This never runs setup or rebuilds storage codebooks. The conversion is
 necessary because packed storage streams and the blockwise CUDA decoder use
 different layouts. `model.neuralzip_stats` retains the original storage encode
@@ -268,7 +268,7 @@ These execution options are no longer accepted by `NeuralZipSetup`, and
 2. An ordinary checkpoint is loaded through Transformers. The wrapper then
    separates eligible weights into the byte streams described by their dtype
    and encodes a compatible stream with an available precomputed codebook.
-3. During inference, the active transformer block is reconstructed bit-for-bit
+3. During inference, the active block or layer is reconstructed bit-for-bit
    in a reusable GPU workspace immediately before execution.
 4. `save_pretrained()` runs the full storage codec and stores its streams and
    codebooks in Safetensors; `config.json` identifies the checkpoint format.
@@ -281,14 +281,15 @@ under Apache-2.0.
 
 ## Research limitations
 
+- GPU weight modules: untied `Linear`, `Conv2d`, and Transformers `Conv1D`.
+  `Sequential` and standalone layers use per-layer hooks; existing transformer
+  blocks retain batched reconstruction.
 - One NVIDIA CUDA device supporting the model's arithmetic and decode layout.
 - Sequential, inference-only execution.
-- Eligible block-local linear weights in registered formats are compressed; other state remains
+- Eligible weights in registered formats are compressed; other state remains
   resident.
-- Models without compatible block-local linear weights still use the lossless
+- Models without compatible weight modules still use the lossless
   storage format, but load as ordinary models without a compressed GPU runtime.
-- Packed exponent n-grams remain a storage-codec mode; the current CUDA runtime
-  consumes shared-Huffman streams.
 - No concurrent forwards, training, device changes after loading, or
   `torch.compile`.
 - Weights use a temporary workspace; this is not a fused compressed

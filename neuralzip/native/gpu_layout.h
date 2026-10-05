@@ -1,11 +1,20 @@
-constexpr unsigned kGPUCodeMaxBits = 12;
+constexpr unsigned kGPUCodeMaxBits = 56;
 constexpr unsigned kGPUGapBits = 4;
 constexpr unsigned kGPUGapLimit = 1U << kGPUGapBits;
 constexpr std::size_t kGPUDecoderIndexLimit =
     static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
-static_assert(
-    kGPUCodeMaxBits <= kGPUGapLimit,
-    "GPU restart gaps must represent every supported code length.");
+
+std::shared_ptr<const MixedHuffmanTable> gpu_code_table(
+    const std::uint8_t* header, std::size_t header_size,
+    const std::uint8_t* vocab, std::size_t vocab_size) {
+    if (is_mixed_header(header, header_size))
+        return make_mixed_table(header, header_size, vocab, vocab_size, true);
+    const auto source = export_code_table_from_header(header, header_size, 12);
+    auto table = std::make_shared<MixedHuffmanTable>();
+    table->lengths.assign(source.code_lengths.begin(), source.code_lengths.end());
+    table->codes.assign(source.code_values.begin(), source.code_values.end());
+    return table;
+}
 
 struct GPUHuffmanEncoding {
     std::vector<std::uint8_t> bitstream;
@@ -53,23 +62,24 @@ std::vector<std::uint8_t> pack_gpu_gaps(
 template <typename SymbolReader>
 GPUHuffmanEncoding encode_gpu_symbols(
     std::size_t symbol_count,
-    const ExportedCodeTable& table,
+    const MixedHuffmanTable& table,
     SymbolReader read_symbol) {
     constexpr std::size_t bytes_per_thread = 8;
     constexpr std::size_t threads_per_block = 512;
     require<std::overflow_error>(
         symbol_count <= kGPUDecoderIndexLimit,
         "Symbol count exceeds the int32 CUDA decoder ABI limit.");
-    require(
-        table.max_bits > 0 && table.max_bits <= kGPUCodeMaxBits,
-        "GPU Huffman code length must be in [1, 12].");
+    const unsigned max_bits = *std::max_element(table.lengths.begin(), table.lengths.end());
+    const bool mixed = !table.vocabulary.empty();
+    require(max_bits > 0 && max_bits <= kGPUCodeMaxBits,
+        "GPU Huffman code length must be in [1, 56].");
 
     GPUHuffmanEncoding result;
-    result.max_bits = table.max_bits;
+    result.max_bits = max_bits;
 
-    for (std::size_t index = 0; index < symbol_count; ++index) {
-        const std::uint8_t symbol = read_symbol(index, true);
-        const unsigned length = table.code_lengths[symbol];
+    for (std::size_t index = 0; index < symbol_count;) {
+        const unsigned symbol = read_symbol(index, true);
+        const unsigned length = table.lengths[symbol];
         if (length == 0) {
             throw std::runtime_error(
                 "Symbol " + std::to_string(symbol)
@@ -77,6 +87,7 @@ GPUHuffmanEncoding encode_gpu_symbols(
                 + " has no codebook entry.");
         }
         result.bit_length += length;
+        index += symbol >= 256 ? 2 : 1;
     }
 
     const std::uint64_t encoded_bytes_u64 =
@@ -111,10 +122,10 @@ GPUHuffmanEncoding encode_gpu_symbols(
     std::size_t next_block = 0;
     std::size_t encoded_offset = 0;
     std::uint64_t symbol_start = 0;
-    std::uint32_t accumulator = 0;
+    std::uint64_t accumulator = 0;
     unsigned pending = 0;
 
-    for (std::size_t index = 0; index < symbol_count; ++index) {
+    for (std::size_t index = 0; index < symbol_count;) {
         while (
             next_segment < populated_segments
             && symbol_start
@@ -122,10 +133,10 @@ GPUHuffmanEncoding encode_gpu_symbols(
             const std::uint64_t boundary =
                 static_cast<std::uint64_t>(next_segment) * segment_bits;
             const std::uint64_t gap = symbol_start - boundary;
-            if (gap >= kGPUGapLimit) {
+            if (gap >= (mixed ? 256U : kGPUGapLimit)) {
                 throw std::runtime_error(
                     "A code crosses too much of a CUDA segment to fit in "
-                    "4-bit gaps.");
+                    "restart gaps.");
             }
             gaps[next_segment] = static_cast<std::uint8_t>(gap);
             ++next_segment;
@@ -139,11 +150,12 @@ GPUHuffmanEncoding encode_gpu_symbols(
             ++next_block;
         }
 
-        const std::uint8_t symbol = read_symbol(index, false);
-        const unsigned length = table.code_lengths[symbol];
-        accumulator = (accumulator << length) | table.code_values[symbol];
+        const unsigned symbol = read_symbol(index, false);
+        const unsigned length = table.lengths[symbol];
+        accumulator = (accumulator << length) | table.codes[symbol];
         pending += length;
         symbol_start += length;
+        index += symbol >= 256 ? 2 : 1;
 
         while (pending >= 8U) {
             pending -= 8U;
@@ -151,7 +163,7 @@ GPUHuffmanEncoding encode_gpu_symbols(
                 static_cast<std::uint8_t>((accumulator >> pending) & 0xFFU);
             accumulator = pending == 0
                 ? 0U
-                : accumulator & ((1U << pending) - 1U);
+                : accumulator & ((std::uint64_t{1} << pending) - 1U);
         }
     }
     if (pending != 0) {
@@ -166,7 +178,7 @@ GPUHuffmanEncoding encode_gpu_symbols(
             result.bit_length - boundary);
         ++next_segment;
     }
-    result.packed_gaps = pack_gpu_gaps(gaps);
+    result.packed_gaps = mixed ? std::move(gaps) : pack_gpu_gaps(gaps);
     return result;
 }
 
@@ -174,7 +186,7 @@ template <unsigned ElementSize, bool ByteAlignedExponent>
 GPULayoutEncoding encode_gpu_layout(
     const std::uint8_t* raw,
     std::size_t numel,
-    const ExportedCodeTable& table,
+    const MixedHuffmanTable& table,
     unsigned stream_id,
     bool bit_reorder,
     unsigned mantissa_bits,
@@ -196,8 +208,7 @@ GPULayoutEncoding encode_gpu_layout(
             result.raw_streams[lane].resize(numel);
         }
     }
-    result.symbols = encode_gpu_symbols(
-        numel, table, [&](std::size_t index, bool first_pass) {
+    const auto read_byte = [&](std::size_t index, bool first_pass) {
             std::uint32_t value = 0;
             for (unsigned lane = 0; lane < ElementSize; ++lane) {
                 value |= static_cast<std::uint32_t>(raw[index * ElementSize + lane])
@@ -217,6 +228,14 @@ GPULayoutEncoding encode_gpu_layout(
                 }
             }
             return static_cast<std::uint8_t>(value >> (8U * stream_id));
-        });
+        };
+    result.symbols = encode_gpu_symbols(numel, table, [&](std::size_t index, bool first_pass) {
+        const unsigned symbol = read_byte(index, first_pass);
+        if (!table.pair_tokens.empty() && index + 1 < numel) {
+            const auto pair = table.pair_tokens[symbol | (unsigned(read_byte(index + 1, first_pass)) << 8U)];
+            if (pair) return unsigned(pair);
+        }
+        return symbol;
+    });
     return result;
 }

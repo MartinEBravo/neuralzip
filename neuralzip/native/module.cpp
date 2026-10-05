@@ -58,7 +58,8 @@ NB_MODULE(_huff0_cpp, module) {
         "export_code_table", &export_code_table,
         nb::arg("codebook"),
         nb::arg("max_bits") = 12,
-        "Export exact Huff0 symbol lengths and canonical code values.");
+        nb::arg("vocab") = nb::bytes("", 0),
+        "Export exact singleton/pair symbol lengths and canonical code values.");
     module.def(
         "encode_gpu_tensor", &encode_gpu_tensor,
         nb::arg("raw"),
@@ -70,6 +71,8 @@ NB_MODULE(_huff0_cpp, module) {
         nb::arg("stream_id"),
         nb::arg("bytes_per_thread") = 8,
         nb::arg("threads_per_block") = 512,
+        nb::arg("vocab") = nb::bytes("", 0),
+        nb::arg("codebook_handle") = nb::none(),
         "Encode one byte lane with Huffman and preserve the other lanes raw.");
     module.def(
         "compress_direct_storage", &compress_direct_storage,

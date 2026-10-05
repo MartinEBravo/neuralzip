@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Modified for NeuralZip in 2026: flat runtime-length LUT, bounded lookahead,
-// batched descriptors, and a two-barrier hierarchical warp scan.
+// Modified for NeuralZip in 2026: specialized singleton/pair LUTs, bounded
+// lookahead, chunk descriptors, and a two-barrier hierarchical warp scan.
 
 // NVRTC may not expose host C headers; CUDA primitive widths are fixed.
 typedef unsigned char uint8_t;
@@ -38,21 +38,46 @@ __device__ __forceinline__ uint8_t read_packed_gap(
     return static_cast<uint8_t>((packed >> shift) & 0x0FU);
 }
 
-__device__ __forceinline__ uint16_t decode_lut_entry(
-    const uint16_t* __restrict__ lut,
+__device__ __forceinline__ uint32_t decode_lut_entry(
+    const uint32_t* __restrict__ lut,
     const uint64_t bit_buffer,
     const int max_bits) {
     const uint32_t index = static_cast<uint32_t>(
         bit_buffer >> (64U - static_cast<unsigned>(max_bits)));
-    return __ldg(lut + index);
+    uint32_t entry = __ldg(lut + index);
+    for (unsigned depth = max_bits; (entry >> 24U) == 0U; ++depth) {
+        const unsigned branch = (bit_buffer >> (63U - depth)) & 1U;
+        entry = __ldg(lut + entry + branch);
+    }
+    return entry;
+}
+
+__device__ __forceinline__ uint16_t decode_lut_entry(
+    const uint16_t* __restrict__ lut,
+    const uint64_t bit_buffer,
+    const int max_bits) {
+    return __ldg(lut + static_cast<uint32_t>(bit_buffer >> (64U - max_bits)));
+}
+
+__device__ __forceinline__ uint8_t entry_nbits(const uint32_t entry) {
+    return static_cast<uint8_t>(entry >> 24U);
 }
 
 __device__ __forceinline__ uint8_t entry_nbits(const uint16_t entry) {
     return static_cast<uint8_t>(entry >> 8U);
 }
 
-__device__ __forceinline__ uint8_t entry_symbol(const uint16_t entry) {
-    return static_cast<uint8_t>(entry & 0xFFU);
+__device__ __forceinline__ uint32_t entry_count(const uint32_t entry) {
+    return (entry >> 16U) & 255U;
+}
+
+__device__ __forceinline__ uint32_t entry_count(const uint16_t entry) {
+    return 1U;
+}
+
+__device__ __forceinline__ uint64_t peek_bits(
+    uint64_t high, uint64_t low, unsigned consumed) {
+    return consumed ? (high << consumed) | (low >> (64U - consumed)) : high;
 }
 
 template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
@@ -72,6 +97,25 @@ __device__ __forceinline__ Word assemble_value(
             | ((value >> 1U) & (((1U << ExponentBits) - 1U) << MantissaBits));
     }
     return static_cast<Word>(value);
+}
+
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, typename Entry>
+__device__ __forceinline__ uint32_t write_entry(
+    const Entry entry,
+    Word* __restrict__ buffer,
+    const uint8_t* const* raw_streams,
+    uint32_t index,
+    const uint32_t offset,
+    const uint32_t end) {
+    buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+        entry & 255U, raw_streams, index);
+    ++index;
+    if (sizeof(Entry) == 4 && entry_count(entry) == 2U && index < end) {
+        buffer[index - offset] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            (entry >> 8U) & 255U, raw_streams, index);
+        ++index;
+    }
+    return index;
 }
 
 __device__ __forceinline__ uint32_t exclusive_block_prefix(
@@ -122,9 +166,9 @@ __device__ __forceinline__ uint32_t exclusive_block_prefix(
     return warp_offsets[warp_id] + inclusive - value;
 }
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
-__device__ __forceinline__ void decode_block(
-    const uint16_t* __restrict__ lut,
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, typename Entry>
+__device__ __forceinline__ void decode_short_block(
+    const Entry* __restrict__ lut,
     const int max_bits,
     const uint8_t* __restrict__ codes,
     const uint8_t* const* raw_streams,
@@ -134,62 +178,39 @@ __device__ __forceinline__ void decode_block(
     const int n_bytes,
     const uint32_t local_block_id,
     uint8_t* __restrict__ shared_mem) {
-    // Zero initialization prevents partial threads from reading past the stream.
-    uint8_t register_buffer[12] = {};
     uint32_t* warp_offsets = reinterpret_cast<uint32_t*>(shared_mem);
     const uint32_t warp_count = (N_THREADS + 31U) >> 5U;
-    Word* write_buffer = reinterpret_cast<Word*>(
-        shared_mem + static_cast<uint64_t>(warp_count) * sizeof(uint32_t));
-
     const uint64_t group_thread_id =
         static_cast<uint64_t>(local_block_id) * N_THREADS + THREAD_ID;
     const uint64_t code_offset = group_thread_id * BYTES_PER_THREAD;
 
-#pragma unroll
-    for (int index = 0; index < 12; ++index) {
-        const uint64_t source = code_offset + static_cast<uint64_t>(index);
-        if (source < static_cast<uint64_t>(n_bytes)) {
-            register_buffer[index] = codes[source];
-        }
-    }
-
-    const uint8_t gap = read_packed_gap(gaps, group_thread_id);
-
-    // Put the earliest encoded bit in the most-significant buffer position.
-    uint64_t long_buffer = 0;
-#pragma unroll
-    for (int index = 0; index < 8; ++index) {
-        long_buffer |= static_cast<uint64_t>(register_buffer[index])
-            << (56U - 8U * static_cast<unsigned>(index));
-    }
+    // Codes of at most 32 bits need only one refill per 64-bit segment.
+    uint64_t high = 0;
     uint32_t lookahead = 0;
 #pragma unroll
-    for (int index = 0; index < 4; ++index) {
-        lookahead |= static_cast<uint32_t>(register_buffer[index + 8])
-            << (24U - 8U * static_cast<unsigned>(index));
+    for (int index = 0; index < 12; ++index) {
+        const uint64_t source = code_offset + index;
+        const uint64_t byte = source < static_cast<uint64_t>(n_bytes) ? codes[source] : 0U;
+        if (index < 8) high |= byte << (56U - 8U * index);
+        else lookahead |= static_cast<uint32_t>(byte) << (24U - 8U * (index - 8));
     }
-
-    long_buffer <<= gap;
-    uint8_t free_bits = gap;
+    const uint8_t gap = Mixed ? gaps[group_thread_id] : read_packed_gap(gaps, group_thread_id);
+    uint64_t buffer = high << gap;
+    unsigned free_bits = code_offset < static_cast<uint64_t>(n_bytes) ? gap : 64U;
     uint32_t thread_counter = 0;
-
     while (free_bits < 32U) {
-        const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
-        const uint8_t nbits = entry_nbits(entry);
-        thread_counter += 1U;
-        long_buffer <<= nbits;
-        free_bits = static_cast<uint8_t>(free_bits + nbits);
+        const Entry entry = decode_lut_entry(lut, buffer, max_bits);
+        thread_counter += entry_count(entry);
+        buffer <<= entry_nbits(entry);
+        free_bits += entry_nbits(entry);
     }
-
-    long_buffer |= static_cast<uint64_t>(lookahead) << (free_bits - 32U);
-    free_bits = static_cast<uint8_t>(free_bits - 32U);
-
+    buffer |= static_cast<uint64_t>(lookahead) << (free_bits - 32U);
+    free_bits -= 32U;
     while (free_bits < 32U) {
-        const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
-        const uint8_t nbits = entry_nbits(entry);
-        thread_counter += 1U;
-        long_buffer <<= nbits;
-        free_bits = static_cast<uint8_t>(free_bits + nbits);
+        const Entry entry = decode_lut_entry(lut, buffer, max_bits);
+        thread_counter += entry_count(entry);
+        buffer <<= entry_nbits(entry);
+        free_bits += entry_nbits(entry);
     }
 
     const uint32_t write_offset = __ldg(output_positions + local_block_id);
@@ -203,40 +224,28 @@ __device__ __forceinline__ void decode_block(
     }
     const uint32_t end_output_idx = static_cast<uint32_t>(requested_end);
 
-    long_buffer = 0;
-#pragma unroll
-    for (int index = 0; index < 8; ++index) {
-        long_buffer |= static_cast<uint64_t>(register_buffer[index])
-            << (56U - 8U * static_cast<unsigned>(index));
-    }
-    long_buffer <<= gap;
+    // Pair expansion can exceed shared-memory capacity; write packed groups directly.
+    Word* write_buffer = Mixed ? outputs + write_offset : reinterpret_cast<Word*>(
+        shared_mem + static_cast<uint64_t>(warp_count) * sizeof(uint32_t));
+    buffer = high << gap;
     free_bits = gap;
-
     while (free_bits < 32U && output_idx < end_output_idx) {
-        const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
-        const uint8_t nbits = entry_nbits(entry);
-        write_buffer[output_idx - write_offset] =
-            assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-                entry_symbol(entry), raw_streams, output_idx);
-
-        output_idx += 1U;
-        long_buffer <<= nbits;
-        free_bits = static_cast<uint8_t>(free_bits + nbits);
+        const Entry entry = decode_lut_entry(lut, buffer, max_bits);
+        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            entry, write_buffer, raw_streams, output_idx, write_offset, end_output_idx);
+        buffer <<= entry_nbits(entry);
+        free_bits += entry_nbits(entry);
     }
-
-    long_buffer |= static_cast<uint64_t>(lookahead) << (free_bits - 32U);
-    free_bits = static_cast<uint8_t>(free_bits - 32U);
-
+    if (output_idx < end_output_idx) {
+        buffer |= static_cast<uint64_t>(lookahead) << (free_bits - 32U);
+    }
     while (output_idx < end_output_idx) {
-        const uint16_t entry = decode_lut_entry(lut, long_buffer, max_bits);
-        const uint8_t nbits = entry_nbits(entry);
-        write_buffer[output_idx - write_offset] =
-            assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-                entry_symbol(entry), raw_streams, output_idx);
-
-        output_idx += 1U;
-        long_buffer <<= nbits;
+        const Entry entry = decode_lut_entry(lut, buffer, max_bits);
+        output_idx = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            entry, write_buffer, raw_streams, output_idx, write_offset, end_output_idx);
+        buffer <<= entry_nbits(entry);
     }
+    if (Mixed) return;
     __syncthreads();
 
     const uint32_t block_output_count =
@@ -247,9 +256,54 @@ __device__ __forceinline__ void decode_block(
     }
 }
 
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+__device__ __forceinline__ void decode_long_pairs_block(
+    const uint32_t* __restrict__ lut,
+    const int max_bits,
+    const uint8_t* __restrict__ codes,
+    const uint8_t* const* raw_streams,
+    const uint8_t* __restrict__ gaps,
+    const uint32_t* __restrict__ output_positions,
+    Word* __restrict__ outputs,
+    const int n_bytes,
+    const uint32_t local_block_id,
+    uint8_t* __restrict__ shared_mem) {
+    // Rare long codes may cross a segment by 55 bits; retain full lookahead.
+    const uint64_t thread_id = static_cast<uint64_t>(local_block_id) * N_THREADS + THREAD_ID;
+    const uint64_t code_offset = thread_id * BYTES_PER_THREAD;
+    uint64_t high = 0, low = 0;
+#pragma unroll
+    for (int index = 0; index < 16; ++index) {
+        const uint64_t source = code_offset + index;
+        const uint64_t byte = source < static_cast<uint64_t>(n_bytes) ? codes[source] : 0U;
+        if (index < 8) high |= byte << (56U - 8U * index);
+        else low |= byte << (56U - 8U * (index - 8));
+    }
+    const unsigned gap = gaps[thread_id];
+    unsigned consumed = code_offset < static_cast<uint64_t>(n_bytes) ? gap : 64U;
+    uint32_t count = 0;
+    while (consumed < 64U) {
+        const uint32_t entry = decode_lut_entry(lut, peek_bits(high, low, consumed), max_bits);
+        count += entry_count(entry);
+        consumed += entry_nbits(entry);
+    }
+    const uint32_t start = __ldg(output_positions + local_block_id);
+    const uint32_t block_end = __ldg(output_positions + local_block_id + 1U);
+    uint32_t index = start + exclusive_block_prefix(count, reinterpret_cast<uint32_t*>(shared_mem));
+    const uint32_t end = static_cast<uint32_t>(
+        min(static_cast<uint64_t>(index) + count, static_cast<uint64_t>(block_end)));
+    consumed = gap;
+    while (index < end) {
+        const uint32_t entry = decode_lut_entry(lut, peek_bits(high, low, consumed), max_bits);
+        index = write_entry<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            entry, outputs + start, raw_streams, index, start, end);
+        consumed += entry_nbits(entry);
+    }
+}
+
 }  // namespace
 
-template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId>
+template <typename Word, bool Reorder, int MantissaBits, int ExponentBits, int StreamId, bool Mixed, bool LongCodes>
 __global__ void decode_batched(
     const uint64_t* __restrict__ lut_ptrs,
     const uint64_t* __restrict__ code_ptrs,
@@ -282,15 +336,29 @@ __global__ void decode_batched(
     const uint64_t output_address = __ldg(output_ptrs + group_id);
 
     extern __shared__ __align__(16) uint8_t shared_mem[];
-    decode_block<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
-        reinterpret_cast<const uint16_t*>(lut_address),
-        group_max_bits,
-        reinterpret_cast<const uint8_t*>(code_address),
-        raw_streams,
-        reinterpret_cast<const uint8_t*>(gap_address),
-        reinterpret_cast<const uint32_t*>(output_position_address),
-        reinterpret_cast<Word*>(output_address),
-        group_n_bytes,
-        static_cast<uint32_t>(local_block_id),
-        shared_mem);
+    const uint8_t* codes = reinterpret_cast<const uint8_t*>(code_address);
+    const uint8_t* gaps = reinterpret_cast<const uint8_t*>(gap_address);
+    const uint32_t* positions = reinterpret_cast<const uint32_t*>(output_position_address);
+    Word* outputs = reinterpret_cast<Word*>(output_address);
+    if (group_max_bits == 0) {
+        const uint64_t start = static_cast<uint64_t>(local_block_id) * N_THREADS * BYTES_PER_THREAD;
+        for (uint64_t index = start + THREAD_ID;
+             index < start + N_THREADS * BYTES_PER_THREAD && index < group_n_bytes;
+             index += N_THREADS) {
+            outputs[index] = assemble_value<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+                codes[index], raw_streams, index);
+        }
+    } else if (!Mixed) {
+        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, false>(
+            reinterpret_cast<const uint16_t*>(lut_address), group_max_bits, codes,
+            raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
+    } else if (!LongCodes) {
+        decode_short_block<Word, Reorder, MantissaBits, ExponentBits, StreamId, true>(
+            reinterpret_cast<const uint32_t*>(lut_address), group_max_bits, codes,
+            raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
+    } else {
+        decode_long_pairs_block<Word, Reorder, MantissaBits, ExponentBits, StreamId>(
+            reinterpret_cast<const uint32_t*>(lut_address), group_max_bits, codes,
+            raw_streams, gaps, positions, outputs, group_n_bytes, local_block_id, shared_mem);
+    }
 }

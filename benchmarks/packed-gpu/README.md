@@ -78,3 +78,21 @@ launches and checks device occupancy before each subprocess. The benchmark
 also rejects another process appearing during a timed control. Source captures
 are immutable: use a new candidate directory for each optimization, not an
 in-place edit of a running experiment. Measurements are never overwritten.
+
+## Preserved pilot evidence
+
+`evidence/staging/pilot-records.zip` contains all 18 original JSON records from
+the three-model pilot, including every timing trial and input/setup/payload
+hash. ZIP CRCs and exact equality to each original JSON were independently
+checked before packaging; the unchanged originals also remain on the server.
+Verify the archive with `shasum -a 256 -c pilot-records.sha256` from its folder.
+Pilot measurements are not counted toward the two full acceptance campaigns.
+
+| Pilot model | DFloat11 ms | Own baseline → candidate ms | Transfer baseline → candidate ms |
+| --- | ---: | ---: | ---: |
+| Gemma3 | 19.541 | 29.161 → 18.605 | 29.204 → 18.963 |
+| Parakeet | 12.703 | 20.132 → 11.992 | 20.296 → 12.068 |
+| DINOv3 ConvNeXt | 3.513 | 5.202 → 3.630 | 5.136 → 3.520 |
+
+Every pilot candidate has exactly its baseline's live and peak allocation,
+both below BF16, with bitwise weights/outputs and unchanged compressed bytes.

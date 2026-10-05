@@ -4,6 +4,63 @@ All **24 own/transfer comparisons** passed in **two complete independent campaig
 
 Shared-memory exponent-byte staging was sufficient. No output-count cache, prefix-width change, packing removal, decoded-weight retention, offload or fused matrix-multiplication redesign was added. CPU setup, codebooks, CPU archives, GPU payload/restart bytes, selected/compressed coverage and model arithmetic remain unchanged. The only additional production correction routes functional `MultiheadAttention.out_proj` decoding through its consuming attention module; Martin approved the same adapter for original-main NeuralZip and the DFloat11 control.
 
+## Frozen Sharing Only / Packing Only rerun
+
+Both isolated ablations now have two complete GPU runs: **48 fresh controls**,
+24 original-decoder and 24 updated-decoder records. They use the exact frozen
+own setups from Godel's `shared-table1-ablations-20261005`, which supplied the
+current paper's CPU rows; no CPU setup or compression measurement was repeated.
+The production GPU source is still `64f6598a524344a5e457e8a3a1cf92a58e167e95`.
+The pinned BF16 outputs and all 72 verified full-method controls are reused,
+not overwritten or rerun. The benchmark protocol and functional-consumer
+adapter are unchanged; run 2 reverses original/updated decoder order.
+
+Times below are full-forward medians in milliseconds. Run 1 is used
+consistently for both ablation rows in the paper, without selecting the faster
+repeat. Packing Only improves on every model in both runs (8.3--41.1%);
+Sharing Only is slower on five models, with small mixed changes on Qwen.
+These unfavorable sharing results are preserved rather than replaced with
+full NeuralZip timings.
+
+| Model | Sharing, original → updated (run 1) | Packing, original → updated (run 1) | Sharing, updated (run 2) | Packing, updated (run 2) |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.5-0.8B | 42.140 → 42.045 | 45.226 → 40.547 | 40.537 | 41.416 |
+| Gemma3-1B | 18.499 → 20.029 | 29.480 → 19.025 | 20.162 | 19.119 |
+| DINOv3 ConvNeXt-B | 3.288 → 3.688 | 5.322 → 3.743 | 3.795 | 3.829 |
+| DINOv3 ViT-B/16 | 3.270 → 3.498 | 4.710 → 3.401 | 3.467 | 3.398 |
+| SigLIP2-B | 4.799 → 5.395 | 8.024 → 5.400 | 5.240 | 5.296 |
+| Parakeet TDT-0.6B-v3 | 11.990 → 13.092 | 20.514 → 12.079 | 13.103 | 12.208 |
+
+All 24 ablation comparisons pass bitwise weights/outputs, immutable inputs,
+frozen setup/payload/restart/coverage/source checks and recomputed five-trial
+full-forward/decoder-only medians. Sharing exercises zero packed groups;
+Packing retains packed groups. Live and forward-peak allocation exactly
+match the corresponding original-decoder ablation and remain below BF16.
+Reserved allocation is retained separately. The isolated ablations have no
+DFloat11 speed requirement; the original full-method acceptance is unchanged.
+
+Lossless evidence: `evidence/ablations-20261005/ablation-records.zip`, SHA256
+`ea1ea3bfa337f170f870352139398e664e9acf09ad75d4d2c5431dc042ac805d`,
+**71 members / 9297333 decoded bytes**: 48 original GPU JSONs, 12 original
+CPU method JSONs, six input manifests, three measured harness/check sources,
+the original run log and independent validation report. No weights, setup
+pickles, dependencies or credentials are archived. Every ZIP CRC, member SHA,
+byte count and exact equality to its server original passed; independent Mac
+checks returned the identical passing report. The twelve setup pickle hashes
+match their untouched Godel CPU records. All earlier evidence is unchanged.
+
+Restore into a separate ablation directory, retain the previously restored
+full-method directory and proofs, then run:
+
+```sh
+python scripts/check_packed_gpu_results.py ABLATION_OUTPUT --ablations \
+  --reference-root FULL_OUTPUT \
+  --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
+```
+
+Benchmark SHA256: `4e2ac0f114a71ddb0cb95a8f77e9713f68db24b859c073a1e8fb064b438370f8`.
+Checker SHA256: `39149e26ea5b8a2cada080f8c1ffe1e3fc0f8462db1623773fdf3631766c89a3`.
+
 ## Full-forward latency
 
 Each entry is the median of five synchronized 50-forward trials after 20 warmups, batch one, eager attention, no cache/offload. Every control ran in a fresh process. Campaign 2 reversed candidate/baseline order. Initialization, compilation, export, validation, decoder-only trials and profiling are outside full-forward timing. Units: milliseconds. Baseline means main `453c06ea019b8d1d2566de0b4a7396b34807425c` with the approved functional-consumer adapter; its decoder is unchanged.

@@ -5,6 +5,15 @@ Only GPU runtime/decoding may change. CPU setup, codebooks, archives, compressed
 payloads, restart metadata, selected weights and model arithmetic stay frozen.
 Do not merge or update the paper from this experiment.
 
+Current status: **draft, incomplete**. Five models pass the first campaign's
+ten own/transfer comparisons, with unchanged allocation and exact results.
+SigLIP exposed a pre-existing functional-consumer hook problem in both the
+unchanged NeuralZip baseline and the DFloat11 control adapter. Correcting that
+baseline-control boundary needs approval before two new full campaigns.
+See [RESULTS.md](RESULTS.md) for every completed measurement, the untimed
+diagnosis and preserved failure/measurement archives. No failed or missing
+control counts as passing.
+
 ## Inputs and environment
 
 On `multi_vm`, select one physical GPU explicitly with `--gpu`. The original
@@ -35,7 +44,7 @@ official singleton/LUT fallback remains BF16 and is reported explicitly.
 ## Campaigns
 
 Run `scripts/check_packed_gpu_results.py --self-test` first (standard library only).
-Run `scripts/bench_packed_gpu.py MODEL METHOD --variant VARIANT --campaign 1
+Run `scripts/bench_packed_gpu.py MODEL METHOD --variant VARIANT --campaign 1 --gpu 0
 --data-root "$DATA" --inputs "$INPUTS" --output "$OUTPUT"` in a fresh process
 for each control. Models: `gemma3`, `parakeet`, `dinov3-convnext`, `qwen35`,
 `dinov3-vit`, `siglip2`. Methods/variants for each model:

@@ -29,7 +29,9 @@ def wait_for_gpu(gpu):
         )
         if not result.stdout.strip():
             if waiting:
-                print(f"GPU {gpu} is free; beginning the next check/control.", flush=True)
+                print(
+                    f"GPU {gpu} is free; beginning the next check/control.", flush=True
+                )
             return
         if not waiting:
             print(

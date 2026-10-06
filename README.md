@@ -282,21 +282,34 @@ The CUDA reconstruction path is adapted from the
 [official DFloat11 implementation](https://github.com/LeanModels/DFloat11)
 under Apache-2.0.
 
-## Reproducing the GPU measurements
+## Reproducing the experiments
 
-The [benchmark instructions](benchmarks/packed-gpu/README.md) describe the pinned
-models, frozen setups, environment and timing protocol. The
-[measurement report](benchmarks/packed-gpu/RESULTS.md) includes both complete
-campaigns, sharing/packing ablations, correctness checks and lossless raw evidence.
+Experimental evidence is saved under [`results/`](results/README.md). There are
+five entrypoints; their private helpers live in `neuralzip/_experiment_*.py`.
 
-The result-checker self-tests need only Python's standard library:
+| Script | Experiment |
+| --- | --- |
+| `scripts/six_models_ablations.py` | Table 2 and setup/packing/sharing ablations |
+| `scripts/all_models.py` | Table 3, the 18 retained models |
+| `scripts/training_checkpoints.py` | Figure 6, the 70 pinned training checkpoints |
+| `scripts/preliminaries.py` | Figures 1–3, entropy and chunk JS distances |
+| `scripts/optimizers.py` | Four architectures × four optimizers |
+
+Each script supports `--check` to validate the saved evidence without loading
+weights or running experiments, and `--export-saved` to regenerate numerical
+tables/plot coordinates. For example:
 
 ```bash
-python scripts/check_packed_gpu_results.py --self-test
+python scripts/six_models_ablations.py --check
+python scripts/training_checkpoints.py --export-saved
 ```
 
-Follow the benchmark instructions to restore and verify the archived measurements
-or run fresh CUDA measurements. Checking saved results does not rerun inference.
+See the [experiment instructions](results/README.md) for the captured environment,
+small fresh reruns, and their verification. Input revisions, BF16 tensor hashes,
+codebook settings and compression sizes are fixed. Fresh wall-clock timings
+depend on the machine; exporting the saved evidence reproduces the recorded
+values, not a new measurement. The [GPU report](results/packed-gpu/RESULTS.md)
+preserves both independent campaigns, sharing/packing ablations and failure history.
 
 ## Research limitations
 

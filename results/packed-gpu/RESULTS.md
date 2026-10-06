@@ -93,9 +93,9 @@ Restore into a separate ablation directory, retain the previously restored
 full-method directory and proofs, then run:
 
 ```sh
-python scripts/check_packed_gpu_results.py ABLATION_OUTPUT --ablations \
+python -m neuralzip._experiment_results ABLATION_OUTPUT --ablations \
   --reference-root FULL_OUTPUT \
-  --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
+  --baseline-cpu results/packed-gpu/evidence/baseline-cpu.json
 ```
 
 Benchmark SHA256: `4e2ac0f114a71ddb0cb95a8f77e9713f68db24b859c073a1e8fb064b438370f8`.
@@ -201,12 +201,12 @@ Physical GPU **0**, NVIDIA RTX A5500; driver `595.91.07`. PyTorch `2.9.1+cu128`,
 `campaign-records-members.json` records every exact member hash/size. `correctness.json` and `module-correctness.json` bind the proofs to the measured candidate; `acceptance.json` contains all 24 unrounded comparisons. Independent remote and local execution of the final checker returned the identical passing result. Restore only absent files before checking:
 
 ```sh
-cd benchmarks/packed-gpu/evidence/staging-functional
+cd results/packed-gpu/evidence/staging-functional
 shasum -a 256 -c campaign-records.sha256
 unzip -n campaign-records.zip
 cd ../../../..
-python scripts/check_packed_gpu_results.py benchmarks/packed-gpu/evidence/staging-functional \
-  --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
+python -m neuralzip._experiment_results results/packed-gpu/evidence/staging-functional \
+  --baseline-cpu results/packed-gpu/evidence/baseline-cpu.json
 ```
 
 The verified implementation and this evidence are integrated into main. These measurements establish acceptance on the listed pinned models/GPU, not a universal guarantee on other hardware or models.
@@ -324,12 +324,12 @@ setups, dependencies or credentials.
 Restore the first-campaign records without overwriting local files:
 
 ```sh
-cd benchmarks/packed-gpu/evidence/staging
+cd results/packed-gpu/evidence/staging
 shasum -a 256 -c first-campaign-incomplete.sha256
 unzip -n first-campaign-incomplete.zip
 cd ../../../..
-python scripts/check_packed_gpu_results.py benchmarks/packed-gpu/evidence/staging \
-  --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
+python -m neuralzip._experiment_results results/packed-gpu/evidence/staging \
+  --baseline-cpu results/packed-gpu/evidence/baseline-cpu.json
 ```
 
 The final command is expected to fail closed until two complete compliant

@@ -1,0 +1,206 @@
+{
+  "status": "PASS",
+  "scope": "Reproducibility restructuring with representative fresh runs, not a full rerun or new paper timings",
+  "saved": {
+    "six_cpu_ablation_records": 84,
+    "six_gpu_records": 72,
+    "sharing_packing_gpu_records": 48,
+    "table3_cpu_cohorts": 18,
+    "table3_complete_gpu_cohorts_available": 15,
+    "checkpoint_points": 70,
+    "optimizer_histograms": 48048,
+    "cli_help_and_saved_exports": 5
+  },
+  "fresh_cpu": [
+    {
+      "model": "dinov3-vit",
+      "method": "new",
+      "exponent_ratio_pct": 33.45180695830382,
+      "archive_sha256": "8e7dd1084bb58f69a0c4a419b8ae07e1b15d98b6598f4ee1c01367bd5713ec51",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    },
+    {
+      "model": "resnet101",
+      "method": "new",
+      "exponent_ratio_pct": 33.77571274781151,
+      "archive_sha256": "bfa38f6881fa7a901c94542dab29ea065b163fd36c6267bb1fe85c47b580477c",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    },
+    {
+      "model": "resnet101",
+      "method": "transfer",
+      "exponent_ratio_pct": 34.128765599994125,
+      "archive_sha256": "e1732d47d2893faa44a145f07308b429744d5f97d928c8095fcc5cd30738f4c9",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    },
+    {
+      "model": "resnet101",
+      "method": "zipnn",
+      "exponent_ratio_pct": 34.19341977239295,
+      "archive_sha256": "153337a35cf78e2915227188950375528ac913d0cb99d21a16d4adae964f856c",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    },
+    {
+      "model": "pythia-1b-143000",
+      "method": "transfer",
+      "exponent_ratio_pct": 32.53816333364708,
+      "archive_sha256": "23bae03b2c49ff4db44b6e120e6df43974c636175e43b301bf5f3924c05ba549",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    },
+    {
+      "model": "pythia-1b-143000",
+      "method": "zipnn",
+      "exponent_ratio_pct": 32.643455618692236,
+      "archive_sha256": "0c18d94bbd20bff12583fe05052af76cda8e97ef0429b20e5f203ef26ad0b903",
+      "exact_published_compressed_bytes": true,
+      "timed_repetitions": 1,
+      "warmups": 4
+    }
+  ],
+  "fresh_gpu": [
+    {
+      "model": "dinov3-vit",
+      "method": "bf16",
+      "inference_ms": 2.3543817829340696,
+      "allocated_gpu_bytes": 188532736,
+      "peak_gpu_bytes": 193857536,
+      "weight_bitwise": true,
+      "output_bitwise": true,
+      "input_unchanged": true,
+      "setup_frozen": true
+    },
+    {
+      "model": "dinov3-vit",
+      "method": "own",
+      "inference_ms": 3.1491751596331596,
+      "allocated_gpu_bytes": 143800832,
+      "peak_gpu_bytes": 148525568,
+      "weight_bitwise": true,
+      "output_bitwise": true,
+      "input_unchanged": true,
+      "setup_frozen": true
+    }
+  ],
+  "optimizer_prefix": [
+    {
+      "status": "PASS",
+      "steps": 3,
+      "histograms": 4,
+      "initial_state_exact": true,
+      "exponent_histograms_exact": true,
+      "timing_compared": false
+    },
+    {
+      "status": "PASS",
+      "steps": 3,
+      "histograms": 4,
+      "initial_state_exact": true,
+      "exponent_histograms_exact": true,
+      "timing_compared": false
+    }
+  ],
+  "preliminaries": "Exact integer populations and sampled hashes, entropy/JS within 1e-12",
+  "optional_controls": {
+    "official_utils_sha256": "c50216fda9da2a516131ce84afec6003f566f6e0f88cb4fa8178bc18f83851fe",
+    "dfloat_cpu_bitwise": true,
+    "dfloat_odd_tail": true,
+    "dfloat_singleton_raw_fallback": true,
+    "input_unchanged": true,
+    "setup_report_serialization": true,
+    "measured_model_timing": false
+  },
+  "cuda_and_modules": "Kernel boundaries, raw/singleton/packed routes, odd tails, long codes, supported modules and save/reload passed; log in spot-checks.zip",
+  "preserved_untimed_attempts": {
+    "gpu_v1": "Missing reference_root argument; corrected before measurement",
+    "optimizer_v1": "Missing deterministic CUDA workspace setting; corrected before first update",
+    "preliminaries_v1_v2": "Double-reduction differences below 1e-12; integer populations and inputs unchanged"
+  },
+  "remote_metadata_bytes_verified": 89,
+  "anonymity_scanned_entries": 980,
+  "evidence_zip_sha256": "dfa66ed6f12d61e5226c11895ba37146cbd06646fbcacbd29296227a0153ca88",
+  "spot_checks_zip_sha256": "e1a91100bf65f6ce3b671f7a0f3372c62c879c2d7f465d7418aad8248a85adeb",
+  "preserved_archive_and_metadata_sha256": {
+    "results/packed-gpu/evidence/ablations-20261005/ablation-records-members.json": "05cb0acd1a1f02b1be6714c3e32c73e06e1f9971534b5119640614b128752437",
+    "results/packed-gpu/evidence/ablations-20261005/ablation-records.sha256": "78e70f7ce1f1e61ba6fe1755a13401a92b7b74a9bc8379e16da28094b55e6324",
+    "results/packed-gpu/evidence/ablations-20261005/ablation-records.zip": "c44d005f8de4ce400666dea57ead9412acac4d483b5efd563c3c66417480c874",
+    "results/packed-gpu/evidence/ablations-20261005/validation.json": "9ffa546e472182a7f230cfe25796a76d7505e423f423e55a0d8dddd6d2287e7e",
+    "results/packed-gpu/evidence/baseline-cpu.json": "a533d78990c68f3d09739ae0e552d766b8da1decfab1fe0d76685e086933d67e",
+    "results/packed-gpu/evidence/qwen-paired-20261006/qwen-paired-metadata.sha256": "be607829c2fe6a7aaa6ea175c6363438e62c6a23fcb0609b74054eab2c671d89",
+    "results/packed-gpu/evidence/qwen-paired-20261006/qwen-paired-metadata.tar.gz": "d76dacb71574d89e345dd9b065a7d27c79f4c2ee8e097c27423e8b3dc395214f",
+    "results/packed-gpu/evidence/qwen-paired-20261006/validation.json": "0157dae295b8ce895a7ccde3ed53e13d07ccbdbfd77bef5f519bce5b740996a2",
+    "results/packed-gpu/evidence/staging-functional/acceptance.json": "ea17e33462ceb47aaf590d4db103594f5793a2e21497aab7ec4ef9d33cf58183",
+    "results/packed-gpu/evidence/staging-functional/campaign-records-members.json": "1f86e8a3f952780e82473627041bc9841ae33d2796e7f3713dba342f8fb47477",
+    "results/packed-gpu/evidence/staging-functional/campaign-records.sha256": "caa27850a847167813b53a43465938f827f99b4b472625546f29053ce77be731",
+    "results/packed-gpu/evidence/staging-functional/campaign-records.zip": "23a89fafe08ca57eca98fd9bbd07bffb7b2e9ca7a30a92c64f6461b17870d279",
+    "results/packed-gpu/evidence/staging-functional/correctness.json": "e12282f88f85808bb2de523bf073dae03e9c716f8006948cfccc812493890d73",
+    "results/packed-gpu/evidence/staging-functional/module-correctness.json": "6d9e8c7a34678aad51c98fad9b0159c8b1642a7706b1286b98dede73606bec28",
+    "results/packed-gpu/evidence/staging/correctness.json": "909c5ddbdaf36bbdeff0d833c31d3fe6647c768421bb1f4effb48a71be6c336f",
+    "results/packed-gpu/evidence/staging/first-campaign-incomplete-members.json": "bb6c15b7c5acad20aff0613225acb9f04c55e5ef5a9b08e64266d02c19fcf07e",
+    "results/packed-gpu/evidence/staging/first-campaign-incomplete.sha256": "b732d14ae873a13d2a6ee4838706131323ce88b206179d1f7f29983d9de2348e",
+    "results/packed-gpu/evidence/staging/first-campaign-incomplete.zip": "6d6f56581f3491b4d2e79ba5cf62c202414496dbc198eb44fc158277116949b0",
+    "results/packed-gpu/evidence/staging/incomplete-acceptance.json": "e0efd8949ae65597667feb8a836091be0228c6f95a405acfb61202a575058c22",
+    "results/packed-gpu/evidence/staging/module-correctness.json": "92a726f3cb40fb38ca0a4bb2fdd7dfbc536cf858a4e5ed8a47662c780c3b9531",
+    "results/packed-gpu/evidence/staging/pilot-records.sha256": "b403b8595b67245b58e5483cd835c0456cf0f6b66e70b92b1f470a784dff1c16",
+    "results/packed-gpu/evidence/staging/pilot-records.zip": "7ff0294320b0e115f858d803a7bd15be39057329c98c98ef3e8222f43a971155"
+  },
+  "unchanged_core_sha256": {
+    "CMakeLists.txt": "6c835d7fbbcbf36917aaef7da1c61cb299de702d5d0a255d9671748d99efb178",
+    "neuralzip/__init__.py": "bf2fd9de5651c43079ba66e3a1421dc825119e5f26274b84b7cb5b8bc7ffd6db",
+    "neuralzip/compressor.py": "26ce02833b11ce1ed27d699600a33cc7b48e280eda6dda1a329d9b260955213e",
+    "neuralzip/dtypes.py": "f2c4c6f6df0b2f8dc837c5ab5247098d115947b003004a434c091f4a1be50ee5",
+    "neuralzip/gpu/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "neuralzip/gpu/cuda/decode.cu": "4dd6e493f60ab77143444c7afcddc819164fca424966a267a55b0fa8d57d51ff",
+    "neuralzip/gpu/decoder.py": "473737d8c1b0cec0c86cf25ce96fe9a150220a33daf9e118552bbe9c1a0498bd",
+    "neuralzip/gpu/inference.py": "e1a54a809aa9a557a8a7634b2783230e84565eff854a6d7f878261548d92bccb",
+    "neuralzip/gpu/pretrained.py": "77b2d8794575cf1e8f0ff4200577a177f2e671b1c7047dda35cda89b670f0592",
+    "neuralzip/huff0.py": "d80c9b9534af21df31941944f2d1dea2582a5a35d67fffd3b77ce96be763520f",
+    "neuralzip/native/binding_helpers.h": "d0082c66091babad7eba882fed234a29ece9e14379c0f4706b987a39f4125d61",
+    "neuralzip/native/codebooks.h": "be266bf96f24f806c905149078826b6eb980185b874d646ead98cc773bf4b11e",
+    "neuralzip/native/common.h": "b3c56d599d82af4e53480d97de7d748019681aa09a810296ac73f571bc0814dc",
+    "neuralzip/native/decode_queue.h": "cb900897762c130c914e6e1438d08b55a6e984b0a4c3a4bb7753ad5f5d35d78e",
+    "neuralzip/native/direct_storage.h": "b3b6d90b8da4c31e129bec47810132209c7a8327eb579aaadf4c26d956ac3f4d",
+    "neuralzip/native/gpu_layout.h": "d7455bedac34f76c7e1abe02a7c2fb8124fcfe9323e7b8c0635ba4571cc7dc02",
+    "neuralzip/native/mixed_huffman.h": "cc58a9c9796e98e98695c67a24c04a2c8fd99202f739f0a0591465a44182e3eb",
+    "neuralzip/native/module.cpp": "2d002859bda34873214612bae49e1475055c3a82455c9cd569c41b3c5d6c4fc1",
+    "neuralzip/payloads.py": "64e70ae5884c1245a772c45e95cc947562df43920730992721b4ea04b4ad1476",
+    "neuralzip/setup.py": "110ec5cc55de4b455f59f8ff18ea212583eff2697aacaf4a4f57e99869b56c3b",
+    "neuralzip/storage.py": "c0ac17a3c63cbd354c660963f6a7b8130ea933c95b9c2cdd6e469239226916bd",
+    "neuralzip/utils.py": "6f2bf72872c1cfb06b3048ad8cb933c907bd816e2b49ea2c9ef7877e3fd81fd5",
+    "pyproject.toml": "8d70a4b7e4852f6cd680e46df2c3a01e478791adfab9b18b63bd6b94419b49a2",
+    "third_party/dfloat11/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "third_party/zstd/LICENSE": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+    "third_party/zstd/UPSTREAM": "d43ce09420b97463a19a0414f62dd471018fe490c927b4aed7d0c7b10e70fbfa"
+  },
+  "entrypoint_and_helper_sha256": {
+    "neuralzip/_experiment_cpu.py": "3c815666f7ba764722a4231c9119b0ae0392ac5287dd4f9759ba5663150dd34c",
+    "neuralzip/_experiment_dfloat.py": "e7151338527c161e191a117d14394e6e33b1ef05f22907fd6ac5b12aaef4a4ca",
+    "neuralzip/_experiment_gpu.py": "6081b44923ba2aa89e4f40938101a65163ea2012dc6cdf54a2db3648e494dc6b",
+    "neuralzip/_experiment_inputs.py": "f2c38faf110660d2b00777fcab436a1889aa7a336b350fdb18326ef5868030df",
+    "neuralzip/_experiment_kernel_checks.py": "3cdfbdc19056a45eaae0bd800cb72ceec3ac2eaa2d628deee2b428d9536966fd",
+    "neuralzip/_experiment_module_checks.py": "3b6025ed2b5381add1133fba14ef2a8dc0dbde23a8af12a8f664b3a80be160d0",
+    "neuralzip/_experiment_optimizers.py": "72418a981dee67f47b3ac2dbfbfd5419b9bd4c0a7fd2a0b8608011da208bab47",
+    "neuralzip/_experiment_results.py": "8f9af5603d86d4e60c8b3c1e44793eb0db99a7088bb1ed74545dcf472e9f00ee",
+    "neuralzip/_experiment_transfer.py": "d5d772b8e71c49045ba6957e4095fcd5fd3e35dd67affad2b578bbd80094c08e",
+    "scripts/all_models.py": "a2ed85dcbb2ca7744f55a85590b013d822aba67907e3998cd987173d2130fc8c",
+    "scripts/optimizers.py": "c89a2767a7335d6eef238f82b4d13d1ff69702adfb9f1266f0d35e3736272a77",
+    "scripts/preliminaries.py": "58e566db5746caed3b5fab8c2e933850ab230e5521d404f63cfa9f532c18cfc1",
+    "scripts/six_models_ablations.py": "d6b70f0e93b80ed506ea41038f076fb43bdb3d1f38398b314a57128fa94c0bb2",
+    "scripts/training_checkpoints.py": "e8a33fd72df21c41ff3263b80f004cad18b5281995dead28f5d3fdaf9bba5358"
+  },
+  "limitations": [
+    "Fresh times are hardware-dependent, not byte-exact timing replication",
+    "Full six-suite, 18-model, 70-checkpoint and 48-training runs were not repeated",
+    "Three Table 3 GPU cohorts have no whole saved cohort in this snapshot"
+  ],
+  "cleanup": "Only new completed spot-check input/HF cache copies removed; existing experiments, borrowed inputs and all measurements preserved"
+}

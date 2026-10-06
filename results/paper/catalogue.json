@@ -1,0 +1,2672 @@
+{
+  "six": [
+    "qwen35",
+    "gemma3",
+    "dinov3-convnext",
+    "dinov3-vit",
+    "siglip2",
+    "parakeet"
+  ],
+  "all": [
+    "resnet101",
+    "convnext-base",
+    "efficientnet-b3",
+    "gpt2",
+    "bert-base",
+    "qwen25-7b",
+    "qwen35-2b-base",
+    "olmo2-7b",
+    "llama32-3b",
+    "phi4-14b",
+    "gemma3-4b",
+    "sd15-unet",
+    "deepseek-moe-16b",
+    "qwen3-30b-a3b",
+    "qwen25-7b-distilled",
+    "deepseek-r1-distill-llama-8b",
+    "siglip2-so400m",
+    "whisper-large-v3-turbo"
+  ],
+  "inputs": {
+    "qwen35": {
+      "model": "qwen35",
+      "id": "Qwen/Qwen3.5-0.8B",
+      "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "archive_sha256": "6d948567a2e24242386b37bd754103979a36512152ec25325e4e5718558baad2",
+      "tensors": 488,
+      "raw_bytes": 1746877568,
+      "bf16_manifest_sha256": "83a09c90a6cfc10fe708885557ed883814cd16d2878899cc99624b152b8cc185",
+      "source": {
+        "key": "qwen35",
+        "name": "Qwen 3.5 0.8B",
+        "id": "Qwen/Qwen3.5-0.8B",
+        "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+        "kind": "hf"
+      }
+    },
+    "six-donor-qwen35": {
+      "model": "six-donor-qwen35",
+      "source": {
+        "name": "Qwen 3.5 2B",
+        "id": "Qwen/Qwen3.5-2B",
+        "revision": "15852e8c16360a2fea060d615a32b45270f8a8fc",
+        "files": {
+          "model.safetensors-00001-of-00001.safetensors": "aa33250c4fc64891ddfaba3a314fd9542ea371843c387178b425fbcc5ed680b1"
+        }
+      },
+      "tensors": 632,
+      "raw_bytes": 4548139648,
+      "bf16_manifest_sha256": "da79ffdf90501cd013f0d3a31cc7e0aa9670e913ef4599b2487bead4df9d639b"
+    },
+    "gemma3": {
+      "model": "gemma3",
+      "id": "google/gemma-3-1b-pt",
+      "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+      "archive_sha256": "6ea485914c7850bd35dc6f307958ddb845484b8aae00ade8b8e773c0741797ba",
+      "tensors": 340,
+      "raw_bytes": 1999771904,
+      "bf16_manifest_sha256": "a4c9b8421b0c844865d20a0206f9b6ba16ab463024bdcca870f7f949961eb67a",
+      "source": {
+        "key": "gemma3",
+        "name": "Gemma 3 1B",
+        "id": "google/gemma-3-1b-pt",
+        "revision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
+        "kind": "hf"
+      }
+    },
+    "six-donor-gemma3": {
+      "model": "six-donor-gemma3",
+      "source": {
+        "name": "Gemma 3 4B",
+        "id": "google/gemma-3-4b-pt",
+        "revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d",
+        "files": {
+          "model-00001-of-00002.safetensors": "8f5b423a203c41b5655b2e1b4c58be262cb0e403048c8116e100bdac91318320",
+          "model-00002-of-00002.safetensors": "d3d22b1ab51a03678f95f7d5e60f703a50e6554e4c731c884fc0fbf05e6e3f47"
+        }
+      },
+      "tensors": 883,
+      "raw_bytes": 8600158944,
+      "bf16_manifest_sha256": "326b6c14d14df7bf7b3637d651b3663e29a0b7e165dd7ec8eab503bd3ef78ba5"
+    },
+    "dinov3-convnext": {
+      "model": "dinov3-convnext",
+      "id": "facebook/dinov3-convnext-base-pretrain-lvd1689m",
+      "revision": "e619358a5fe272554f17d2fb6cc65a679326bac0",
+      "archive_sha256": "178ea017e175ace7c58656d11346babb7a17e45f2c5734117bd49ac225b3a4ba",
+      "tensors": 342,
+      "raw_bytes": 175132928,
+      "bf16_manifest_sha256": "a57821fa961de9d9be1a688af5a0fc5c21aa6cc860872764795d0fc0ff9b04d9",
+      "source": {
+        "key": "dinov3-convnext",
+        "name": "DINOv3 ConvNeXt-B",
+        "id": "facebook/dinov3-convnext-base-pretrain-lvd1689m",
+        "revision": "e619358a5fe272554f17d2fb6cc65a679326bac0",
+        "kind": "hf"
+      }
+    },
+    "six-donor-dinov3-convnext": {
+      "model": "six-donor-dinov3-convnext",
+      "source": {
+        "name": "DINOv3 ConvNeXt-L",
+        "id": "facebook/dinov3-convnext-large-pretrain-lvd1689m",
+        "revision": "e959efa74c867491dcfe3ec3e4f97382e39025b3",
+        "files": {
+          "model.safetensors": "8bab82eaa133954d0557bebf70416e0b667fa417a19ea47b697683b34190633d"
+        }
+      },
+      "tensors": 342,
+      "raw_bytes": 392460672,
+      "bf16_manifest_sha256": "a0430586aaf8454d7130d08d67e29f7729c164c256680ce7bf0d0131f42a58de"
+    },
+    "dinov3-vit": {
+      "model": "dinov3-vit",
+      "id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+      "revision": "5931719e67bbdb9737e363e781fb0c67687896bc",
+      "archive_sha256": "ecf2253452214f73335081eb71ff9df4151930e73193b4372221fd0ed42b1ac2",
+      "tensors": 211,
+      "raw_bytes": 171320832,
+      "bf16_manifest_sha256": "d2e632b31c874ce7f5e259598ba16f02acf5a28fdb9dd4d85f42928344215b8d",
+      "source": {
+        "key": "dinov3-vit",
+        "name": "DINOv3 ViT-B/16",
+        "id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+        "revision": "5931719e67bbdb9737e363e781fb0c67687896bc",
+        "kind": "hf"
+      }
+    },
+    "six-donor-dinov3-vit": {
+      "model": "six-donor-dinov3-vit",
+      "source": {
+        "name": "DINOv3 ViT-L/16",
+        "id": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+        "revision": "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+        "files": {
+          "model.safetensors": "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+        }
+      },
+      "tensors": 415,
+      "raw_bytes": 606259200,
+      "bf16_manifest_sha256": "dc20ecc79630b62629f105f07d9216338ff4cdfb97924a30eb26cdcf35398fab"
+    },
+    "siglip2": {
+      "model": "siglip2",
+      "id": "google/siglip2-base-patch16-224",
+      "revision": "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+      "archive_sha256": "511885655845fac9da989f8dab00181efdfd461612820fae52d2d5dee6fc068b",
+      "tensors": 408,
+      "raw_bytes": 750375940,
+      "bf16_manifest_sha256": "b5058682f68e4f5d6e00e74b8ebb7b3e3607422114e0eae522946f66d04b23ba",
+      "source": {
+        "key": "siglip2",
+        "name": "SigLIP 2 Base",
+        "id": "google/siglip2-base-patch16-224",
+        "revision": "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+        "kind": "hf"
+      }
+    },
+    "six-donor-siglip2": {
+      "model": "six-donor-siglip2",
+      "source": {
+        "name": "SigLIP 2 Large",
+        "id": "google/siglip2-large-patch16-256",
+        "revision": "787800c8990e6f058423089178e718139608408c",
+        "files": {
+          "model.safetensors": "fa34f822f016dbb167d8d0e3a8af99b5e199aa28573360d4295252b9ec418e2a"
+        }
+      },
+      "tensors": 792,
+      "raw_bytes": 1763053572,
+      "bf16_manifest_sha256": "d35e1c65ea4bca85d376cfbb702600a0461b3a9b92a98584a58512fc10f18081"
+    },
+    "parakeet": {
+      "model": "parakeet",
+      "id": "nvidia/parakeet-tdt-0.6b-v3",
+      "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+      "archive_sha256": "34d085ecfc62883b2608daadd570be543a3fa7c4cab0963cd6da2ce8dee8dd5e",
+      "tensors": 699,
+      "raw_bytes": 1254114572,
+      "bf16_manifest_sha256": "ac727d8e917c444827216b3c5ffba231037b0643d98b2ce507669b8209e1a446",
+      "source": {
+        "key": "parakeet",
+        "name": "Parakeet TDT 0.6B v3",
+        "id": "nvidia/parakeet-tdt-0.6b-v3",
+        "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+        "kind": "hf"
+      }
+    },
+    "six-donor-parakeet": {
+      "model": "six-donor-parakeet",
+      "source": {
+        "name": "Parakeet TDT 0.6B v2",
+        "id": "nvidia/parakeet-tdt-0.6b-v2",
+        "revision": "ae9ad07059c7c739ffaf932226a8fe64ae2620b0",
+        "files": {
+          "parakeet-tdt-0.6b-v2.nemo": "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c"
+        }
+      },
+      "tensors": 699,
+      "raw_bytes": 1235750156,
+      "bf16_manifest_sha256": "1890d15fcee5a6c7ffcbd09b9b9d12d15c4a3296dfb8412d521e9aded9fe8aac"
+    },
+    "resnet101": {
+      "model": "resnet101",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.resnet101",
+        "revision": "ResNet101_Weights.IMAGENET1K_V2",
+        "constructor": "resnet101",
+        "subfolder": null,
+        "parameters_b": 0.045,
+        "files": {
+          "resnet101-cd907fc2.pth": "cd907fc2a0de2292b2ba2b27d2216bc672d84632d1cf20058d01c0c03b5e020e"
+        },
+        "url": "https://download.pytorch.org/models/resnet101-cd907fc2.pth"
+      },
+      "tensors": 522,
+      "raw_bytes": 89309008,
+      "bf16_manifest_sha256": "ab559a92aa6b9acc3914fee36061c0be8373046e8f287e9d61a0ed475d50aae9"
+    },
+    "resnet152": {
+      "model": "resnet152",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.resnet152",
+        "revision": "ResNet152_Weights.IMAGENET1K_V2",
+        "constructor": "resnet152",
+        "subfolder": null,
+        "parameters_b": 0.06,
+        "files": {
+          "resnet152-f82ba261.pth": "f82ba2614b9f35a7e1b8a26c229c30845634c5921dbc66621c5a1a524f926e44"
+        },
+        "url": "https://download.pytorch.org/models/resnet152-f82ba261.pth"
+      },
+      "tensors": 777,
+      "raw_bytes": 120688464,
+      "bf16_manifest_sha256": "9b5057cfdff84150b68bcbd9ba15a37763b18a315500e06d26201a6a7534a0ac"
+    },
+    "convnext-base": {
+      "model": "convnext-base",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.convnext_base",
+        "revision": "ConvNeXt_Base_Weights.IMAGENET1K_V1",
+        "constructor": "convnext_base",
+        "subfolder": null,
+        "parameters_b": 0.089,
+        "files": {
+          "convnext_base-6075fbad.pth": "6075fbad31c688f9ed013922a59daf0fc2f4dc12e6e43bc01fa840c7bd1ca2cd"
+        },
+        "url": "https://download.pytorch.org/models/convnext_base-6075fbad.pth"
+      },
+      "tensors": 344,
+      "raw_bytes": 177182928,
+      "bf16_manifest_sha256": "08d622b6569dedc6a14a5b3e939a6792f89580c37bfb85c21406b07d8e74dd9c"
+    },
+    "convnext-large": {
+      "model": "convnext-large",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.convnext_large",
+        "revision": "ConvNeXt_Large_Weights.IMAGENET1K_V1",
+        "constructor": "convnext_large",
+        "subfolder": null,
+        "parameters_b": 0.198,
+        "files": {
+          "convnext_large-ea097f82.pth": "ea097f822cdb2cab40905cec3949f4bdf6d6bf1d546c3ec5e43f0b1c6275e144"
+        },
+        "url": "https://download.pytorch.org/models/convnext_large-ea097f82.pth"
+      },
+      "tensors": 344,
+      "raw_bytes": 395534672,
+      "bf16_manifest_sha256": "495a55d7025d04f296e88c73ca0ae2cead0330fdd7c8a29a33df1a7b11dabfb5"
+    },
+    "efficientnet-b3": {
+      "model": "efficientnet-b3",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.efficientnet_b3",
+        "revision": "EfficientNet_B3_Weights.IMAGENET1K_V1",
+        "constructor": "efficientnet_b3",
+        "subfolder": null,
+        "parameters_b": 0.012,
+        "files": {
+          "efficientnet_b3_rwightman-b3899882.pth": "b3899882250c22946d0229d266049fcd133c169233530b36b9ffa7983988362f"
+        },
+        "url": "https://download.pytorch.org/models/efficientnet_b3_rwightman-b3899882.pth"
+      },
+      "tensors": 496,
+      "raw_bytes": 24641056,
+      "bf16_manifest_sha256": "f8d7daa9bdba703100ddc7c662aa378e95b42166c685db3c3d910b2ad166fc5b"
+    },
+    "efficientnet-b7": {
+      "model": "efficientnet-b7",
+      "source": {
+        "kind": "torchvision",
+        "id": "torchvision.models.efficientnet_b7",
+        "revision": "EfficientNet_B7_Weights.IMAGENET1K_V1",
+        "constructor": "efficientnet_b7",
+        "subfolder": null,
+        "parameters_b": 0.066,
+        "files": {
+          "efficientnet_b7_lukemelas-c5b4e57e.pth": "c5b4e57e0da1a10bb4f8a5b410dd3b7b6e7461f9b757209be29409707c3d87dd"
+        },
+        "url": "https://download.pytorch.org/models/efficientnet_b7_lukemelas-c5b4e57e.pth"
+      },
+      "tensors": 1037,
+      "raw_bytes": 133317360,
+      "bf16_manifest_sha256": "34e99b49ea96ccf8141d216739c77f8d739351814e9caff9bddd177090fcd2a5"
+    },
+    "gpt2": {
+      "model": "gpt2",
+      "source": {
+        "kind": "hf",
+        "id": "gpt2",
+        "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 0.124,
+        "files": {
+          "model.safetensors": "248dfc3911869ec493c76e65bf2fcf7f615828b0254c12b473182f0f81d3a707"
+        }
+      },
+      "tensors": 148,
+      "raw_bytes": 248879616,
+      "bf16_manifest_sha256": "da21d19f9890707d6bb47982bf9fde8ec673e255419acda9291a9f412a8b639e"
+    },
+    "gpt2-medium-donor": {
+      "model": "gpt2-medium-donor",
+      "source": {
+        "kind": "hf",
+        "id": "openai-community/gpt2-medium",
+        "revision": "6dcaa7a952f72f9298047fd5137cd6e4f05f41da",
+        "subfolder": null,
+        "files": {
+          "model.safetensors": "fc5a354a19255ad494f3d71549390baca1ccf61d1d822b9408971705c687c9cd"
+        }
+      },
+      "tensors": 292,
+      "raw_bytes": 709646336,
+      "bf16_manifest_sha256": "7118658e13b042e941dbdec2c9f1e62574e9f384cc9608220d1fde6204b9ee5a"
+    },
+    "bert-base": {
+      "model": "bert-base",
+      "source": {
+        "kind": "hf",
+        "id": "google-bert/bert-base-uncased",
+        "revision": "86b5e0934494bd15c9632b12f734a8a67f723594",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 0.109,
+        "files": {
+          "model.safetensors": "68d45e234eb4a928074dfd868cead0219ab85354cc53d20e772753c6bb9169d3"
+        }
+      },
+      "tensors": 206,
+      "raw_bytes": 220212856,
+      "bf16_manifest_sha256": "5839948ffc7a9918b29292a4ba9fb9133bc6a37cab733b9c8d6655c96c073ba0"
+    },
+    "bert-large-donor": {
+      "model": "bert-large-donor",
+      "source": {
+        "kind": "hf",
+        "id": "google-bert/bert-large-uncased",
+        "revision": "6da4b6a26a1877e173fca3225479512db81a5e5b",
+        "subfolder": null,
+        "files": {
+          "model.safetensors": "28349a5c57338d0dca591bb95de533897c2399095c69d61e09604b46f444a4c4"
+        }
+      },
+      "tensors": 398,
+      "raw_bytes": 672452216,
+      "bf16_manifest_sha256": "85bb4f5a205f3f56d800e07cdfc492ab33972a8400f3d7ecaa93de51ac2e8e9a"
+    },
+    "qwen25-7b": {
+      "model": "qwen25-7b",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen2.5-7B",
+        "revision": "d149729398750b98c0af14eb82c78cfe92750796",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 7.0,
+        "files": {
+          "model-00001-of-00004.safetensors": "b6d4b6e881d17e9235934419b1c17a8bb0f1108579404e0a468a6afdeae6e868",
+          "model-00002-of-00004.safetensors": "687e8d08dc82b5f7d69322f1d8691d49b59db9039b07e7ea71010fb6434d5274",
+          "model-00003-of-00004.safetensors": "32652eb23537597cca8c7a56ec85b5d5f1c7245b16269a904d57e85aa1aff30e",
+          "model-00004-of-00004.safetensors": "b5a2298dddcf228129975a9a271912a9f8dc817957deecde523e3154481ec3fb",
+          "model.safetensors.index.json": "624bf7c47cd12468fdc16e38a47cf4f19e0415b859a223ba3c027eed2f0e1028"
+        }
+      },
+      "tensors": 339,
+      "raw_bytes": 15231233024,
+      "bf16_manifest_sha256": "73b54640fcdbe0b4bd82ae4e8e21bd8484a0e843a6e353f7c5f3f7e2ab6df661"
+    },
+    "qwen25-14b": {
+      "model": "qwen25-14b",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen2.5-14B",
+        "revision": "97e1e76335b7017d8f67c08a19d103c0504298c9",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 14.0,
+        "files": {
+          "model-00001-of-00008.safetensors": "e015e2bc9a26b4e46d77913d8c667608ae7e48aa1eca04af5786c2408f4bc0fa",
+          "model-00002-of-00008.safetensors": "e7efa1adc8257218813dcb494bb2a3d5775fa268735ab39e5b8119e233c21462",
+          "model-00003-of-00008.safetensors": "68127c9bc4fab170f7aaf63d5c7ac9e182afd10b74a1c6bb8025afefc11447cb",
+          "model-00004-of-00008.safetensors": "7250708a789da850ff40a4a5be335971dfa0d2bd7cba2e9905916dab06744d75",
+          "model-00005-of-00008.safetensors": "c2754167c1cbaf94b9af9c7eb646a2286a596f9ded5e2e3c4c5e6a4464352c9e",
+          "model-00006-of-00008.safetensors": "7045cf78c68178b626546982d12b6e9c8e289f1bf1e65c42225ed13e07847180",
+          "model-00007-of-00008.safetensors": "4d870a72c656404ee7524163ba996bf55050fff252dfe639a90715a9e2c47dba",
+          "model-00008-of-00008.safetensors": "9b693615965d8548eab4d1dc6bb578aa063e8656e2b9d25125ad5b8c7f59565f",
+          "model.safetensors.index.json": "7b4b616a213f09ae889be05d1b135198589496e817d793e2605d5c5b1fe3ae5d"
+        }
+      },
+      "tensors": 579,
+      "raw_bytes": 29540067328,
+      "bf16_manifest_sha256": "1db8fc5e003c9b6b15510b149b2c0fd45ee80db4c71c5b1094bf8a860391a3db"
+    },
+    "qwen35-2b-base": {
+      "model": "qwen35-2b-base",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen3.5-2B-Base",
+        "revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 2.0,
+        "files": {
+          "model.safetensors-00001-of-00001.safetensors": "928acbf11878c32185bbd863514d191769285065ab9ea14fbfe431303f5fdf2d",
+          "model.safetensors.index.json": "74d2ddfe79f10f35b27b498632f02b97b60dd9ec39b35d7c5a890c399284e319"
+        }
+      },
+      "tensors": 632,
+      "raw_bytes": 4548139648,
+      "bf16_manifest_sha256": "c907d04129daa417168875537fa86282e4fa73d3cb979d44e33a5adfcf33d2ab"
+    },
+    "qwen35-27b": {
+      "model": "qwen35-27b",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen3.5-27B",
+        "revision": "fc05daec18b0a78c049392ed2e771dde82bdf654",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 27.0,
+        "files": {
+          "model.safetensors-00001-of-00011.safetensors": "9019228d172c87d5603266c2d56672d119e838facffa164de803a1ebf0d716d2",
+          "model.safetensors-00002-of-00011.safetensors": "890ef00c920b01c1c02755088c8d8ca5cdd6a1faa2a9a729eecd00857648b411",
+          "model.safetensors-00003-of-00011.safetensors": "8aca03689ad0717fb91455809a6670eecca818bea8c0b6bd3a591a8807cc3223",
+          "model.safetensors-00004-of-00011.safetensors": "20f539430c60fa611b3522b8408749a080b63f1fe034e551a6539ef864ca079a",
+          "model.safetensors-00005-of-00011.safetensors": "57a0c074c654f05fc2d6b5112eeec387ac04986e928e42f502993e69aa03a49d",
+          "model.safetensors-00006-of-00011.safetensors": "cfa4e6fbfc600854ef6c8e5465d0a1e43832a64b5e539f1e880333e3b1086703",
+          "model.safetensors-00007-of-00011.safetensors": "d426963325b2319cb9e1442bc8b89b9a7748a8f7a907aa4041c11531cda6b014",
+          "model.safetensors-00008-of-00011.safetensors": "fe60dbb9d25354c4eb2a9a59d9b1afd07741c8bebab5870f5eea6eadb4cf9a06",
+          "model.safetensors-00009-of-00011.safetensors": "71a153d882242734a1fc7e000734727f00f6ec8ca70b044f5e44fcf97736ef8f",
+          "model.safetensors-00010-of-00011.safetensors": "146745698b9f21940e2982beb1816a0eef3b80d77ab9cd884695b9a08c2697eb",
+          "model.safetensors-00011-of-00011.safetensors": "d947ce7483c4109b55039f1359f4494d22390cf123568100abd89816802f097d",
+          "model.safetensors.index.json": "b3737e9d00bda0e37f0b873629d98bf9b407bef35735b9193c23d9844bcc96a6"
+        }
+      },
+      "tensors": 1199,
+      "raw_bytes": 55562855904,
+      "bf16_manifest_sha256": "3cb28915e91d089db68d09b69ad5dc6b9433fb0c6768e4ce3897c241a7095800"
+    },
+    "olmo2-7b": {
+      "model": "olmo2-7b",
+      "source": {
+        "kind": "hf",
+        "id": "allenai/OLMo-2-1124-7B",
+        "revision": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 7.0,
+        "files": {
+          "model-00001-of-00006.safetensors": "880c0d9bd7311ca020584a7304504918dfcf17bfa35b464b1ab8dc01a06138d3",
+          "model-00002-of-00006.safetensors": "de0b6a357d03676c4986588aaf4dc96afc3f44a0498514961d2b2cfa1940655e",
+          "model-00003-of-00006.safetensors": "c1038a7d346a681a8fb6949e054c2246f3f3c80e826855c1cec6af1155cc607d",
+          "model-00004-of-00006.safetensors": "33c0a21146ace02d36928787ae7f34be868f7c81b894dea98ec7b0e5a3ea01b2",
+          "model-00005-of-00006.safetensors": "e7f82a3014ccfc0f67208f63785ae4bc71f09aba86db48bf6139d18178abbfed",
+          "model-00006-of-00006.safetensors": "2dda0bdc36c113e54909a798f8847f76f052b17a082ceaf1fa8b0fd30b0b3041",
+          "model.safetensors.index.json": "c285ec59423a5a7203724c6258f61d691c0816e4c3f79b1fede776298f894b07"
+        }
+      },
+      "tensors": 355,
+      "raw_bytes": 14597234688,
+      "bf16_manifest_sha256": "20313c5ea6f733a0d4d6f4493079711591f1858fc997bca1cbda96beb9c345d8"
+    },
+    "olmo2-13b": {
+      "model": "olmo2-13b",
+      "source": {
+        "kind": "hf",
+        "id": "allenai/OLMo-2-1124-13B",
+        "revision": "3fefddc1bf18a30e1d9b91000271630718f2aa8b",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 13.0,
+        "files": {
+          "model-00001-of-00012.safetensors": "d98857770936dacb09e4bcfffc98d6eb17d9fb64ead69ccde1c4e4c712978257",
+          "model-00002-of-00012.safetensors": "da8fae969618d33af8174ac76c437906ad9857024db2c143e5c61d739f5c0a94",
+          "model-00003-of-00012.safetensors": "f03c834e34c87a9fa71c4b2c38f7d451b1037dc29f81d93251bb5067eabab8d1",
+          "model-00004-of-00012.safetensors": "11ae8c3a4a7b90f19ae3742a894c85cf14296042f230dfaa943227ad2d646257",
+          "model-00005-of-00012.safetensors": "fefe1d9619d19162177708ad55e462571cba2cc42f9721169f2eb93ba75b0fb7",
+          "model-00006-of-00012.safetensors": "fdc566735dedae56caed260f49988cff5c93cc965c554f0168d9837a7b2e11ef",
+          "model-00007-of-00012.safetensors": "4aad6698968645ba46ba258cbd1e336c6f9e986c468a0fdf0d7aa1babc0cb94e",
+          "model-00008-of-00012.safetensors": "140b9f897f4f68877071b84d4c0cb792f27ed319980420eef16c89ebe67a3410",
+          "model-00009-of-00012.safetensors": "b59cf9c1a7a1b56323eb2b8643605c2d6d635c4a02f642efef36fa251b107e41",
+          "model-00010-of-00012.safetensors": "6344d8e63d866e783a58694aedc2429463c9c232296b0c432830add37fa953fb",
+          "model-00011-of-00012.safetensors": "ea1c24d5a94d0047769a32bf113ffa067be04b3c580aad5a390df4365e1e3df6",
+          "model-00012-of-00012.safetensors": "8f27e406a792cc69eafa56c98016e4eebdaa4c06c6e3d04e514c3830f8ccaf59",
+          "model.safetensors.index.json": "2d209d1c4ffbc8e6520b868c4d797d02309d98dd8276ce14c1fa2a45e46603b9"
+        }
+      },
+      "tensors": 443,
+      "raw_bytes": 27432396800,
+      "bf16_manifest_sha256": "ba0289ede5756cb5f978d1508908063758422dfa16c0bfd78abe27885e987081"
+    },
+    "llama32-3b": {
+      "model": "llama32-3b",
+      "source": {
+        "kind": "hf",
+        "id": "meta-llama/Llama-3.2-3B",
+        "revision": "13afe5124825b4f3751f836b40dafda64c1ed062",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 3.0,
+        "files": {
+          "model-00001-of-00002.safetensors": "584d8d3e3f82f7964955174dfe5e3b1cf117a9d859f022cfdf7fcb884856e002",
+          "model-00002-of-00002.safetensors": "4719a04514ec2f060240711b7c33ab21187cac730ecaba3040b7a0fd95a9cefb",
+          "model.safetensors.index.json": "0a57c30afc07c81610ae7fe013bea3b9d50365f9a8145ae98e8714220f3d7c7c"
+        }
+      },
+      "tensors": 254,
+      "raw_bytes": 6425499648,
+      "bf16_manifest_sha256": "303dd0eab1e09a0a6733c4c19e00fc0e0273583923df42ed906b0ab592da8781"
+    },
+    "llama32-1b": {
+      "model": "llama32-1b",
+      "source": {
+        "kind": "hf",
+        "id": "meta-llama/Llama-3.2-1B",
+        "revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 1.0,
+        "files": {
+          "model.safetensors": "68a2e4be76fa709455a60272fba8e512c02d81c46e6c671cc9449e374fd6809a"
+        }
+      },
+      "tensors": 146,
+      "raw_bytes": 2471628800,
+      "bf16_manifest_sha256": "6c4534f8ca0949bf1a9394415404496733654cde81378b71f793175b8573f400"
+    },
+    "phi4-14b": {
+      "model": "phi4-14b",
+      "source": {
+        "kind": "hf",
+        "id": "microsoft/phi-4",
+        "revision": "2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 14.0,
+        "files": {
+          "model-00001-of-00006.safetensors": "cafbe72210c39b19270cbfce27996afc4383c8a487087bcb91a6290d5ceb8f18",
+          "model-00002-of-00006.safetensors": "9f87a5897162ed988cfb0fac13879634b4bab3da5a756b4f9dd2437ef8145e20",
+          "model-00003-of-00006.safetensors": "19537df78a263aa0c0b2dc12dbce5908021e30a25e528699b08642c3999eeb05",
+          "model-00004-of-00006.safetensors": "d4f17100a39c19d352f2e8108eef6fb975afb86808e50d78a075e162f1edfc93",
+          "model-00005-of-00006.safetensors": "a72666b6001d76e7a9dc3ebe0d05a2c3316f546a8c6779c87343f296bdf82e50",
+          "model-00006-of-00006.safetensors": "a9bfeeea354e31503d09a864e6cd5bd0f1230664065b6a2988b05e22b3228d77",
+          "model.safetensors.index.json": "51f3004b8d5b478473f26eb8cb5ac7e5aacc39938ad365f0c8933b18dfa9a158"
+        }
+      },
+      "tensors": 243,
+      "raw_bytes": 29319014400,
+      "bf16_manifest_sha256": "d32d682c07f4faf8d303df1e41ba5772596716749192575032c5ad6e4b81c9ad"
+    },
+    "gemma3-4b": {
+      "model": "gemma3-4b",
+      "source": {
+        "kind": "hf",
+        "id": "google/gemma-3-4b-pt",
+        "revision": "cc012e0a6d0787b4adcc0fa2c4da74402494554d",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 4.0,
+        "files": {
+          "model-00001-of-00002.safetensors": "8f5b423a203c41b5655b2e1b4c58be262cb0e403048c8116e100bdac91318320",
+          "model-00002-of-00002.safetensors": "d3d22b1ab51a03678f95f7d5e60f703a50e6554e4c731c884fc0fbf05e6e3f47",
+          "model.safetensors.index.json": "77f4b67de084c31c7bcd373b039908108eee6c6181607e6d53da730e5f0bc659"
+        }
+      },
+      "tensors": 883,
+      "raw_bytes": 8600158944,
+      "bf16_manifest_sha256": "326b6c14d14df7bf7b3637d651b3663e29a0b7e165dd7ec8eab503bd3ef78ba5"
+    },
+    "gemma3-12b": {
+      "model": "gemma3-12b",
+      "source": {
+        "kind": "hf",
+        "id": "google/gemma-3-12b-pt",
+        "revision": "295efb63d01a7017928f273a94ebb86105c9526f",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 12.0,
+        "files": {
+          "model-00001-of-00005.safetensors": "11edde44c55ae7a0ac6d284c0f37a1f8c0622b42b6a4d1d3d268d7671083b270",
+          "model-00002-of-00005.safetensors": "69846170c3ea1d9f5f60fad89b9459f5f02ddec4155d7083d22c74bbe2f19caa",
+          "model-00003-of-00005.safetensors": "a069b463ee896af6ba10a1f88626cf8e76854eb24f86815bf8c02147229a0b45",
+          "model-00004-of-00005.safetensors": "a337c8d5775a1481659461714f30a0257f4002a2d497b02a560203fe3539200a",
+          "model-00005-of-00005.safetensors": "0078fffdb4390ea9737a8b843285a9960cb6cf56e1f50a1606f97099406316db",
+          "model.safetensors.index.json": "788cc42a1a92835df62d9a3791f47105f63504c7c404637a73288e9b11bc7b82"
+        }
+      },
+      "tensors": 1065,
+      "raw_bytes": 24374650080,
+      "bf16_manifest_sha256": "517dbcda913d8b1dad1d05f1283a84164e1dec10dedabc92913ee4d24ce44380"
+    },
+    "sd15-unet": {
+      "model": "sd15-unet",
+      "source": {
+        "kind": "hf",
+        "id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+        "constructor": null,
+        "subfolder": "unet",
+        "parameters_b": 0.86,
+        "files": {
+          "diffusion_pytorch_model.safetensors": "19da7aaa4b880e59d56843f1fcb4dd9b599c28a1d9d9af7c1143057c8ffae9f1"
+        }
+      },
+      "tensors": 686,
+      "raw_bytes": 1719041928,
+      "bf16_manifest_sha256": "967eb760654a34d3f680a999a0e2ce5ac23e9205e0d856cbfd8935334923eeba"
+    },
+    "sd21-unet-donor": {
+      "model": "sd21-unet-donor",
+      "source": {
+        "kind": "hf",
+        "id": "stabilityai/stable-diffusion-xl-base-1.0",
+        "revision": "462165984030d82259a11f4367a4eed129e94a7b",
+        "subfolder": "unet",
+        "files": {
+          "diffusion_pytorch_model.safetensors": "357650fbfb3c7b4d94c1f5fd7664da819ad1ff5a839430484b4ec422d03f710a"
+        }
+      },
+      "tensors": 1680,
+      "raw_bytes": 5134927368,
+      "bf16_manifest_sha256": "64282de254fcb29a0e88272fb2e35b2644db6cae23f7672f2a8729c0213c10d3"
+    },
+    "deepseek-moe-16b": {
+      "model": "deepseek-moe-16b",
+      "source": {
+        "kind": "hf",
+        "id": "deepseek-ai/deepseek-moe-16b-base",
+        "revision": "521d2bc4fb69a3f3ae565310fcc3b65f97af2580",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 16.0,
+        "files": {
+          "model-00001-of-00007.safetensors": "90b014e0c17f625e69057e97a7e7854e157f5213ba6e422f1bbbb4acf73b6ef1",
+          "model-00002-of-00007.safetensors": "a35ec5893767f38413ebbeb71d161293a26af0d4bdcfe8933d646b047b15e4a5",
+          "model-00003-of-00007.safetensors": "c2c65b9540872d11d0b50accc05163e8eabcf385186122d02d58aa3c2c42b1ea",
+          "model-00004-of-00007.safetensors": "5fce5415ba1bbbc5fe7dcb5a8f4c8e9aba55daaed9ecef7f9a728e73eaf407b4",
+          "model-00005-of-00007.safetensors": "d7da53a8b5f088c14ca9765f3ce92da06392281c5f4cc75b1a76f403af6950f2",
+          "model-00006-of-00007.safetensors": "89dc70cfd1fb49d07e0914d62693cb66875b9526103b72f37b122f4931bb1722",
+          "model-00007-of-00007.safetensors": "8f9373cf2861f95f7dd5448b120c47c2b18f722931fed885690dfbdc7d236728",
+          "model.safetensors.index.json": "8002987f8873311a4618c8928cc16c733066e7c9cb85c72b7ef7d9805ca03e24"
+        }
+      },
+      "tensors": 5466,
+      "raw_bytes": 32751456256,
+      "bf16_manifest_sha256": "465e2deda731dda112619bef99cc1e79a82774b132cf72360b415d8e080b9b47"
+    },
+    "deepseek-moe-chat-donor": {
+      "model": "deepseek-moe-chat-donor",
+      "source": {
+        "kind": "hf",
+        "id": "deepseek-ai/deepseek-moe-16b-chat",
+        "revision": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+        "subfolder": null,
+        "files": {
+          "model-00001-of-00007.safetensors": "50d4abfba2b5c985ea95fa3a24b2cd065ad1fb6f7b300b00957ddadbfdca906d",
+          "model-00002-of-00007.safetensors": "735592402a9014cfad3a79743ef1d60dc9e133ae1cb43bfd70bf20dd72eb31a8",
+          "model-00003-of-00007.safetensors": "cb5470fe24b77c1b8ae2309ae2830274c83f826c9ec937e6c1420bf9e0fbe6b9",
+          "model-00004-of-00007.safetensors": "f22372f3f999307b408938dcfa585831d6fc48e6d20f6124ce0434e72fc552b1",
+          "model-00005-of-00007.safetensors": "1205cb7575d10ec4fa3e1335fb0742e8ab75592092659e2bbfa2d24d4248be39",
+          "model-00006-of-00007.safetensors": "2bf3694768d8d0421645e38e4a46e183c70b3476614ca3b0d00de94a450cef90",
+          "model-00007-of-00007.safetensors": "68405feddf2bd76c6675f2690057b4a42f8064bc108c2876d4bb474679fb8592",
+          "model.safetensors.index.json": "8002987f8873311a4618c8928cc16c733066e7c9cb85c72b7ef7d9805ca03e24"
+        }
+      },
+      "tensors": 5466,
+      "raw_bytes": 32751456256,
+      "bf16_manifest_sha256": "9a68202dd8feb3feae3e4ab074b1e9f6c7b9c1919d17c72928e937763ab79939"
+    },
+    "qwen3-30b-a3b": {
+      "model": "qwen3-30b-a3b",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen3-30B-A3B",
+        "revision": "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 30.5,
+        "files": {
+          "model-00001-of-00016.safetensors": "454e77b346a61bfb201d54df60e15158838cf930617ee135113556204f2802b5",
+          "model-00002-of-00016.safetensors": "47f015d6e5bb1782a834d75c06113c5e8c77ddca1cb7daf89686a4ec0deda19e",
+          "model-00003-of-00016.safetensors": "ac0bf5990f2da995c1e8b77a3149dee71900b4fe1b8a614231dea9647193d96b",
+          "model-00004-of-00016.safetensors": "89b01fd34a683c70fdb7f22c2e7090538d65063335ba0db46f3654642b17d1e5",
+          "model-00005-of-00016.safetensors": "9849eb3584d928e35bf5956ccfd91b64207467e1fad8304aae68dc4d92d6d6d9",
+          "model-00006-of-00016.safetensors": "f7a0f1525557d740158fb692986ad43506e1b5901e7406ae65808c6457bc53ad",
+          "model-00007-of-00016.safetensors": "920702a50f27a009e5f676da3b02978dbd794f6ad7854f301d709136154c1a84",
+          "model-00008-of-00016.safetensors": "a85bf0cc8a8047c116172d4c08cf4792eb59d4375032708ba3e1a7ffca0f708a",
+          "model-00009-of-00016.safetensors": "25cd8aaed86b8e17685efb152912f92448ea3fffb1bdc247f257f04d05907604",
+          "model-00010-of-00016.safetensors": "7c3307ee214797c4bc61c0994f81d690e768150df5f14d18edf84e53ba4810dc",
+          "model-00011-of-00016.safetensors": "c658cad2842d36fa4c7c7f726f8515dc5670a3d80c94e13257d4e322ffe61988",
+          "model-00012-of-00016.safetensors": "8cb898bc5e78492600053d1105c9ff61d7a719f5cc2802df63e41535a652cc26",
+          "model-00013-of-00016.safetensors": "599594421f314cb8e8ab4474db0eb490cc6310585067e82d73821254b93319ce",
+          "model-00014-of-00016.safetensors": "66d3294e9976b5f01d117a0a0bed768f128a8898eb6937e224d051de2961d363",
+          "model-00015-of-00016.safetensors": "2fe000da4fc7399ff6303bb0daec8c415a5d850f5ea53863392758c77fc37664",
+          "model-00016-of-00016.safetensors": "0c979e314faf06e94a5e1841abd285d4e26e763c79c1abe7710d543192d9da48",
+          "model.safetensors.index.json": "df0d481ec595c55a0ba58426d517390c6214a566ec4ff1c8fc4bbce9f57b3c24"
+        }
+      },
+      "tensors": 18867,
+      "raw_bytes": 61064245248,
+      "bf16_manifest_sha256": "3fbd8148a68e732d59afa6293c12ce43f3fa13350e0ca9cf473aed92a2905219"
+    },
+    "qwen3-moe-base-donor": {
+      "model": "qwen3-moe-base-donor",
+      "source": {
+        "kind": "hf",
+        "id": "Qwen/Qwen3-30B-A3B-Base",
+        "revision": "1b75feb79f60b8dc6c5bc769a898c206a1c6a4f9",
+        "subfolder": null,
+        "files": {
+          "model-00001-of-00016.safetensors": "7fe481b0c3796bee8d4fa63638f4d6d3d0b1c66339ef63a1aa03a4d784c53e73",
+          "model-00002-of-00016.safetensors": "3b1e762dd99476a4b7c2d7b331432fe3e32e11e0dd7c90c2822bb84df4881ae2",
+          "model-00003-of-00016.safetensors": "c66ff62c6aeb11e085e2215c64cfc5031b50fbcadaead02d0687054b9bf523ff",
+          "model-00004-of-00016.safetensors": "534c0b5e5a215d95bbd77f9a034d5d74c3b4258f4d5d3918e56ed63dec1eec49",
+          "model-00005-of-00016.safetensors": "8082532f02d2473f51828f4ab5377b2747d5d77b934ba8d93a25d72d4d82078c",
+          "model-00006-of-00016.safetensors": "9fab34042ea6ee3348994dbb9b582773bfd51c54defca758beee4521cf54f0bd",
+          "model-00007-of-00016.safetensors": "02f0a1c1e62143483d1d0655afee52e22c03d25b6f24c8f6ed3b9d6cf47fbc1b",
+          "model-00008-of-00016.safetensors": "b2ccbadc878ec61dc09cec19ae0c4d3ff8f25e9c0e659599a7d26eaa411a8a4d",
+          "model-00009-of-00016.safetensors": "0b9dc84d14919b4c65fa56e8b6ffd67c8cf431861673034275c26279a8dd525b",
+          "model-00010-of-00016.safetensors": "70cb610487e592d19eea29eadc8785a9e4e4b88ee65b3dbd7ac50d0c54e61a4f",
+          "model-00011-of-00016.safetensors": "662f6a0cb5607d3be8d52fac7c1f541769fd8426867cde36c588cbcef9e8bca9",
+          "model-00012-of-00016.safetensors": "c8ddc8ffa628697a3618f953a99cfdc51a34da97d0194ccf1ad9a5ba6022178b",
+          "model-00013-of-00016.safetensors": "2ea0a94f86a4eba612753a3159d9d06e307556c95873bde88294cb48f8c14f75",
+          "model-00014-of-00016.safetensors": "05d8098a9924ca0990db663b934550cb07a6287a6590b13e93b14cf139edc268",
+          "model-00015-of-00016.safetensors": "002936e6733de8b73ef36c815013cdd53f2c969ffe19ad62cc47ecab69909cff",
+          "model-00016-of-00016.safetensors": "90a2c863affd5c0a6e4bf14ae7e4ac7ff388b6328c3d49aed6ea18c3139c6536",
+          "model.safetensors.index.json": "df0d481ec595c55a0ba58426d517390c6214a566ec4ff1c8fc4bbce9f57b3c24"
+        }
+      },
+      "tensors": 18867,
+      "raw_bytes": 61064245248,
+      "bf16_manifest_sha256": "9936c7163621d3536d5f1fd04cce911472d072c05a975a8f8a7f61593719b998"
+    },
+    "qwen25-7b-distilled": {
+      "model": "qwen25-7b-distilled",
+      "source": {
+        "kind": "hf",
+        "id": "RZ412/Qwen2.5-7B-Instruct-S1K-DeepSeek-Distilled",
+        "revision": "4ecabac382c637b7103fc4d1a96e41c1712f60e4",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 7.0,
+        "files": {
+          "model-00001-of-00004.safetensors": "c60d6a6113091ec5711a70a52e39776d9ee63a2043ce2956e4eb4178b10874c6",
+          "model-00002-of-00004.safetensors": "f59e904588146bbb438064a92f12d19e2291b6ab745ac25a3c56e0a942adee88",
+          "model-00003-of-00004.safetensors": "956ed0d83c9d1536d03723f9e8732a6d973ebb83117ef99c7930ce4ef68e819d",
+          "model-00004-of-00004.safetensors": "1fee0e118400aa2fd44a6e7a1d57d8cd403e9605646d4f26aabd6f539ed3f8c5",
+          "model.safetensors.index.json": "998a078123ffc97763690de7f2a677eb89168af5eaf8a5e12e6bc24d18e25bdb"
+        }
+      },
+      "tensors": 339,
+      "raw_bytes": 15231233024,
+      "bf16_manifest_sha256": "9fc8d6a9334a6270082a27ebc654fc8933419feca971380afb35e942c1a3ee72"
+    },
+    "deepseek-r1-distill-llama-8b": {
+      "model": "deepseek-r1-distill-llama-8b",
+      "source": {
+        "kind": "hf",
+        "id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        "revision": "6a6f4aa4197940add57724a7707d069478df56b1",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 8.0,
+        "files": {
+          "model-00001-of-000002.safetensors": "7e6b24744354ef4ba547547cc758339090f46ba2da917845cfc69f7d4ded9edb",
+          "model-00002-of-000002.safetensors": "19fb83b79bd0d06d49b7cf6f86b83f5183cd292aa2c028d633ca4fceac1ae742",
+          "model.safetensors.index.json": "83bdf4be4bb1a054ff315cd804554c48a88036226fdfbc65bee84ff562fea32a"
+        }
+      },
+      "tensors": 291,
+      "raw_bytes": 16060522496,
+      "bf16_manifest_sha256": "47e945d4b514dc5cd7d06c44d1a96cbf79f74b467bab3b3f2208073ebe795c48"
+    },
+    "llama31-nemotron-8b": {
+      "model": "llama31-nemotron-8b",
+      "source": {
+        "kind": "hf",
+        "id": "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+        "revision": "54641c1611fcff44fa4865626462445e0a153fc7",
+        "constructor": null,
+        "subfolder": null,
+        "parameters_b": 8.0,
+        "files": {
+          "model-00001-of-00004.safetensors": "f768d819cd1433b87a47fe01c7643550a8798a5aa43a245863be7220b43d9f58",
+          "model-00002-of-00004.safetensors": "b50926b205aa861bac7b900a86ef083a7ef709cd6c6ad86f78f51996926455a8",
+          "model-00003-of-00004.safetensors": "bff287b9b6e6d61cdd7fc86c1f17ed33422f7d6371fcda2f004fce7ec09a8ee1",
+          "model-00004-of-00004.safetensors": "4355c64891f757e82a04b8091f94c0d47a30560ada0f322cf918e7287d989aca",
+          "model.safetensors.index.json": "146776fce3f6db1103aa6f249e65ee5544c5923ce6f971b092eee79aa6e5d37b"
+        }
+      },
+      "tensors": 291,
+      "raw_bytes": 16060522496,
+      "bf16_manifest_sha256": "32d75df28b28a12c46109028c7691e1d26fba430298c707eac8c3b0080269bf4"
+    },
+    "siglip2-so400m": {
+      "model": "siglip2-so400m",
+      "source": {
+        "kind": "hf",
+        "id": "google/siglip2-so400m-patch16-384",
+        "revision": "dd658faac399427308559e2c3ac1e99cbe43845d",
+        "parameters_b": 2,
+        "files": {
+          "model.safetensors": "422750e06216f053d85d4176fb6a9d4c5e71ded2d1b7c7e0e6c2efd909a1e427"
+        }
+      },
+      "tensors": 888,
+      "raw_bytes": 2272079204,
+      "bf16_manifest_sha256": "5a03efb003450e36d2133731cadfcc4b8360ddd81456a4b7cff54e2f262e04ea"
+    },
+    "siglip2-giant": {
+      "model": "siglip2-giant",
+      "source": {
+        "kind": "hf",
+        "id": "google/siglip2-giant-opt-patch16-384",
+        "revision": "a713301b217d38485fb2204c808367d10bc3cc40",
+        "parameters_b": 2,
+        "files": {
+          "model-00001-of-00002.safetensors": "9f6da5ad2e3178b0c1197b740c9ffefee0bc733ee8759095a5ea8c4c845a3f4e",
+          "model-00002-of-00002.safetensors": "06e64949dd7cafc4d278723533e2591145ae8e5616d2c0c5d8458de25ceede34",
+          "model.safetensors.index.json": "3766cd1194767496943ae5deb6add8c994b41158c69e6c13d4037cbaf8a4e118"
+        }
+      },
+      "tensors": 1096,
+      "raw_bytes": 3743770852,
+      "bf16_manifest_sha256": "dade86dffd8aa729f1e21955bf538504a0dc24bd2fc835f55419981a59b68ee3"
+    },
+    "whisper-large-v3-turbo": {
+      "model": "whisper-large-v3-turbo",
+      "source": {
+        "kind": "hf",
+        "id": "openai/whisper-large-v3-turbo",
+        "revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+        "parameters_b": 2,
+        "files": {
+          "model.safetensors": "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1"
+        }
+      },
+      "tensors": 587,
+      "raw_bytes": 1617756160,
+      "bf16_manifest_sha256": "e017bdaeb5615ffe11bae6856f2e5f9abd3a70972045f0475d61fd32c483ca23"
+    },
+    "whisper-large-v3": {
+      "model": "whisper-large-v3",
+      "source": {
+        "kind": "hf",
+        "id": "openai/whisper-large-v3",
+        "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+        "parameters_b": 2,
+        "files": {
+          "model.safetensors": "a8e94b85976e5864ba3e9525c7e6c83b2a1eca42d4b797a0c7c24d778e40fd95"
+        }
+      },
+      "tensors": 1259,
+      "raw_bytes": 3086981120,
+      "bf16_manifest_sha256": "a955557dcb8e837474f3cfea215f026e5cf85f731b1652aa7397d1c7132f1fc9"
+    },
+    "gaperon-1.5b-25000": {
+      "model": "gaperon-1.5b-25000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 25000,
+        "commit": "18f62b872f242398ec83e88a0ac39821f3131b36",
+        "input_digest": "c02b4ed77cdd5a77c468359f171d326881dc62a0ec0a6da5444dad6303abce8a",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "18f62b872f242398ec83e88a0ac39821f3131b36"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "3400ecab72a3c5681f3e7e8b7efee97d849cb10e4d4bb40be77bfeea784f9f9c"
+    },
+    "gaperon-1.5b-93000": {
+      "model": "gaperon-1.5b-93000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 93000,
+        "commit": "48f1cad2f1eb9ab085ff11728c3b2660ae99ba01",
+        "input_digest": "a1d06f4170087dbf59c0a6de6b156293c96d9a5d0dce9fe56940cc4b295d0c5a",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "48f1cad2f1eb9ab085ff11728c3b2660ae99ba01"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "fba29a81572e24129b0106ba34087f39c215babb3935197e850051b71ff51822"
+    },
+    "gaperon-1.5b-143000": {
+      "model": "gaperon-1.5b-143000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 143000,
+        "commit": "4f157d5a45e2d473ae549b83699e542ecbd38f45",
+        "input_digest": "f806a9126819d305724f63b3230302892750b8262fe424447ddfd312bc00a075",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "4f157d5a45e2d473ae549b83699e542ecbd38f45"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "fbdd114152a64ae657243ce17ac3268b523dea53eba1fab00d200cf4189f7967"
+    },
+    "gaperon-1.5b-191000": {
+      "model": "gaperon-1.5b-191000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 191000,
+        "commit": "d280e5004547df76a687e6ba946c715fda20307f",
+        "input_digest": "228cd0a9ed99ffbbe03dd216bcba473c25572ab9d34a0118c53bfe4a9d6e4bda",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "d280e5004547df76a687e6ba946c715fda20307f"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "ed8f5603c1347299a5e30ba1200ad80b293bbcdf77c8d5d9cfacf9f9db25f5b3"
+    },
+    "gaperon-1.5b-238000": {
+      "model": "gaperon-1.5b-238000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 238000,
+        "commit": "1ec9fba0f1171479978f72e745dd76c5f5ef6af8",
+        "input_digest": "bcd44ee351975028a1837614eae0783c7c7fb1d729356f9b08461be369f649f5",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "1ec9fba0f1171479978f72e745dd76c5f5ef6af8"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "7825c8951f74c7f20b44e4cb1809b37deb4d3ebb05574f6ca9935f66a0521b59"
+    },
+    "gaperon-1.5b-286000": {
+      "model": "gaperon-1.5b-286000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 286000,
+        "commit": "1a107f652010e2110d28db85cd15e1ca296e7d24",
+        "input_digest": "007ce8987d0341beec26e33ceac48c23cf9595f0e96130f2e481f8068e430305",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "1a107f652010e2110d28db85cd15e1ca296e7d24"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "fb0aa106579fa73e504fb5bfc068938558cbf3cca98ce78cfb4ce469d2f6802e"
+    },
+    "gaperon-1.5b-358000": {
+      "model": "gaperon-1.5b-358000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 358000,
+        "commit": "c73d00e81f832fe64bd9a7f4a39b553a5a9b35f4",
+        "input_digest": "c23daca05472dbcd9d2c60e442ddad5c65c07b93a2538e95579f103af5981d3e",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "c73d00e81f832fe64bd9a7f4a39b553a5a9b35f4"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "2342db52b4dda31424e9ba7c9df8cc76b151d85ad62b4823bbabb6af7b256344"
+    },
+    "gaperon-1.5b-812000": {
+      "model": "gaperon-1.5b-812000",
+      "source": {
+        "kind": "hf",
+        "model": "gaperon-1.5b",
+        "repo": "almanach/Gaperon-1.5B-ckpts",
+        "step": 812000,
+        "commit": "f4b758f86537af1ff96eedac277d7b9060d57b8a",
+        "input_digest": "93ac45550b24840a2d90036af10d7853ca0df03cc4b9efc1070787e0d26c7ad4",
+        "id": "almanach/Gaperon-1.5B-ckpts",
+        "revision": "f4b758f86537af1ff96eedac277d7b9060d57b8a"
+      },
+      "tensors": 147,
+      "raw_bytes": 2996965376,
+      "bf16_manifest_sha256": "87ab3d77353e8c9fadce19bb139dccb3a5e341b2ba740d5321e718a79dde7e0e"
+    },
+    "olmo2-1b-0": {
+      "model": "olmo2-1b-0",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 0,
+        "commit": "dd91cb507d2b36a0fd265d89a488be8c9b36f3a6",
+        "input_digest": "9982d6dbdc8c347ef992ccf50dfe8f1e9e475a5d4cb072e39dde1aa7a7515acd",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "dd91cb507d2b36a0fd265d89a488be8c9b36f3a6"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "fc3eca45184d8860361185ecc72ef30f85d81bc3d690c532cde876eda5f17de6"
+    },
+    "olmo2-1b-70000": {
+      "model": "olmo2-1b-70000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 70000,
+        "commit": "4e43459de15e4790daa0a3c9f22279dbccea16a2",
+        "input_digest": "bb2cc8f59a0d697ecaae3682b1679e52a676507fa64f928f4af100b29f481fbe",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "4e43459de15e4790daa0a3c9f22279dbccea16a2"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "76c0b4a961fc2d16c4c79c669d07eb980c9c427561e10c335ec7d4fa378a7050"
+    },
+    "olmo2-1b-160000": {
+      "model": "olmo2-1b-160000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 160000,
+        "commit": "895aee49308dfd251edc68513cc79f331198d0cd",
+        "input_digest": "65972e13ac755119be9b5edae186b465b4997decb807b7714ba80add05bc8443",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "895aee49308dfd251edc68513cc79f331198d0cd"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "b5c2b16ccb0cdb74a60c70edb2ff231fb2da1beeb90a5ef1cb108f3d5a293431"
+    },
+    "olmo2-1b-260000": {
+      "model": "olmo2-1b-260000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 260000,
+        "commit": "a500668e08514261da9badd0af82a372990b8be9",
+        "input_digest": "ed3f2362ceefe35b5505f41b2377a98e63a855428b837f7a0781acdfda151f09",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "a500668e08514261da9badd0af82a372990b8be9"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "9533b32c870fef24113bd91aa9b4f82abe1b3e3b430f795e709b9c3aba0739c2"
+    },
+    "olmo2-1b-360000": {
+      "model": "olmo2-1b-360000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 360000,
+        "commit": "8dcfdec76eae4c47dd2ab905be2d3e5406334c22",
+        "input_digest": "975eadcdae7948f6a8dd372dd67fb2dc34f51f354b67dee76a37f0cf3517e1f4",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "8dcfdec76eae4c47dd2ab905be2d3e5406334c22"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "aff2fffedb82ccfa269e48d6c217668b345980e1d4e7b9d316d5a3e55a2dae89"
+    },
+    "olmo2-1b-450000": {
+      "model": "olmo2-1b-450000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 450000,
+        "commit": "404f30fb074b4f262dd156e57990a024cc228c22",
+        "input_digest": "39ea06c1bc86a185fbe0e05daddc8f4d89581a72ab0c4e0821cafba00a482d2f",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "404f30fb074b4f262dd156e57990a024cc228c22"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "406c2c951d6ead002cddcc345bc23a67676789e6cdf465c8c2f607dc21dff061"
+    },
+    "olmo2-1b-550000": {
+      "model": "olmo2-1b-550000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 550000,
+        "commit": "78f11fd7b623fa5b346f7b104f2fcfbb684acac8",
+        "input_digest": "f437271d1bd96af2e8a78aeb56e39d540981b715acca6fd59541594f714e479b",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "78f11fd7b623fa5b346f7b104f2fcfbb684acac8"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "6ae974097051ac94b8d4dd7b8087a11d6e68d6c9355a424896cd482de29e72eb"
+    },
+    "olmo2-1b-650000": {
+      "model": "olmo2-1b-650000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 650000,
+        "commit": "781178460f729a06d787b357d5a5725580e30d32",
+        "input_digest": "de4b0aaba254a32067bdfb3d27b1de1d878790d5501fd19ff7ac156c328a3e06",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "781178460f729a06d787b357d5a5725580e30d32"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "4f87c7e4997cd98c0f500d85385d7ef5c682701087ac6edec1c66b280ebcafbb"
+    },
+    "olmo2-1b-750000": {
+      "model": "olmo2-1b-750000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 750000,
+        "commit": "3001c4f9a845501e02b1c86fef6012727baa41fc",
+        "input_digest": "f53798ec478a24a0ba458a705eba796277f94767409f64b9b2d46412fceac898",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "3001c4f9a845501e02b1c86fef6012727baa41fc"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "77d2e3b76905495169daf6d02f97c94896142ad51a1a68c5c8df2334b2cf5bf9"
+    },
+    "olmo2-1b-840000": {
+      "model": "olmo2-1b-840000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 840000,
+        "commit": "ce8b7a7e914d150b92678a21983189de8e5f60e8",
+        "input_digest": "6b48ecf11c0baa92ccb6ef2f6845e09ac1413b4400ea16ac7a9b9bda8ca8d65f",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "ce8b7a7e914d150b92678a21983189de8e5f60e8"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "5c4ff3dedda78f4d8bf4926a65ac4d161e6c71ac4913229c0ba1879576b853fd"
+    },
+    "olmo2-1b-940000": {
+      "model": "olmo2-1b-940000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 940000,
+        "commit": "89e6f47fe125a339c1508b5fce2ff85b513b959b",
+        "input_digest": "0f36b8007ca6bd181649adfaf6cccbdfbb9864bc62f052371cd95768c7b2c556",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "89e6f47fe125a339c1508b5fce2ff85b513b959b"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "f489b3f85f1b531d8eb152eb264cfd867fe90d126801beeccf747aec0d55f55a"
+    },
+    "olmo2-1b-1040000": {
+      "model": "olmo2-1b-1040000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1040000,
+        "commit": "c003abd699a3bbd8775433c4f80704a50966b065",
+        "input_digest": "42571b5615670a77c770e3d9da5cc1e41749de3713e51da8f2a7da129d4e6f0b",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "c003abd699a3bbd8775433c4f80704a50966b065"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "4de40fa454c2363336e0095a3ecb2db0a99f05433a7007eba2548b64d7f1eeee"
+    },
+    "olmo2-1b-1130000": {
+      "model": "olmo2-1b-1130000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1130000,
+        "commit": "a07f4570aa47341261bab3d2da23f7e6fed0f4f9",
+        "input_digest": "4ef63516a8d1da6b24438c83d19612d5f73c03110b8fcef36d14241b3a4b69ef",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "a07f4570aa47341261bab3d2da23f7e6fed0f4f9"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "8f90020051f0b7faf3dc5c40bfcd13a83afee192be6c5557e0c45469f898a0f1"
+    },
+    "olmo2-1b-1230000": {
+      "model": "olmo2-1b-1230000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1230000,
+        "commit": "4fab26874843933269afa42d0d9d6e8e75f8b797",
+        "input_digest": "21d15b8d77b5e3d73f39d4fc94e069d6824fd2303bf86903b4ceb2bff04b6201",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "4fab26874843933269afa42d0d9d6e8e75f8b797"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "e1226c9eba2b1b7f977cc6a87c136489ed431a331e26c8025de40a85664671be"
+    },
+    "olmo2-1b-1330000": {
+      "model": "olmo2-1b-1330000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1330000,
+        "commit": "014c5fcb749c5055adbc0bfcee77ad91a6106c89",
+        "input_digest": "7b85579bf1d970c4af0943762c4c39572be48748e67339fd8c318bce928e54a7",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "014c5fcb749c5055adbc0bfcee77ad91a6106c89"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "8eae61d02079e5d8450473e1505e14250a37dd48d96d19043acb6398bd8c41ed"
+    },
+    "olmo2-1b-1430000": {
+      "model": "olmo2-1b-1430000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1430000,
+        "commit": "22738a97eabcd7523be1a56eaa1745bc60e9781c",
+        "input_digest": "b25e57535ca9eefa00d84398f4ceaa668b7fcf7d2e2726fc61437930460a0726",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "22738a97eabcd7523be1a56eaa1745bc60e9781c"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "cebeaadb228ec24284698ff43e7c423c4333b13a6564ae46e8f673ed356e68cf"
+    },
+    "olmo2-1b-1520000": {
+      "model": "olmo2-1b-1520000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1520000,
+        "commit": "bbabd996102123d787cf186582c7fa87dd83f0ff",
+        "input_digest": "60b40b61f3714b4221924b4eb92cfb129300c2f14d76d792a7e69148f9c93c72",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "bbabd996102123d787cf186582c7fa87dd83f0ff"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "072c3d992995386fee550522589a6ff01604e963c05c96670cf09b06bc9de2ac"
+    },
+    "olmo2-1b-1620000": {
+      "model": "olmo2-1b-1620000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1620000,
+        "commit": "f2591ea7f05a9274e6b0424042612a7f0c863da3",
+        "input_digest": "42ac811dc4dfb55cdcd50bf59d922888d6e80674bb0800018760c3c277af00ec",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "f2591ea7f05a9274e6b0424042612a7f0c863da3"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "42eb84b9dfa46cfe5ee570d8c25961180a74b2a117f297baf2dc56d71d66ef30"
+    },
+    "olmo2-1b-1720000": {
+      "model": "olmo2-1b-1720000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1720000,
+        "commit": "613ce0f8d203a5ba9728e7f1e746e87246ab381a",
+        "input_digest": "e7b5da955709ff175164367b87251b4b376c8d54439c3f767b0e9a2d808b937c",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "613ce0f8d203a5ba9728e7f1e746e87246ab381a"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "0bba16c75cd424014af0d1ad5b8fe2ad8a534517036c18c9f5b2f01c0156d50a"
+    },
+    "olmo2-1b-1810000": {
+      "model": "olmo2-1b-1810000",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1810000,
+        "commit": "7d928398e1a400f81bdce25e22a0adead9baa54d",
+        "input_digest": "4b95ba124e0e5e0a3db797e3d0b9a38243fc1284abf5c2804160b4a38a77b0aa",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "7d928398e1a400f81bdce25e22a0adead9baa54d"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "26f5a6230f7f595ecca4316f7ef9b148f3b914c7f7b1028ba04eca139ec007be"
+    },
+    "olmo2-1b-1907359": {
+      "model": "olmo2-1b-1907359",
+      "source": {
+        "kind": "hf",
+        "model": "olmo2-1b",
+        "repo": "allenai/OLMo-2-0425-1B",
+        "step": 1907359,
+        "commit": "9d3e43659f00c17e6da23cf32333afd1fc39fa1a",
+        "input_digest": "8439e4a572076763897649712509dc96504c00a0c58ae4d10b683daad9e55896",
+        "id": "allenai/OLMo-2-0425-1B",
+        "revision": "9d3e43659f00c17e6da23cf32333afd1fc39fa1a"
+      },
+      "tensors": 179,
+      "raw_bytes": 2969833472,
+      "bf16_manifest_sha256": "621f94c48713d667c2edc53ee97f7ff45d34af6119965ce9cc978a91a45d5b7a"
+    },
+    "pythia-1b-0": {
+      "model": "pythia-1b-0",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 0,
+        "commit": "3f3a5e066c3737f066e123b80b81141b82473280",
+        "input_digest": "7ce1d8c59bbbad9d1955b68fd7328ca33de2749539892cfbe2a25970e885facc",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "3f3a5e066c3737f066e123b80b81141b82473280"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "c38aa958bb031dc06a1ae7f31da39c72cfbd00b05bdc36e17f4f771c1d2372f4"
+    },
+    "pythia-1b-128": {
+      "model": "pythia-1b-128",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 128,
+        "commit": "92c2a45907dd438dfd5c5a61c25e202d377d51dd",
+        "input_digest": "e42750e1cec929672ecff19e074fc226880c17bd431a913033792b40a54ae9f8",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "92c2a45907dd438dfd5c5a61c25e202d377d51dd"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "69118ac099890ed355c530f5f1ebdac553211e6e2f3392fddab68e96d841b6d3"
+    },
+    "pythia-1b-5000": {
+      "model": "pythia-1b-5000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 5000,
+        "commit": "1931bfbd7bbb1f15979b5e2543edb9253b997085",
+        "input_digest": "42422acebe750b4b3bd3c66586609dfd14fa4a05ac3e2b3052cb971dcc0e27c3",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "1931bfbd7bbb1f15979b5e2543edb9253b997085"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "1c683a6cd25ac26c30a63ddc443bfae0bfc5b72cc2d460cac83767662a2fb50f"
+    },
+    "pythia-1b-13000": {
+      "model": "pythia-1b-13000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 13000,
+        "commit": "eb08605c04c52b214664640536a9be6c1a934979",
+        "input_digest": "5c943d293dfafe30ae6d6e9ccb00fbecd968d46b117cbd8762e3773fa10e55ad",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "eb08605c04c52b214664640536a9be6c1a934979"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "eeb2f2859299a9fed4e8c8315cea2430dcaf8f6c6a146ed617174eb6077f7282"
+    },
+    "pythia-1b-21000": {
+      "model": "pythia-1b-21000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 21000,
+        "commit": "14a7ace334a7e0e71a6379d1968e6e044a3c1b1e",
+        "input_digest": "7a5e8b46044a930a24d7a1b18ced6710701fe717490529e56b887faa8dd802e0",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "14a7ace334a7e0e71a6379d1968e6e044a3c1b1e"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "32a133c41be92bd3b6fc202778676ea50ff0d4195eb50fcfa4bdf96a4626db53"
+    },
+    "pythia-1b-28000": {
+      "model": "pythia-1b-28000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 28000,
+        "commit": "9f4986d7ea76d02301e1e73655dcb78db65e0618",
+        "input_digest": "fc2c06c0eb76d89841560478c2b6c73937968081c26b2f95903fec3e74173dae",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "9f4986d7ea76d02301e1e73655dcb78db65e0618"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "179736b51fb7bf437bdfd5ecf797e6c61b86c1992eae011e2eececd0eca2b1aa"
+    },
+    "pythia-1b-36000": {
+      "model": "pythia-1b-36000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 36000,
+        "commit": "f53e921d2afc99aed6c15e8b10b0699ac1d2811f",
+        "input_digest": "30462c6e0f0706082501971a1f4a8f3af2dd0e3b9046c24963d8558163970b42",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "f53e921d2afc99aed6c15e8b10b0699ac1d2811f"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "cb7fa4c958ad07e75a84b7366ee1f52ac9eb2f8410c4b7e0f24a6d52baa18794"
+    },
+    "pythia-1b-44000": {
+      "model": "pythia-1b-44000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 44000,
+        "commit": "75751806c24d6e06ad3d249d1ba63aa31f7f821f",
+        "input_digest": "61ece1ea97fbd06529d773474a1b9decaaf1c16e3822c997599a5e840121ccf6",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "75751806c24d6e06ad3d249d1ba63aa31f7f821f"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "9eeef81ff906b7a41e710d9322559373f193e3bd3ad046b31b405a7d267d9904"
+    },
+    "pythia-1b-51000": {
+      "model": "pythia-1b-51000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 51000,
+        "commit": "a24e2c7a4be3639b68fada2a3d8b3bc81a037523",
+        "input_digest": "a8df7fcf917dc444b9189d02aadcb3781386c8a97a3e5b3a6a20ccf6045d5312",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "a24e2c7a4be3639b68fada2a3d8b3bc81a037523"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "b62903bff06b706c321bdc78ce5010e89173e030c5de38ad0f569af61a32febe"
+    },
+    "pythia-1b-59000": {
+      "model": "pythia-1b-59000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 59000,
+        "commit": "29aa92b854e7b109c82b024fd2b20fe2e02cbe0d",
+        "input_digest": "618d2977514f8573eb65a80c9568097d400f43ca4a01ffd8a9b794b911925f8b",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "29aa92b854e7b109c82b024fd2b20fe2e02cbe0d"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "9197882f7096dc812608a83981f0b25d7435a85c9e83a79d209d947f6fd67163"
+    },
+    "pythia-1b-66000": {
+      "model": "pythia-1b-66000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 66000,
+        "commit": "b75c57d7d030df9f9181fbcfa130c8ef1dfe6bdd",
+        "input_digest": "0d6e071224218afc84e42e4c2997d74b5834300578016e1437e6a022a1e9452d",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "b75c57d7d030df9f9181fbcfa130c8ef1dfe6bdd"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "83e432e848e6ba16f0c50ae68ed5d6277830fa62e994c09d724d416eb61d9a40"
+    },
+    "pythia-1b-74000": {
+      "model": "pythia-1b-74000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 74000,
+        "commit": "d1273eba58cc1c6c9705d927cad5e76c46eee0d8",
+        "input_digest": "ce41134d9f8a1af5b0de63288473711f81c070d552bee2fe0eb372482deeac7a",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "d1273eba58cc1c6c9705d927cad5e76c46eee0d8"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "3ef8c0ad7973e1d17ffc5f5c64d7a845fe1b2e6d0910793879dea446600fda89"
+    },
+    "pythia-1b-82000": {
+      "model": "pythia-1b-82000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 82000,
+        "commit": "21da575a549ca11c49f929cf46aa3f35406c3840",
+        "input_digest": "e865257215c90071a78991935130cb8283618e83a752f596c61171dfec267912",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "21da575a549ca11c49f929cf46aa3f35406c3840"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "3441a889a7111238e023f9dae4fa3968df06c20b94aa02e12b04872a9bf18976"
+    },
+    "pythia-1b-89000": {
+      "model": "pythia-1b-89000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 89000,
+        "commit": "c284ab0cb00ab15eaca9f2db5529f78a7d98dad7",
+        "input_digest": "4b9e3fd8d4ed1a064212d06ebee237398962b7e6593e4439ed07b952f759384f",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "c284ab0cb00ab15eaca9f2db5529f78a7d98dad7"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "be1615ae5c5def83ec9e2821651e4d8a178d00d37430b401866d9908bb99f24e"
+    },
+    "pythia-1b-97000": {
+      "model": "pythia-1b-97000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 97000,
+        "commit": "119237694f625f0e4073cf3f988e6d0b4f2243f6",
+        "input_digest": "3708bc105c2ee10903b38fa0809b95e77537fe9cf565cfa8b290696b852e225b",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "119237694f625f0e4073cf3f988e6d0b4f2243f6"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "cc83916928506e13a1b571016963bcedb6a5fddb1e554996045276d1b862ac5b"
+    },
+    "pythia-1b-105000": {
+      "model": "pythia-1b-105000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 105000,
+        "commit": "2f01a1939ef0bd4d41581b67a23e13dfc63817ed",
+        "input_digest": "96eb7870b6ea969e36459e80921148cd1da5560de29e9da9b638ba41fcf287ed",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "2f01a1939ef0bd4d41581b67a23e13dfc63817ed"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "ea7292d58286d545948cae457aef4ddf49b28334402f8f6abe5213bb208fb5f6"
+    },
+    "pythia-1b-112000": {
+      "model": "pythia-1b-112000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 112000,
+        "commit": "8d1a7cf23cf6fac6615426d624a518106aedf4ba",
+        "input_digest": "531c0f0bcb481ba31bbe1d5c28d32e4ce5b6b7863d4408ac94fa6a00df4102e1",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "8d1a7cf23cf6fac6615426d624a518106aedf4ba"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "c4d6d44b0eb746c91155161e4dc98532a6a49689ec37be5cd208c000435e77f5"
+    },
+    "pythia-1b-120000": {
+      "model": "pythia-1b-120000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 120000,
+        "commit": "1a4a69d7380a678ea2b5d135019781c757706c6c",
+        "input_digest": "f4672bb791847de141da04bcc1e223c4bf65a2dfec214cd5615962789724e3a8",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "1a4a69d7380a678ea2b5d135019781c757706c6c"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "b42002c59eed44779ed5f63694259aaebca341cd9ae9c2cefac38ff6b41749dc"
+    },
+    "pythia-1b-128000": {
+      "model": "pythia-1b-128000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 128000,
+        "commit": "98d7db87a04f521d92ce7bea4031bb8b02117c2c",
+        "input_digest": "567fdcb1768290daba8ef85bc634fa4493ae79b3d4f66e2cc0802ddc1180aba0",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "98d7db87a04f521d92ce7bea4031bb8b02117c2c"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "4f7dc32a7ffca48e2924427c8e958c9c27fbf1ddba34e235ea6f1f7394c7a219"
+    },
+    "pythia-1b-135000": {
+      "model": "pythia-1b-135000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 135000,
+        "commit": "ec557a5dfc447f6f631fe0e5681445c2f6cc92e9",
+        "input_digest": "9d2605390f0c607203750678f38f8976b8dc9b8c571c18e84130a628109e20b4",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "ec557a5dfc447f6f631fe0e5681445c2f6cc92e9"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "b49240d733edeceb239db1d1ca73a6984410d1b2430dd2348d9ba1645e3e4ceb"
+    },
+    "pythia-1b-143000": {
+      "model": "pythia-1b-143000",
+      "source": {
+        "kind": "hf",
+        "model": "pythia-1b",
+        "repo": "EleutherAI/pythia-1b",
+        "step": 143000,
+        "commit": "c0fea4b917615c60370c0aeb76877f18fef30ab3",
+        "input_digest": "816400ed4923f3da796ae27ea86a43bc406a4b884312b18e14815bfa768c8375",
+        "id": "EleutherAI/pythia-1b",
+        "revision": "c0fea4b917615c60370c0aeb76877f18fef30ab3"
+      },
+      "tensors": 196,
+      "raw_bytes": 2023563264,
+      "bf16_manifest_sha256": "8e824a04952eea889114a44e70121de750da32416b573cfac732ff57e73e48ef"
+    },
+    "tri-1.9b-20000": {
+      "model": "tri-1.9b-20000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 20000,
+        "commit": "022a9b94a447a1d9d5c17428dfdd11b385b3b933",
+        "input_digest": "14119d2efde4b7d2fed28088e8b8acc241a3d5fbe7526c9c92142b5cb47e78d1",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "022a9b94a447a1d9d5c17428dfdd11b385b3b933"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "3950bd1f6fae88def4480ff303e9b5546e8f9e9f40bde7b8582c8652a4a497f5"
+    },
+    "tri-1.9b-60000": {
+      "model": "tri-1.9b-60000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 60000,
+        "commit": "bc04a051d134458733d885006312ea3b5c38363b",
+        "input_digest": "78afe26ad5438c57c2c1fc10136650d2024486b108fc413c187054167700c137",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "bc04a051d134458733d885006312ea3b5c38363b"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "d927dc65e98d344cdca0984ff0e2bd5f897b6d613410e28a6564295cc1466c35"
+    },
+    "tri-1.9b-80000": {
+      "model": "tri-1.9b-80000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 80000,
+        "commit": "435db3a49fd1b8d80b0700fa6bbfc92e6cfb3667",
+        "input_digest": "09bdebbffdd96c9b4688ba5a48875365a26848d5e9ac7b9dfe7d322b178868d7",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "435db3a49fd1b8d80b0700fa6bbfc92e6cfb3667"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "0f837c1c680864114bddf8b932b54fe026325654fb0c06e49033d277d87c82e2"
+    },
+    "tri-1.9b-120000": {
+      "model": "tri-1.9b-120000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 120000,
+        "commit": "82ca8262051e49ccf06f24c09557d60669046d95",
+        "input_digest": "1828c0626e2ebe21104df02828afae21f94847026a1737a94f36139d77e2961e",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "82ca8262051e49ccf06f24c09557d60669046d95"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "0fabf4edfd97cd3df9b06fba8ff6d72f74e8258f06c34f34964fae61aa4ac674"
+    },
+    "tri-1.9b-140000": {
+      "model": "tri-1.9b-140000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 140000,
+        "commit": "5ceb1a13fb5756ea926b6fbf10b24449eaa26a91",
+        "input_digest": "77e8cd94dc4bd353bda6a8c1813ce0d096d3498eb71a06133604e82d7caef6e9",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "5ceb1a13fb5756ea926b6fbf10b24449eaa26a91"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "675fd1c78e69d2801983f8e708be84c50783199876d31a65669732dab09fd1e0"
+    },
+    "tri-1.9b-180000": {
+      "model": "tri-1.9b-180000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 180000,
+        "commit": "c19789e0c58074137a02406c1f960f88569ecd44",
+        "input_digest": "abdfb48b8ee2e6242d0bba1398e4894e44703b7193f29a670cebdc1824a7c687",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "c19789e0c58074137a02406c1f960f88569ecd44"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "42c6aa27108c2d1839924c81be99fdfa09651706f29ba49df921a7cc160f2ad8"
+    },
+    "tri-1.9b-220000": {
+      "model": "tri-1.9b-220000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 220000,
+        "commit": "4a0b961b91d8b46bbc639d963a4413e2741e77ae",
+        "input_digest": "6a2dbc94d12389c022b97eefbf3198e14ab5bed5dbe769f640593d8deaeeed48",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "4a0b961b91d8b46bbc639d963a4413e2741e77ae"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "053a8bdb76eb627f3191b5b9a461c23100cedbbde273d20d6b24ab652f997238"
+    },
+    "tri-1.9b-240000": {
+      "model": "tri-1.9b-240000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 240000,
+        "commit": "2dc2d3e34770a8a228ae3a3b8e036b32d02d0b3d",
+        "input_digest": "4e265b72fa8fb0525444e8c28781734ad751a6d4195e5bd06efcf7809206997b",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "2dc2d3e34770a8a228ae3a3b8e036b32d02d0b3d"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "d41ef82169403475e6851a60317c5177036b451223964b72c4cd67de1ef7d3af"
+    },
+    "tri-1.9b-280000": {
+      "model": "tri-1.9b-280000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 280000,
+        "commit": "3ff84fb29ffc4b1422b90788106a6da223a775d2",
+        "input_digest": "b7354b5ea6bc79f091737789e071910af8141e6b7f3b252d0bdfaad3d94a6d21",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "3ff84fb29ffc4b1422b90788106a6da223a775d2"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "312ef9444977ec1dfd0805d6ea46136715e2b91c7e60120c57501b591fdb33f6"
+    },
+    "tri-1.9b-300000": {
+      "model": "tri-1.9b-300000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 300000,
+        "commit": "008ef6d4c2a6b42ec9027a9b2b2b6dc3a22f7a89",
+        "input_digest": "cc6e2fef30c15fecee4af837c531fe2b4133876dee52aae4bc6aaeaefec192de",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "008ef6d4c2a6b42ec9027a9b2b2b6dc3a22f7a89"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "76fac42627168fc9897eedddce0b637dd9b5eebbfb7c5ddc00e807dcb039d333"
+    },
+    "tri-1.9b-340000": {
+      "model": "tri-1.9b-340000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 340000,
+        "commit": "dc1fc1e5ba517a03bd7db8a520b0d897a1b67299",
+        "input_digest": "42332755b5e3d1f74dd248900ba0f26178bff01051b6b7f47671f7854f7b75d9",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "dc1fc1e5ba517a03bd7db8a520b0d897a1b67299"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "e51af5904ac9c7e74118b50143721512b24c03fd8af99edb42b55355c33ba92c"
+    },
+    "tri-1.9b-380000": {
+      "model": "tri-1.9b-380000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 380000,
+        "commit": "0693e28cc9d737d6b96c77e7dafc0238615b54cb",
+        "input_digest": "56f089b97d9a85c9d9a5e00ec4bb0b51b77de38b41b6ac59f679df0bd8c95259",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "0693e28cc9d737d6b96c77e7dafc0238615b54cb"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "103e42079c9341c767d80448e9c239ef2913331e61016a443153a322ca996dee"
+    },
+    "tri-1.9b-400000": {
+      "model": "tri-1.9b-400000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 400000,
+        "commit": "6514f71a6438bb09c6d135f61e83ce82f4f26c9b",
+        "input_digest": "eef177c09dc13432684ad61c7c3f29fa7ba4ed484f713677485093712003f838",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "6514f71a6438bb09c6d135f61e83ce82f4f26c9b"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "a2d99abe6000305c2a830179a5e505dea4f8cf4e21f7b22374510d2ccffc80a7"
+    },
+    "tri-1.9b-440000": {
+      "model": "tri-1.9b-440000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 440000,
+        "commit": "21f3fe7b170dde2ad076bdb88319601c63236111",
+        "input_digest": "f52f812e5be577be3450525bfb55567b6ce3f7e66c74f62b58ecf7da17c74686",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "21f3fe7b170dde2ad076bdb88319601c63236111"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "92f7001d917516bca6b16ce35f5128fb9519581b0c77920215949fea1b9942b2"
+    },
+    "tri-1.9b-460000": {
+      "model": "tri-1.9b-460000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 460000,
+        "commit": "fa00078594699338eb0924ea8fb4c4fdb5d27b7c",
+        "input_digest": "812a9ac2e3f26feea16de3d958f51eeba30574a5fe905ed3c2d5da0a8ce3e564",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "fa00078594699338eb0924ea8fb4c4fdb5d27b7c"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "2a638f17ba8549cc272c058662db3a5adc59d682316af6df3b4b44b05a574a29"
+    },
+    "tri-1.9b-500000": {
+      "model": "tri-1.9b-500000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 500000,
+        "commit": "02aed451c2e4c9fae77d5fe74a465ad656f40eb3",
+        "input_digest": "11a0a89961e7beafb1ee34962c9d78a4f5c3bc0219c0d036463fbcd106d77118",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "02aed451c2e4c9fae77d5fe74a465ad656f40eb3"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "f1c37f04a93219bde73ffca9caf9afbc0750b77689dc3fd6b0fce73905d725e5"
+    },
+    "tri-1.9b-540000": {
+      "model": "tri-1.9b-540000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 540000,
+        "commit": "2a4b6d51508d1315d7c7f5e33d98fac37b7671ca",
+        "input_digest": "82530a1ad90c7316c8f58d3ee193ec9d61ecbe86dc0fadaabc899e21a4d3e5f5",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "2a4b6d51508d1315d7c7f5e33d98fac37b7671ca"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "0fd9ff0bfef53c1fdc6197b24f43b89bb1ff3633432d051877c4dca3bdcfd89e"
+    },
+    "tri-1.9b-560000": {
+      "model": "tri-1.9b-560000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 560000,
+        "commit": "cceed24636a24e51c395c0f6098a0a56139cd867",
+        "input_digest": "26d171b6c674a518064bc7d123d2823f15887982758d94ea1dcf791ab916007f",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "cceed24636a24e51c395c0f6098a0a56139cd867"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "cbe7e5c055c7a27c69fde0ed91e5e5381662f1674f34456a99c7c9e7fea110c9"
+    },
+    "tri-1.9b-600000": {
+      "model": "tri-1.9b-600000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 600000,
+        "commit": "7a0dd288decdb6ed317d5197d786e99d9ac16a52",
+        "input_digest": "e18e8f2dccdded4524e379d25928131e8926195e92f7ba885f81c95c97a2b662",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "7a0dd288decdb6ed317d5197d786e99d9ac16a52"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "89c615f35d0997a1663f8fdc03951a9caa1bc0531d8d043c5eb82d1d80e10f04"
+    },
+    "tri-1.9b-620000": {
+      "model": "tri-1.9b-620000",
+      "source": {
+        "kind": "hf",
+        "model": "tri-1.9b",
+        "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "step": 620000,
+        "commit": "79a5c34ff5348f960882f29b587622f937c91ae8",
+        "input_digest": "5a17b636067309add30e2d521a8ce84d7d5109e4c5719ea39053bb4c19624073",
+        "id": "trillionlabs/1.9B-Intermediate-Checkpoints",
+        "revision": "79a5c34ff5348f960882f29b587622f937c91ae8"
+      },
+      "tensors": 228,
+      "raw_bytes": 3617796096,
+      "bf16_manifest_sha256": "15376650869b42bc6006a75b9131bb74ae18d88e179dd017e7dce96da645af07"
+    }
+  },
+  "donors": {
+    "qwen35": "six-donor-qwen35",
+    "gemma3": "six-donor-gemma3",
+    "dinov3-convnext": "six-donor-dinov3-convnext",
+    "dinov3-vit": "six-donor-dinov3-vit",
+    "siglip2": "six-donor-siglip2",
+    "parakeet": "six-donor-parakeet",
+    "resnet101": "resnet152",
+    "convnext-base": "convnext-large",
+    "efficientnet-b3": "efficientnet-b7",
+    "gpt2": "gpt2-medium-donor",
+    "bert-base": "bert-large-donor",
+    "qwen25-7b": "qwen25-14b",
+    "qwen35-2b-base": "qwen35-27b",
+    "olmo2-7b": "olmo2-13b",
+    "llama32-3b": "llama32-1b",
+    "phi4-14b": "qwen25-7b",
+    "gemma3-4b": "gemma3-12b",
+    "sd15-unet": "sd21-unet-donor",
+    "deepseek-moe-16b": "deepseek-moe-chat-donor",
+    "qwen3-30b-a3b": "qwen3-moe-base-donor",
+    "qwen25-7b-distilled": "qwen25-7b",
+    "deepseek-r1-distill-llama-8b": "llama31-nemotron-8b",
+    "siglip2-so400m": "siglip2-giant",
+    "whisper-large-v3-turbo": "whisper-large-v3",
+    "gaperon-1.5b-25000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-93000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-143000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-191000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-238000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-286000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-358000": "gaperon-1.5b-25000",
+    "gaperon-1.5b-812000": "gaperon-1.5b-25000",
+    "olmo2-1b-0": "olmo2-1b-0",
+    "olmo2-1b-70000": "olmo2-1b-0",
+    "olmo2-1b-160000": "olmo2-1b-0",
+    "olmo2-1b-260000": "olmo2-1b-0",
+    "olmo2-1b-360000": "olmo2-1b-0",
+    "olmo2-1b-450000": "olmo2-1b-0",
+    "olmo2-1b-550000": "olmo2-1b-0",
+    "olmo2-1b-650000": "olmo2-1b-0",
+    "olmo2-1b-750000": "olmo2-1b-0",
+    "olmo2-1b-840000": "olmo2-1b-0",
+    "olmo2-1b-940000": "olmo2-1b-0",
+    "olmo2-1b-1040000": "olmo2-1b-0",
+    "olmo2-1b-1130000": "olmo2-1b-0",
+    "olmo2-1b-1230000": "olmo2-1b-0",
+    "olmo2-1b-1330000": "olmo2-1b-0",
+    "olmo2-1b-1430000": "olmo2-1b-0",
+    "olmo2-1b-1520000": "olmo2-1b-0",
+    "olmo2-1b-1620000": "olmo2-1b-0",
+    "olmo2-1b-1720000": "olmo2-1b-0",
+    "olmo2-1b-1810000": "olmo2-1b-0",
+    "olmo2-1b-1907359": "olmo2-1b-0",
+    "pythia-1b-0": "pythia-1b-0",
+    "pythia-1b-128": "pythia-1b-0",
+    "pythia-1b-5000": "pythia-1b-0",
+    "pythia-1b-13000": "pythia-1b-0",
+    "pythia-1b-21000": "pythia-1b-0",
+    "pythia-1b-28000": "pythia-1b-0",
+    "pythia-1b-36000": "pythia-1b-0",
+    "pythia-1b-44000": "pythia-1b-0",
+    "pythia-1b-51000": "pythia-1b-0",
+    "pythia-1b-59000": "pythia-1b-0",
+    "pythia-1b-66000": "pythia-1b-0",
+    "pythia-1b-74000": "pythia-1b-0",
+    "pythia-1b-82000": "pythia-1b-0",
+    "pythia-1b-89000": "pythia-1b-0",
+    "pythia-1b-97000": "pythia-1b-0",
+    "pythia-1b-105000": "pythia-1b-0",
+    "pythia-1b-112000": "pythia-1b-0",
+    "pythia-1b-120000": "pythia-1b-0",
+    "pythia-1b-128000": "pythia-1b-0",
+    "pythia-1b-135000": "pythia-1b-0",
+    "pythia-1b-143000": "pythia-1b-0",
+    "tri-1.9b-20000": "tri-1.9b-20000",
+    "tri-1.9b-60000": "tri-1.9b-20000",
+    "tri-1.9b-80000": "tri-1.9b-20000",
+    "tri-1.9b-120000": "tri-1.9b-20000",
+    "tri-1.9b-140000": "tri-1.9b-20000",
+    "tri-1.9b-180000": "tri-1.9b-20000",
+    "tri-1.9b-220000": "tri-1.9b-20000",
+    "tri-1.9b-240000": "tri-1.9b-20000",
+    "tri-1.9b-280000": "tri-1.9b-20000",
+    "tri-1.9b-300000": "tri-1.9b-20000",
+    "tri-1.9b-340000": "tri-1.9b-20000",
+    "tri-1.9b-380000": "tri-1.9b-20000",
+    "tri-1.9b-400000": "tri-1.9b-20000",
+    "tri-1.9b-440000": "tri-1.9b-20000",
+    "tri-1.9b-460000": "tri-1.9b-20000",
+    "tri-1.9b-500000": "tri-1.9b-20000",
+    "tri-1.9b-540000": "tri-1.9b-20000",
+    "tri-1.9b-560000": "tri-1.9b-20000",
+    "tri-1.9b-600000": "tri-1.9b-20000",
+    "tri-1.9b-620000": "tri-1.9b-20000"
+  },
+  "checkpoints": {
+    "gaperon-1.5b-25000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 25000,
+      "commit": "18f62b872f242398ec83e88a0ac39821f3131b36",
+      "input_digest": "c02b4ed77cdd5a77c468359f171d326881dc62a0ec0a6da5444dad6303abce8a",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-93000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 93000,
+      "commit": "48f1cad2f1eb9ab085ff11728c3b2660ae99ba01",
+      "input_digest": "a1d06f4170087dbf59c0a6de6b156293c96d9a5d0dce9fe56940cc4b295d0c5a",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-143000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 143000,
+      "commit": "4f157d5a45e2d473ae549b83699e542ecbd38f45",
+      "input_digest": "f806a9126819d305724f63b3230302892750b8262fe424447ddfd312bc00a075",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-191000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 191000,
+      "commit": "d280e5004547df76a687e6ba946c715fda20307f",
+      "input_digest": "228cd0a9ed99ffbbe03dd216bcba473c25572ab9d34a0118c53bfe4a9d6e4bda",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-238000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 238000,
+      "commit": "1ec9fba0f1171479978f72e745dd76c5f5ef6af8",
+      "input_digest": "bcd44ee351975028a1837614eae0783c7c7fb1d729356f9b08461be369f649f5",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-286000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 286000,
+      "commit": "1a107f652010e2110d28db85cd15e1ca296e7d24",
+      "input_digest": "007ce8987d0341beec26e33ceac48c23cf9595f0e96130f2e481f8068e430305",
+      "gate_bits": 4.0
+    },
+    "gaperon-1.5b-358000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 358000,
+      "commit": "c73d00e81f832fe64bd9a7f4a39b553a5a9b35f4",
+      "input_digest": "c23daca05472dbcd9d2c60e442ddad5c65c07b93a2538e95579f103af5981d3e",
+      "gate_bits": 3.0
+    },
+    "gaperon-1.5b-812000": {
+      "model": "gaperon-1.5b",
+      "repo": "almanach/Gaperon-1.5B-ckpts",
+      "step": 812000,
+      "commit": "f4b758f86537af1ff96eedac277d7b9060d57b8a",
+      "input_digest": "93ac45550b24840a2d90036af10d7853ca0df03cc4b9efc1070787e0d26c7ad4",
+      "gate_bits": 3.0
+    },
+    "olmo2-1b-0": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 0,
+      "commit": "dd91cb507d2b36a0fd265d89a488be8c9b36f3a6",
+      "input_digest": "9982d6dbdc8c347ef992ccf50dfe8f1e9e475a5d4cb072e39dde1aa7a7515acd",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-70000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 70000,
+      "commit": "4e43459de15e4790daa0a3c9f22279dbccea16a2",
+      "input_digest": "bb2cc8f59a0d697ecaae3682b1679e52a676507fa64f928f4af100b29f481fbe",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-160000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 160000,
+      "commit": "895aee49308dfd251edc68513cc79f331198d0cd",
+      "input_digest": "65972e13ac755119be9b5edae186b465b4997decb807b7714ba80add05bc8443",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-260000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 260000,
+      "commit": "a500668e08514261da9badd0af82a372990b8be9",
+      "input_digest": "ed3f2362ceefe35b5505f41b2377a98e63a855428b837f7a0781acdfda151f09",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-360000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 360000,
+      "commit": "8dcfdec76eae4c47dd2ab905be2d3e5406334c22",
+      "input_digest": "975eadcdae7948f6a8dd372dd67fb2dc34f51f354b67dee76a37f0cf3517e1f4",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-450000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 450000,
+      "commit": "404f30fb074b4f262dd156e57990a024cc228c22",
+      "input_digest": "39ea06c1bc86a185fbe0e05daddc8f4d89581a72ab0c4e0821cafba00a482d2f",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-550000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 550000,
+      "commit": "78f11fd7b623fa5b346f7b104f2fcfbb684acac8",
+      "input_digest": "f437271d1bd96af2e8a78aeb56e39d540981b715acca6fd59541594f714e479b",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-650000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 650000,
+      "commit": "781178460f729a06d787b357d5a5725580e30d32",
+      "input_digest": "de4b0aaba254a32067bdfb3d27b1de1d878790d5501fd19ff7ac156c328a3e06",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-750000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 750000,
+      "commit": "3001c4f9a845501e02b1c86fef6012727baa41fc",
+      "input_digest": "f53798ec478a24a0ba458a705eba796277f94767409f64b9b2d46412fceac898",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-840000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 840000,
+      "commit": "ce8b7a7e914d150b92678a21983189de8e5f60e8",
+      "input_digest": "6b48ecf11c0baa92ccb6ef2f6845e09ac1413b4400ea16ac7a9b9bda8ca8d65f",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-940000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 940000,
+      "commit": "89e6f47fe125a339c1508b5fce2ff85b513b959b",
+      "input_digest": "0f36b8007ca6bd181649adfaf6cccbdfbb9864bc62f052371cd95768c7b2c556",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1040000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1040000,
+      "commit": "c003abd699a3bbd8775433c4f80704a50966b065",
+      "input_digest": "42571b5615670a77c770e3d9da5cc1e41749de3713e51da8f2a7da129d4e6f0b",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1130000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1130000,
+      "commit": "a07f4570aa47341261bab3d2da23f7e6fed0f4f9",
+      "input_digest": "4ef63516a8d1da6b24438c83d19612d5f73c03110b8fcef36d14241b3a4b69ef",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1230000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1230000,
+      "commit": "4fab26874843933269afa42d0d9d6e8e75f8b797",
+      "input_digest": "21d15b8d77b5e3d73f39d4fc94e069d6824fd2303bf86903b4ceb2bff04b6201",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1330000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1330000,
+      "commit": "014c5fcb749c5055adbc0bfcee77ad91a6106c89",
+      "input_digest": "7b85579bf1d970c4af0943762c4c39572be48748e67339fd8c318bce928e54a7",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1430000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1430000,
+      "commit": "22738a97eabcd7523be1a56eaa1745bc60e9781c",
+      "input_digest": "b25e57535ca9eefa00d84398f4ceaa668b7fcf7d2e2726fc61437930460a0726",
+      "gate_bits": 4.0
+    },
+    "olmo2-1b-1520000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1520000,
+      "commit": "bbabd996102123d787cf186582c7fa87dd83f0ff",
+      "input_digest": "60b40b61f3714b4221924b4eb92cfb129300c2f14d76d792a7e69148f9c93c72",
+      "gate_bits": 3.0
+    },
+    "olmo2-1b-1620000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1620000,
+      "commit": "f2591ea7f05a9274e6b0424042612a7f0c863da3",
+      "input_digest": "42ac811dc4dfb55cdcd50bf59d922888d6e80674bb0800018760c3c277af00ec",
+      "gate_bits": 3.0
+    },
+    "olmo2-1b-1720000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1720000,
+      "commit": "613ce0f8d203a5ba9728e7f1e746e87246ab381a",
+      "input_digest": "e7b5da955709ff175164367b87251b4b376c8d54439c3f767b0e9a2d808b937c",
+      "gate_bits": 3.0
+    },
+    "olmo2-1b-1810000": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1810000,
+      "commit": "7d928398e1a400f81bdce25e22a0adead9baa54d",
+      "input_digest": "4b95ba124e0e5e0a3db797e3d0b9a38243fc1284abf5c2804160b4a38a77b0aa",
+      "gate_bits": 3.0
+    },
+    "olmo2-1b-1907359": {
+      "model": "olmo2-1b",
+      "repo": "allenai/OLMo-2-0425-1B",
+      "step": 1907359,
+      "commit": "9d3e43659f00c17e6da23cf32333afd1fc39fa1a",
+      "input_digest": "8439e4a572076763897649712509dc96504c00a0c58ae4d10b683daad9e55896",
+      "gate_bits": 3.0
+    },
+    "pythia-1b-0": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 0,
+      "commit": "3f3a5e066c3737f066e123b80b81141b82473280",
+      "input_digest": "7ce1d8c59bbbad9d1955b68fd7328ca33de2749539892cfbe2a25970e885facc",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-128": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 128,
+      "commit": "92c2a45907dd438dfd5c5a61c25e202d377d51dd",
+      "input_digest": "e42750e1cec929672ecff19e074fc226880c17bd431a913033792b40a54ae9f8",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-5000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 5000,
+      "commit": "1931bfbd7bbb1f15979b5e2543edb9253b997085",
+      "input_digest": "42422acebe750b4b3bd3c66586609dfd14fa4a05ac3e2b3052cb971dcc0e27c3",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-13000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 13000,
+      "commit": "eb08605c04c52b214664640536a9be6c1a934979",
+      "input_digest": "5c943d293dfafe30ae6d6e9ccb00fbecd968d46b117cbd8762e3773fa10e55ad",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-21000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 21000,
+      "commit": "14a7ace334a7e0e71a6379d1968e6e044a3c1b1e",
+      "input_digest": "7a5e8b46044a930a24d7a1b18ced6710701fe717490529e56b887faa8dd802e0",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-28000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 28000,
+      "commit": "9f4986d7ea76d02301e1e73655dcb78db65e0618",
+      "input_digest": "fc2c06c0eb76d89841560478c2b6c73937968081c26b2f95903fec3e74173dae",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-36000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 36000,
+      "commit": "f53e921d2afc99aed6c15e8b10b0699ac1d2811f",
+      "input_digest": "30462c6e0f0706082501971a1f4a8f3af2dd0e3b9046c24963d8558163970b42",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-44000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 44000,
+      "commit": "75751806c24d6e06ad3d249d1ba63aa31f7f821f",
+      "input_digest": "61ece1ea97fbd06529d773474a1b9decaaf1c16e3822c997599a5e840121ccf6",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-51000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 51000,
+      "commit": "a24e2c7a4be3639b68fada2a3d8b3bc81a037523",
+      "input_digest": "a8df7fcf917dc444b9189d02aadcb3781386c8a97a3e5b3a6a20ccf6045d5312",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-59000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 59000,
+      "commit": "29aa92b854e7b109c82b024fd2b20fe2e02cbe0d",
+      "input_digest": "618d2977514f8573eb65a80c9568097d400f43ca4a01ffd8a9b794b911925f8b",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-66000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 66000,
+      "commit": "b75c57d7d030df9f9181fbcfa130c8ef1dfe6bdd",
+      "input_digest": "0d6e071224218afc84e42e4c2997d74b5834300578016e1437e6a022a1e9452d",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-74000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 74000,
+      "commit": "d1273eba58cc1c6c9705d927cad5e76c46eee0d8",
+      "input_digest": "ce41134d9f8a1af5b0de63288473711f81c070d552bee2fe0eb372482deeac7a",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-82000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 82000,
+      "commit": "21da575a549ca11c49f929cf46aa3f35406c3840",
+      "input_digest": "e865257215c90071a78991935130cb8283618e83a752f596c61171dfec267912",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-89000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 89000,
+      "commit": "c284ab0cb00ab15eaca9f2db5529f78a7d98dad7",
+      "input_digest": "4b9e3fd8d4ed1a064212d06ebee237398962b7e6593e4439ed07b952f759384f",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-97000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 97000,
+      "commit": "119237694f625f0e4073cf3f988e6d0b4f2243f6",
+      "input_digest": "3708bc105c2ee10903b38fa0809b95e77537fe9cf565cfa8b290696b852e225b",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-105000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 105000,
+      "commit": "2f01a1939ef0bd4d41581b67a23e13dfc63817ed",
+      "input_digest": "96eb7870b6ea969e36459e80921148cd1da5560de29e9da9b638ba41fcf287ed",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-112000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 112000,
+      "commit": "8d1a7cf23cf6fac6615426d624a518106aedf4ba",
+      "input_digest": "531c0f0bcb481ba31bbe1d5c28d32e4ce5b6b7863d4408ac94fa6a00df4102e1",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-120000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 120000,
+      "commit": "1a4a69d7380a678ea2b5d135019781c757706c6c",
+      "input_digest": "f4672bb791847de141da04bcc1e223c4bf65a2dfec214cd5615962789724e3a8",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-128000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 128000,
+      "commit": "98d7db87a04f521d92ce7bea4031bb8b02117c2c",
+      "input_digest": "567fdcb1768290daba8ef85bc634fa4493ae79b3d4f66e2cc0802ddc1180aba0",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-135000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 135000,
+      "commit": "ec557a5dfc447f6f631fe0e5681445c2f6cc92e9",
+      "input_digest": "9d2605390f0c607203750678f38f8976b8dc9b8c571c18e84130a628109e20b4",
+      "gate_bits": 4.0
+    },
+    "pythia-1b-143000": {
+      "model": "pythia-1b",
+      "repo": "EleutherAI/pythia-1b",
+      "step": 143000,
+      "commit": "c0fea4b917615c60370c0aeb76877f18fef30ab3",
+      "input_digest": "816400ed4923f3da796ae27ea86a43bc406a4b884312b18e14815bfa768c8375",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-20000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 20000,
+      "commit": "022a9b94a447a1d9d5c17428dfdd11b385b3b933",
+      "input_digest": "14119d2efde4b7d2fed28088e8b8acc241a3d5fbe7526c9c92142b5cb47e78d1",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-60000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 60000,
+      "commit": "bc04a051d134458733d885006312ea3b5c38363b",
+      "input_digest": "78afe26ad5438c57c2c1fc10136650d2024486b108fc413c187054167700c137",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-80000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 80000,
+      "commit": "435db3a49fd1b8d80b0700fa6bbfc92e6cfb3667",
+      "input_digest": "09bdebbffdd96c9b4688ba5a48875365a26848d5e9ac7b9dfe7d322b178868d7",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-120000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 120000,
+      "commit": "82ca8262051e49ccf06f24c09557d60669046d95",
+      "input_digest": "1828c0626e2ebe21104df02828afae21f94847026a1737a94f36139d77e2961e",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-140000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 140000,
+      "commit": "5ceb1a13fb5756ea926b6fbf10b24449eaa26a91",
+      "input_digest": "77e8cd94dc4bd353bda6a8c1813ce0d096d3498eb71a06133604e82d7caef6e9",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-180000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 180000,
+      "commit": "c19789e0c58074137a02406c1f960f88569ecd44",
+      "input_digest": "abdfb48b8ee2e6242d0bba1398e4894e44703b7193f29a670cebdc1824a7c687",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-220000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 220000,
+      "commit": "4a0b961b91d8b46bbc639d963a4413e2741e77ae",
+      "input_digest": "6a2dbc94d12389c022b97eefbf3198e14ab5bed5dbe769f640593d8deaeeed48",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-240000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 240000,
+      "commit": "2dc2d3e34770a8a228ae3a3b8e036b32d02d0b3d",
+      "input_digest": "4e265b72fa8fb0525444e8c28781734ad751a6d4195e5bd06efcf7809206997b",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-280000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 280000,
+      "commit": "3ff84fb29ffc4b1422b90788106a6da223a775d2",
+      "input_digest": "b7354b5ea6bc79f091737789e071910af8141e6b7f3b252d0bdfaad3d94a6d21",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-300000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 300000,
+      "commit": "008ef6d4c2a6b42ec9027a9b2b2b6dc3a22f7a89",
+      "input_digest": "cc6e2fef30c15fecee4af837c531fe2b4133876dee52aae4bc6aaeaefec192de",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-340000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 340000,
+      "commit": "dc1fc1e5ba517a03bd7db8a520b0d897a1b67299",
+      "input_digest": "42332755b5e3d1f74dd248900ba0f26178bff01051b6b7f47671f7854f7b75d9",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-380000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 380000,
+      "commit": "0693e28cc9d737d6b96c77e7dafc0238615b54cb",
+      "input_digest": "56f089b97d9a85c9d9a5e00ec4bb0b51b77de38b41b6ac59f679df0bd8c95259",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-400000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 400000,
+      "commit": "6514f71a6438bb09c6d135f61e83ce82f4f26c9b",
+      "input_digest": "eef177c09dc13432684ad61c7c3f29fa7ba4ed484f713677485093712003f838",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-440000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 440000,
+      "commit": "21f3fe7b170dde2ad076bdb88319601c63236111",
+      "input_digest": "f52f812e5be577be3450525bfb55567b6ce3f7e66c74f62b58ecf7da17c74686",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-460000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 460000,
+      "commit": "fa00078594699338eb0924ea8fb4c4fdb5d27b7c",
+      "input_digest": "812a9ac2e3f26feea16de3d958f51eeba30574a5fe905ed3c2d5da0a8ce3e564",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-500000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 500000,
+      "commit": "02aed451c2e4c9fae77d5fe74a465ad656f40eb3",
+      "input_digest": "11a0a89961e7beafb1ee34962c9d78a4f5c3bc0219c0d036463fbcd106d77118",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-540000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 540000,
+      "commit": "2a4b6d51508d1315d7c7f5e33d98fac37b7671ca",
+      "input_digest": "82530a1ad90c7316c8f58d3ee193ec9d61ecbe86dc0fadaabc899e21a4d3e5f5",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-560000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 560000,
+      "commit": "cceed24636a24e51c395c0f6098a0a56139cd867",
+      "input_digest": "26d171b6c674a518064bc7d123d2823f15887982758d94ea1dcf791ab916007f",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-600000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 600000,
+      "commit": "7a0dd288decdb6ed317d5197d786e99d9ac16a52",
+      "input_digest": "e18e8f2dccdded4524e379d25928131e8926195e92f7ba885f81c95c97a2b662",
+      "gate_bits": 4.0
+    },
+    "tri-1.9b-620000": {
+      "model": "tri-1.9b",
+      "repo": "trillionlabs/1.9B-Intermediate-Checkpoints",
+      "step": 620000,
+      "commit": "79a5c34ff5348f960882f29b587622f937c91ae8",
+      "input_digest": "5a17b636067309add30e2d521a8ce84d7d5109e4c5719ea39053bb4c19624073",
+      "gate_bits": 4.0
+    }
+  }
+}

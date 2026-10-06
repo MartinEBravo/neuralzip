@@ -1,7 +1,6 @@
 """One fresh six-suite GPU control; run in an isolated, pinned source environment.
 
-The archived six_gpu_reference.py provides only the pinned model/input loaders.
-See benchmarks/packed-gpu/README.md for the server-local inputs and launch order.
+Pinned model construction and inputs are bundled with the reproduction scripts.
 """
 
 import argparse
@@ -17,18 +16,27 @@ from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from statistics import median
+from types import SimpleNamespace
 
-import six_gpu_reference as reference
 import torch
-from dfloat11 import dfloat11 as official
+
+from neuralzip import _experiment_inputs as reference
+
+try:
+    from dfloat11 import dfloat11 as official
+except ImportError:
+    official = None
 
 from neuralzip.gpu import inference
 from neuralzip.setup import NeuralZipSetup
 from neuralzip.utils import time_call
 
-MODELS = ("qwen35", "gemma3", "dinov3-convnext", "dinov3-vit", "siglip2", "parakeet")
-SETUP_LABELS = {"own": "new", "transfer": "foreign", "sharing": "sharing", "packing": "packing"}
-REFERENCE_SHA = "d570384eb28a6a148929e1aef6ceeb64309f87c75cb44d158dcd1a45453885f3"
+SETUP_LABELS = {
+    "own": "new",
+    "transfer": "foreign",
+    "sharing": "sharing",
+    "packing": "packing",
+}
 OFFICIAL_COMMIT = "457733886ce6ebc6d8dda1621fad1ffa2661e028"
 OFFICIAL_SHA = {
     "dfloat11.py": "647ca864ca5e708c13329d900c808b73e7488f9d156f44efa5f5ec3e6982b303",
@@ -264,34 +272,20 @@ def check_exclusive_gpu(gpu):
 
 
 @torch.inference_mode()
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("model", choices=MODELS)
-    parser.add_argument("method", choices=("bf16", "dfloat11", *SETUP_LABELS))
-    parser.add_argument(
-        "--variant", choices=("baseline", "candidate", "control"), required=True
-    )
-    parser.add_argument("--campaign", choices=("1", "2", "pilot"), required=True)
-    parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--inputs", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--ablation-root", type=Path)
-    parser.add_argument("--reference-root", type=Path)
-    parser.add_argument("--gpu", type=int, choices=(0, 1), default=1)
-    args = parser.parse_args()
+def benchmark(args):
     assert os.environ.get("CUDA_VISIBLE_DEVICES") == str(args.gpu), (
         "Physical GPU selection differs"
     )
     PROTOCOL["physical_gpu"] = args.gpu
     assert (args.variant == "control") == (args.method in ("bf16", "dfloat11"))
-    if args.method in ("sharing", "packing"):
-        assert args.ablation_root and args.reference_root, "Frozen ablation and BF16 references required"
     destination = (
         args.output / args.campaign / f"{args.model}-{args.variant}-{args.method}.json"
     )
     assert not destination.exists(), "Never overwrite a measurement"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    assert sha(Path(reference.__file__).read_bytes()) == REFERENCE_SHA
+    assert official is not None, (
+        "Install the pinned official DFloat11 experiment dependency"
+    )
     for name, digest in OFFICIAL_SHA.items():
         assert sha(Path(official.__file__).with_name(name).read_bytes()) == digest, name
     os.sched_setaffinity(0, set(PROTOCOL["affinity"]))
@@ -300,30 +294,14 @@ def main():
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cuda.matmul.allow_tf32 = False
-    cpu = args.data_root / "cpu-inputs"
-    frozen_protocol = json.loads((args.data_root / "gpu-protocol.json").read_text())
-    spec = next(
-        s
-        for s in json.loads((cpu / "six_model_suite.json").read_text())
-        if s["key"] == args.model
-    )
+    spec = dict(reference.catalogue()["inputs"][args.model]["source"], key=args.model)
+    named = dict(reference.prepare(args.model, args.cache, args.inputs))
     input_path = args.inputs / f"{args.model}.pt"
-    named = torch.load(input_path, weights_only=True, map_location="cpu")
-    assert all(t.dtype == torch.bfloat16 for t in named.values())
-    manifest = [
-        {
-            "name": n,
-            "dtype": str(t.dtype),
-            "shape": list(t.shape),
-            "sha256": reference.fingerprint(t),
-        }
-        for n, t in sorted(named.items())
+    manifest = reference.tensor_manifest(named.items())
+    expected_manifest = reference.catalogue()["inputs"][args.model][
+        "bf16_manifest_sha256"
     ]
-    expected_manifest = json.loads(
-        (cpu / "six" / f"{args.model}-input.json").read_text()
-    )["bf16_manifest_sha256"]
-    assert sha(json.dumps(manifest, sort_keys=True).encode()) == expected_manifest
-    model, ignored = reference.load_model(spec, named, os.environ["HF_HUB_CACHE"])
+    model, ignored = reference.load_model(spec, named, str(args.cache))
     if args.model == "parakeet":
         state = model.state_dict()
         assert all(
@@ -348,7 +326,7 @@ def main():
         "source_hashes": source_hashes(),
         "runner_sha256": sha(Path(__file__).read_bytes()),
         "functional_consumer_adapter": FUNCTIONAL_ADAPTER,
-        "reference_sha256": REFERENCE_SHA,
+        "reference_sha256": file_sha(Path(reference.__file__)),
         "official_commit": OFFICIAL_COMMIT,
         "official_sha256": OFFICIAL_SHA,
         "torch_version": torch.__version__,
@@ -361,19 +339,8 @@ def main():
     calls = []
     if args.method in SETUP_LABELS:
         label = SETUP_LABELS[args.method]
-        if args.method in ("sharing", "packing"):
-            record_path = args.ablation_root / f"{args.model}-{label}.json"
-            cpu_record = json.loads(record_path.read_text())
-            assert cpu_record["input"]["bf16_manifest_sha256"] == expected_manifest
-            assert cpu_record["input"]["id"] == spec["id"]
-            assert cpu_record["input"]["revision"] == spec["revision"]
-            assert all(cpu_record[f] is True for f in ("roundtrip_bitwise", "input_unchanged", "encode_never_fits"))
-            path = args.ablation_root / f"{args.model}-{label}-own.setup.pkl"
-            frozen_setup_sha = cpu_record["own_setup_sha256"]
-            row["ablation_cpu_record_sha256"] = sha(record_path.read_bytes())
-        else:
-            path = cpu / "six" / f"{args.model}-{label}.setup.pkl"
-            frozen_setup_sha = frozen_protocol["frozen_server_local_setup_sha256"][path.name]
+        path = args.setups / f"{args.model}-{label}.setup.pkl"
+        frozen_setup_sha = file_sha(path)
         row["setup_sha256"] = sha(path.read_bytes())
         assert row["setup_sha256"] == frozen_setup_sha
         setup = copy.deepcopy(NeuralZipSetup.load(path))
@@ -416,7 +383,9 @@ def main():
             groups=len(exported.groups),
         )
         if args.method == "sharing":
-            assert row["packed_chunks"] == 0, "Sharing-only unexpectedly packs exponents"
+            assert row["packed_chunks"] == 0, (
+                "Sharing-only unexpectedly packs exponents"
+            )
         elif any(book.vocab for book in setup.codebooks):
             assert row["packed_chunks"] > 0, "Packing was silently discarded"
         runtime = inference.NeuralZipRuntime.attach(model, exported, device="cuda:0")
@@ -476,6 +445,9 @@ def main():
             assert reference.exact(module.weight, expected[candidate.tensor_name]), (
                 candidate.tensor_name
             )
+    if spec.get("kind") == "torchvision":
+        forward = model.forward
+        model.forward = lambda __pixels__: forward(__pixels__)
     inputs = reference.inputs_for(args.model, model)
     row["forward_input_sha256"] = {
         n: reference.fingerprint(t)
@@ -486,7 +458,11 @@ def main():
     assert output and all(
         torch.isfinite(t).all() for t in output.values() if t.is_floating_point()
     )
-    reference_folder = args.reference_root / args.campaign if args.reference_root else destination.parent
+    reference_folder = (
+        args.reference_root / args.campaign
+        if args.reference_root
+        else destination.parent
+    )
     reference_path = reference_folder / f"{args.model}-reference.pt"
     if args.method == "bf16":
         assert not reference_path.exists()
@@ -495,11 +471,24 @@ def main():
         if args.reference_root:
             reference_record_path = reference_folder / f"{args.model}-control-bf16.json"
             reference_record = json.loads(reference_record_path.read_text())
-            for field in ("pinned_model", "manifest_sha256", "input_file_sha256", "selected_weight_sha256",
-                          "forward_input_sha256", "protocol", "gpu_uuid", "torch_version", "cuda_version",
-                          "cupy_version", "official_sha256", "functional_consumer_adapter"):
+            for field in (
+                "pinned_model",
+                "manifest_sha256",
+                "input_file_sha256",
+                "selected_weight_sha256",
+                "forward_input_sha256",
+                "protocol",
+                "gpu_uuid",
+                "torch_version",
+                "cuda_version",
+                "cupy_version",
+                "official_sha256",
+                "functional_consumer_adapter",
+            ):
                 assert row[field] == reference_record[field], field
-            row["bf16_reference_record_sha256"] = sha(reference_record_path.read_bytes())
+            row["bf16_reference_record_sha256"] = sha(
+                reference_record_path.read_bytes()
+            )
             row["bf16_reference_output_sha256"] = file_sha(reference_path)
         baseline = torch.load(reference_path, weights_only=True, map_location="cpu")
         assert output.keys() == baseline.keys() and all(
@@ -510,7 +499,7 @@ def main():
         reference.fingerprint(named[item["name"]]) == item["sha256"]
         for item in manifest
     )
-    del output, expected, named, candidates, candidate, module
+    del output, expected, named, candidates
     gc.collect()
     for _ in range(PROTOCOL["warmups"]):
         model(**inputs)
@@ -554,7 +543,9 @@ def main():
         if isinstance(t, torch.Tensor)
     }
     if args.method in SETUP_LABELS:
-        assert sha(path.read_bytes()) == row["setup_sha256"], "Frozen setup file changed"
+        assert sha(path.read_bytes()) == row["setup_sha256"], (
+            "Frozen setup file changed"
+        )
     row.update(
         weight_bitwise=True,
         output_bitwise=True,
@@ -594,6 +585,28 @@ def main():
             }
         ),
         flush=True,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--method",
+        choices=("bf16", "own", "transfer", "sharing", "packing", "dfloat11"),
+        required=True,
+    )
+    parser.add_argument("--gpu", type=int, required=True)
+    for name in ("cache", "inputs", "setups", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--campaign", default="1")
+    args = parser.parse_args()
+    benchmark(
+        SimpleNamespace(
+            **vars(args),
+            variant="control" if args.method in ("bf16", "dfloat11") else "candidate",
+            reference_root=None if args.method == "bf16" else args.output,
+        )
     )
 
 

@@ -2,11 +2,11 @@
 
 All **24 own/transfer comparisons** passed in **two complete independent campaigns** (72 fresh control records). The worst candidate latency is **1.026630× DFloat11**, below the 1.10× limit. Candidate live and forward-peak allocation exactly equal baseline in every comparison, and both are below BF16. There are no remaining acceptance gaps on these six pinned models and this GPU.
 
-Shared-memory exponent-byte staging was sufficient. No output-count cache, prefix-width change, packing removal, decoded-weight retention, offload or fused matrix-multiplication redesign was added. CPU setup, codebooks, CPU archives, GPU payload/restart bytes, selected/compressed coverage and model arithmetic remain unchanged. The only additional production correction routes functional `MultiheadAttention.out_proj` decoding through its consuming attention module; Martin approved the same adapter for original-main NeuralZip and the DFloat11 control.
+Shared-memory exponent-byte staging was sufficient. No output-count cache, prefix-width change, packing removal, decoded-weight retention, offload or fused matrix-multiplication redesign was added. CPU setup, codebooks, CPU archives, GPU payload/restart bytes, selected/compressed coverage and model arithmetic remain unchanged. The only additional production correction routes functional `MultiheadAttention.out_proj` decoding through its consuming attention module; the same adapter is applied to original-main NeuralZip and the DFloat11 control.
 
 ## Matched Qwen BF16 / Packing Only follow-up
 
-Martin requested a fresh comparison after the isolated Qwen ablation appeared
+A fresh comparison was run after the isolated Qwen ablation appeared
 slightly faster than the earlier BF16 control. Four fresh processes now run
 BF16, Packing Only, Packing Only, BF16 on physical GPU 0, with the unchanged
 benchmark, pinned inputs, frozen setup and original timing protocol. These are
@@ -43,7 +43,7 @@ BF16 record hashes and verify unchanged historical archives and identities.
 
 Both isolated ablations now have two complete GPU runs: **48 fresh controls**,
 24 original-decoder and 24 updated-decoder records. They use the exact frozen
-own setups from Godel's `shared-table1-ablations-20261005`, which supplied the
+own setups from the CPU campaign `shared-table1-ablations-20261005`, which supplied the
 current paper's CPU rows; no CPU setup or compression measurement was repeated.
 The production GPU source is still `64f6598a524344a5e457e8a3a1cf92a58e167e95`.
 The pinned BF16 outputs and all 72 verified full-method controls are reused,
@@ -82,7 +82,7 @@ the original run log and independent validation report. No weights, setup
 pickles, dependencies or credentials are archived. Every ZIP CRC, member SHA,
 byte count and exact equality to its server original passed; independent Mac
 checks returned the identical passing report. The twelve setup pickle hashes
-match their untouched Godel CPU records. All earlier evidence is unchanged.
+match their untouched CPU records. All earlier evidence is unchanged.
 
 Restore into a separate ablation directory, retain the previously restored
 full-method directory and proofs, then run:
@@ -164,7 +164,7 @@ Separate CUDA-event medians, milliseconds; not included as extra work in full-fo
 
 ## Environment and provenance
 
-Physical GPU **0**, NVIDIA RTX A5500, UUID `05b2e34a-1171-95f1-c409-01fc7bb80386`; driver `595.91.07`. PyTorch `2.9.1+cu128`, CUDA `12.8`, CuPy `13.6.0`. Eight CPU threads, affinity 0–15. GPU 1 and its existing job were untouched. Both campaigns have identical software/input/source identities. All experiment processes have finished; GPU 0 is idle.
+Physical GPU **0**, NVIDIA RTX A5500; driver `595.91.07`. PyTorch `2.9.1+cu128`, CUDA `12.8`, CuPy `13.6.0`. Eight CPU threads, affinity 0–15. Both campaigns have identical software/input/source identities; the original device identity remains recorded in the raw evidence.
 
 - Baseline main: `453c06ea019b8d1d2566de0b4a7396b34807425c` (original source capture unchanged).
 - Candidate production source: `64f6598a524344a5e457e8a3a1cf92a58e167e95`; subsequent changes are tests/docs/evidence only.
@@ -204,7 +204,7 @@ python scripts/check_packed_gpu_results.py benchmarks/packed-gpu/evidence/stagin
   --baseline-cpu benchmarks/packed-gpu/evidence/baseline-cpu.json
 ```
 
-PR #18 is ready for review once this evidence is committed. **Do not merge or update Overleaf automatically.** These measurements establish acceptance on the listed pinned models/GPU, not a universal guarantee on other hardware or models.
+The verified implementation and this evidence are integrated into main. These measurements establish acceptance on the listed pinned models/GPU, not a universal guarantee on other hardware or models.
 
 ## Historical incomplete attempt (preserved)
 
@@ -294,11 +294,10 @@ library source, codec, kernel, codebook, payload, arithmetic, frozen setup or
 published result was changed. The general correction would use module type,
 not model-name-specific shortcuts.
 
-Martin approved applying the same general correction to the **baseline control**,
-DFloat11 adapter and candidate, then running two fresh full campaigns. The baseline source captures,
-first-campaign measurements and failure history remain preserved. Do not treat
-these diagnostics or the three-model pilots as acceptance campaigns, mark the
-PR ready, merge it or edit Overleaf.
+The same general correction was then applied to the **baseline control**,
+DFloat11 adapter and candidate before two fresh full campaigns. The baseline source captures,
+first-campaign measurements and failure history remain preserved. These
+diagnostics and three-model pilots are not counted as acceptance campaigns.
 
 ### Verification and preserved raw evidence
 

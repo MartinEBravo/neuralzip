@@ -17,8 +17,11 @@ reconstructed only when their block or individual layer runs.
 
 ## Installation
 
+Use the source archive supplied with the submission, or set
+`ANONYMOUS_REPOSITORY_URL` to the anonymous review repository URL before cloning:
+
 ```bash
-git clone https://github.com/MartinEBravo/nzip.git
+git clone "$ANONYMOUS_REPOSITORY_URL" nzip
 cd nzip
 python -m pip install -e .
 ```
@@ -278,6 +281,22 @@ These execution options are no longer accepted by `NeuralZipSetup`, and
 The CUDA reconstruction path is adapted from the
 [official DFloat11 implementation](https://github.com/LeanModels/DFloat11)
 under Apache-2.0.
+
+## Reproducing the GPU measurements
+
+The [benchmark instructions](benchmarks/packed-gpu/README.md) describe the pinned
+models, frozen setups, environment and timing protocol. The
+[measurement report](benchmarks/packed-gpu/RESULTS.md) includes both complete
+campaigns, sharing/packing ablations, correctness checks and lossless raw evidence.
+
+The result-checker self-tests need only Python's standard library:
+
+```bash
+python scripts/check_packed_gpu_results.py --self-test
+```
+
+Follow the benchmark instructions to restore and verify the archived measurements
+or run fresh CUDA measurements. Checking saved results does not rerun inference.
 
 ## Research limitations
 

@@ -1,25 +1,23 @@
 # Packed GPU decode acceptance
 
-Baseline: `MartinEBravo/nzip` main `453c06ea019b8d1d2566de0b4a7396b34807425c`.
+Baseline: NeuralZip main `453c06ea019b8d1d2566de0b4a7396b34807425c`.
 Only GPU runtime/decoding may change. CPU setup, codebooks, archives, compressed
 payloads, restart metadata, selected weights and model arithmetic stay frozen.
-Do not merge or update the paper from this experiment.
 
-Current status: **acceptance passed**. All 24 own/transfer comparisons pass in
+Current status: **acceptance passed; implementation integrated into main**.
+All 24 own/transfer comparisons pass in
 two complete, independent campaigns. The worst latency is 1.026630× DFloat11;
 live and forward-peak allocation exactly match baseline and remain below BF16.
-Martin approved the same general functional-consumer hook correction for
+The same general functional-consumer hook correction is applied to
 baseline, candidate and the DFloat11 control adapter. CPU setup, archives,
 payload/restart bytes, coverage and arithmetic remain unchanged.
 See [RESULTS.md](RESULTS.md) for every model's measurements, exact validation,
 reproduction commands and lossless raw evidence, including preserved failures.
-The PR may be marked ready; do not merge it or update Overleaf automatically.
 
 ## Inputs and environment
 
-On `multi_vm`, select one physical GPU explicitly with `--gpu`. The original
-plan selected GPU 1; Martin subsequently authorized GPU **0** and releasing
-his idle Jupyter kernel's GPU memory. The experiment uses GPU 0 throughout.
+On the GPU host, select one physical GPU explicitly with `--gpu`.
+The reported campaigns use physical GPU **0**, an NVIDIA RTX A5500.
 The launcher never signals another process and waits if the selected GPU is
 occupied. Use separate immutable baseline/candidate source
 captures, the existing native extension, and the same installed dependencies.
@@ -27,10 +25,12 @@ Do not run historical launch/recovery scripts: some suspend unrelated queues.
 
 The benchmark reads the existing server-local data:
 
-* `DATA=/home/martin/neuralzip-runs/transfer-full-rerun-20261005-0244`
-* `INPUTS=/dev/shm/martin-nzip-six-20261002`
-* `DFLOAT=/home/martin/neuralzip-runs/chunk-rerun-20261002/dfloat-source`
-* `DEPS=/home/martin/neuralzip-runs/chunk-rerun-20261002/dependencies`
+* `DATA=/path/to/frozen-cpu-results`
+* `INPUTS=/path/to/pinned-bf16-inputs`
+* `DFLOAT=/path/to/pinned-dfloat11-source`
+* `DEPS=/path/to/benchmark-dependencies`
+
+Replace these paths with the corresponding local benchmark inputs.
 
 Include `$DATA`, the chosen source capture, `$DFLOAT`, and `$DEPS` on `PYTHONPATH`.
 Use the existing pinned HF cache, offline, without reading or copying credentials.
@@ -112,11 +112,11 @@ both below BF16, with bitwise weights/outputs and unchanged compressed bytes.
 
 ## Sharing-only and packing-only GPU ablations
 
-The separately authorized ablation rerun uses the frozen own setups from
-Godel's `/data/mbravo/shared-table1-ablations-20261005`, which supplied the
+The ablation rerun uses the frozen own setups from the CPU campaign
+`shared-table1-ablations-20261005`, which supplied the
 current paper's CPU rows. Copy only the twelve `*-sharing-own.setup.pkl` /
-`*-packing-own.setup.pkl` files and their original method JSONs directly to
-the GPU server; never rebuild a setup or copy weights/setup pickles to the Mac.
+`*-packing-own.setup.pkl` files and their original method JSONs to
+the GPU host; do not rebuild a setup for this frozen comparison.
 The benchmark verifies each pickle against the original CPU record's
 `own_setup_sha256` and the exact pinned BF16 manifest before export.
 

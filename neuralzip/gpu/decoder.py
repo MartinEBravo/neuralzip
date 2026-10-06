@@ -30,6 +30,7 @@ class PreparedBatch:
     descriptor_tensors: tuple[torch.Tensor, ...] = field(repr=False)
     device: torch.device
     layout: tuple[int, bool, int, int, int, bool, bool]
+    stage_symbols: bool
     shared_memory: int
     kernel_grid: tuple[int, ...]
     kernel_args: tuple[object, ...] = field(repr=False)
@@ -66,12 +67,12 @@ class CuPyDecoder:
             )
         return cupy
 
-    def _kernel(self, device_index, layout):
-        key = device_index, layout
+    def _kernel(self, device_index, layout, stage_symbols):
+        key = device_index, layout, stage_symbols
         if key not in self._kernels:
             width, reorder, mantissa_bits, exponent_bits, stream_id, mixed, long_codes = layout
             word = {2: "uint16_t", 4: "uint32_t"}[width]
-            name = f"decode_batched<{word}, {int(reorder)}, {mantissa_bits}, {exponent_bits}, {stream_id}, {int(mixed)}, {int(long_codes)}>"
+            name = f"decode_batched<{word}, {int(reorder)}, {mantissa_bits}, {exponent_bits}, {stream_id}, {int(mixed)}, {int(long_codes)}, {int(stage_symbols)}>"
             cupy = self.cupy
             with cupy.cuda.Device(device_index):
                 module = cupy.RawModule(
@@ -104,20 +105,27 @@ class CuPyDecoder:
         kernel.function.max_dynamic_shared_size_bytes = required
         kernel.configured_shared_memory = required
 
-    def prepare_kernel(self, device_index, layout, shared_memory):
-        kernel = self._kernel(device_index, layout)
+    def prepare_kernel(self, device_index, layout, shared_memory, stage_symbols=False):
+        kernel = self._kernel(device_index, layout, stage_symbols)
         self._ensure_shared_memory(kernel, device_index, shared_memory)
         return kernel
+
+    def _staging(self, device_index, max_elements):
+        required = shared_memory_bytes(1, max_elements)
+        properties = self.cupy.cuda.runtime.getDeviceProperties(device_index)
+        limit = (_device_property(properties, "sharedMemPerBlockOptin")
+                 or _device_property(properties, "sharedMemPerBlock"))
+        staged = max_elements > 0 and required <= limit
+        return staged, required if staged else shared_memory_bytes(1, 0)
 
     def prepare_group(self, device_index, group):
         layout = group.layout
         positions = group.encoded.streams[layout[4]].output_positions
-        max_elements = 0 if layout[5] or not group.codebook.max_bits else max(
+        max_elements = 0 if not group.codebook.max_bits else max(
             (right - left for left, right in pairwise(positions)), default=0
         )
-        return self.prepare_kernel(
-            device_index, layout, shared_memory_bytes(layout[0], max_elements)
-        )
+        staged, shared_memory = self._staging(device_index, max_elements)
+        return self.prepare_kernel(device_index, layout, shared_memory, staged)
 
     def prepare_batch(self, groups):
         groups = tuple(groups)
@@ -169,13 +177,13 @@ class CuPyDecoder:
             integers(group_ids),
             integers(local_ids),
         )
-        shared_memory = shared_memory_bytes(
-            layout[0], max(group.max_block_elements for group in groups)
-        )
+        staged, shared_memory = self._staging(
+            device.index, max(group.max_block_elements for group in groups))
         return PreparedBatch(
             descriptor_tensors=descriptors,
             device=device,
             layout=layout,
+            stage_symbols=staged,
             shared_memory=shared_memory,
             kernel_grid=(sum(grids),),
             kernel_args=tuple(np.uint64(tensor.data_ptr()) for tensor in descriptors),
@@ -186,7 +194,7 @@ class CuPyDecoder:
         cupy = self.cupy
         device_index = prepared.device.index
         kernel = self.prepare_kernel(
-            device_index, prepared.layout, prepared.shared_memory
+            device_index, prepared.layout, prepared.shared_memory, prepared.stage_symbols
         )
         torch_stream = torch.cuda.current_stream(device=prepared.device)
         with cupy.cuda.Device(device_index):

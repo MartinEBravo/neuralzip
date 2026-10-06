@@ -220,6 +220,15 @@ def _join(parent, child):
     return f"{parent}.{child}" if parent and child else parent or child
 
 
+def _decode_hook_module(model, block_name):
+    parent_name, _, child_name = block_name.rpartition(".")
+    parent = model.get_submodule(parent_name)
+    # MultiheadAttention reads out_proj.weight without calling the child Linear.
+    if child_name == "out_proj" and isinstance(parent, nn.MultiheadAttention):
+        return parent
+    return model.get_submodule(block_name)
+
+
 def _gpu_candidates(model):
     """Keep linear block batching; hook ungrouped weight modules individually."""
 
@@ -415,7 +424,7 @@ class NeuralZipRuntime:
                         + group.encoded.numel
                     ],
                     group.codebook.max_bits,
-                    0 if group.codebook.vocab or not group.codebook.max_bits else max(
+                    0 if not group.codebook.max_bits else max(
                         (right - left for left, right in pairwise(positions)),
                         default=0,
                     ),
@@ -472,7 +481,7 @@ class NeuralZipRuntime:
                         _binding_view(self.workspaces, uploaded.group.encoded.dtype.torch_dtype, binding)
                     )
         for block_name in self.export.block_order:
-            handle = self.model.get_submodule(block_name).register_forward_pre_hook(
+            handle = _decode_hook_module(self.model, block_name).register_forward_pre_hook(
                 partial(self._decode_block, block_name),
                 prepend=True,
             )

@@ -1,0 +1,61 @@
+{
+  "cpu": {
+    "float16": "eda8ab7b13a45a4098e07729e28346c8f78abe0f84ff83cced3693b23de47cd7",
+    "bfloat16": "5899277d7d0b80f06629a534b86c724518fcd0554b794f128bae0ef44d6ae09c",
+    "float32": "3db030f935fe30183f44176084ae3596a36924673e5ea5e8aef6204ef08449ca"
+  },
+  "gpu": {
+    "float16": {
+      "chunks": 36,
+      "packed_chunks": 0,
+      "weight_roundtrip_bitwise": true,
+      "output_bitwise": true
+    },
+    "bfloat16": {
+      "chunks": 36,
+      "packed_chunks": 35,
+      "weight_roundtrip_bitwise": true,
+      "output_bitwise": true
+    },
+    "float32": {
+      "chunks": 70,
+      "packed_chunks": 69,
+      "weight_roundtrip_bitwise": true,
+      "output_bitwise": true
+    },
+    "segment_boundaries": {
+      "code_bits": [
+        12,
+        32,
+        33,
+        56
+      ],
+      "dtypes": [
+        "float16",
+        "bfloat16",
+        "float32"
+      ],
+      "staged_and_direct": true,
+      "odd_tails": true,
+      "bitwise": true
+    },
+    "long_codes": {
+      "max_code_bits": 35,
+      "odd_tail": true,
+      "bitwise": true
+    },
+    "public_hf_wrapper": {
+      "packed": true,
+      "ordinary_load": true,
+      "compressed_reload": true,
+      "weights_bitwise": true,
+      "output_bitwise": true
+    }
+  },
+  "runtime_sha256": {
+    "gpu/decoder.py": "473737d8c1b0cec0c86cf25ce96fe9a150220a33daf9e118552bbe9c1a0498bd",
+    "gpu/inference.py": "a82371273672f827f1d75a9c3be857c710a69149cf03ea358af2ce47239d539c",
+    "gpu/cuda/decode.cu": "4dd6e493f60ab77143444c7afcddc819164fca424966a267a55b0fa8d57d51ff"
+  },
+  "native_sha256": "052d113e588171bcff0bc01fb49bcdf20112a54308d690255d320650efe71920"
+}

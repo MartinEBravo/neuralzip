@@ -1,5 +1,9 @@
 # Experimental evidence and reproduction
 
+The [new GB10 campaign snapshot](gb10-four-20261006/README.md) contains the
+independently checked ResNet101 four-method GPU cohort. It is supplemental;
+the existing saved-result exports below still use their original paper snapshot.
+
 Run commands from the repository root. The five public scripts write new runs
 under `results/reruns/` and refuse to overwrite existing measurements. Model
 downloads and temporary BF16 inputs go under `.cache/experiments/` by default.

@@ -1,0 +1,41 @@
+{
+  "runs/resnet101/attempt-1/1/resnet101-candidate-transfer.json": {
+    "sha256": "fc1a397610bf4eeed682b157ca0139b5e57595c9851f2dd2ee4f9eb27ffabdc1",
+    "original_sha256": "fc1a397610bf4eeed682b157ca0139b5e57595c9851f2dd2ee4f9eb27ffabdc1"
+  },
+  "runs/resnet101/attempt-1/1/resnet101-candidate-own.json": {
+    "sha256": "4201870735c86a162879f40f6a9da310a6eb3867a34f3c3df294f3783c6f839b",
+    "original_sha256": "4201870735c86a162879f40f6a9da310a6eb3867a34f3c3df294f3783c6f839b"
+  },
+  "runs/resnet101/attempt-1/1/resnet101-control-dfloat11.json": {
+    "sha256": "fa5e0694f5c5fefa2a5596a272f151b85cd50ff8ab0034b6eea452c32e2b7cc3",
+    "original_sha256": "fa5e0694f5c5fefa2a5596a272f151b85cd50ff8ab0034b6eea452c32e2b7cc3"
+  },
+  "runs/resnet101/attempt-1/1/resnet101-control-bf16.json": {
+    "sha256": "fe93a6ca2a2a0b38a7431b4157779e172dba225b3bc3a07bd313c9f5078e9895",
+    "original_sha256": "fe93a6ca2a2a0b38a7431b4157779e172dba225b3bc3a07bd313c9f5078e9895"
+  },
+  "runs/resnet101/attempt-1/own-validation.json": {
+    "sha256": "77cc532fb6dee2235cce530a182632e5d9f826b037383ca84ac7a14b51aad752",
+    "original_sha256": "77cc532fb6dee2235cce530a182632e5d9f826b037383ca84ac7a14b51aad752"
+  },
+  "runs/resnet101/attempt-1/transfer-validation.json": {
+    "sha256": "60fab65591c8a24d9745fda67a39adf2fac0bcf922f2de38407da4890d6d3d90",
+    "original_sha256": "60fab65591c8a24d9745fda67a39adf2fac0bcf922f2de38407da4890d6d3d90"
+  },
+  "runs/resnet101/attempt-1/bf16-validation.json": {
+    "sha256": "80876c0aa4d86685aa191203ecd535981649dc9575946a97c3821d6f2c149298",
+    "original_sha256": "80876c0aa4d86685aa191203ecd535981649dc9575946a97c3821d6f2c149298"
+  },
+  "runs/resnet101/attempt-1/dfloat11-validation.json": {
+    "sha256": "d6240dcac48502402e237bf846489b4707b53983a0f693fe107bce513c616f6b",
+    "original_sha256": "d6240dcac48502402e237bf846489b4707b53983a0f693fe107bce513c616f6b"
+  },
+  "runs/resnet101/COMPLETE.json": {
+    "sha256": "0511f64f72b08991f415d43b0e71ba6a2cae65a119690f14e5bcdf872475190d",
+    "original_sha256": "a420ce622d33d2c556fc71d25caa1eab575db84c4eba5d1ea513cec159313b18"
+  },
+  "verification.json": {
+    "sha256": "eaca18abe5861b9b6fc888d9262d07c6d8917d2597023c40206259e5b4157cf9"
+  }
+}

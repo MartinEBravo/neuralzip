@@ -1,5 +1,5 @@
 {
-  "archive_sha256": "438669785f919c17a4e18ef0521690f502d535f01c71389d2eabe0f63218e3dc",
+  "archive_sha256": "23a89fafe08ca57eca98fd9bbd07bffb7b2e9ca7a30a92c64f6461b17870d279",
   "members": {
     "1/dinov3-convnext-baseline-own.json": {
       "sha256": "3ead303657e4405ee4e521af140985d5cdd8310e87d32abd145efce752ee5c3b",
@@ -290,12 +290,12 @@
       "bytes": 23444
     },
     "history/functional-campaigns-v2.log": {
-      "sha256": "e50190cfce1b5b50dc10712678085bb71d7aeb7e046e1bb188f83f511d82c27c",
-      "bytes": 101277
+      "sha256": "d2f4906d87cc43453ff02c4fc520f76369fdc0b4a18d3a0801bd976322d07055",
+      "bytes": 95127
     },
     "history/functional-campaigns.log": {
-      "sha256": "9215fe9796405db395aed3baa6fb83496fa9dd4cfc85b90b06b8832fc0e4b73f",
-      "bytes": 5507
+      "sha256": "d44663d34944e18f97a269efcab9dfa14d44792677eec610feb856cdfd9bde80",
+      "bytes": 5282
     },
     "history/initial-functional-fixture.py": {
       "sha256": "579898ced2decd93bc5182a6bf1bfaf5753a1c75ece877ec6a92bd5595c1c8a9",
@@ -303,7 +303,7 @@
     }
   },
   "entries": 75,
-  "decoded_bytes": 2305214,
+  "decoded_bytes": 2298839,
   "zip_crc_pass": true,
   "original_byte_equality": true
 }

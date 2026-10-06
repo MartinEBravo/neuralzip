@@ -13,6 +13,8 @@ baseline, candidate and the DFloat11 control adapter. CPU setup, archives,
 payload/restart bytes, coverage and arithmetic remain unchanged.
 See [RESULTS.md](RESULTS.md) for every model's measurements, exact validation,
 reproduction commands and lossless raw evidence, including preserved failures.
+The packaged evidence uses anonymous paths and archive ownership metadata;
+measurements and input/setup/payload/runtime-source hashes are unchanged.
 
 ## Inputs and environment
 

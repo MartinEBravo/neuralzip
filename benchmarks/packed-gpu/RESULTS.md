@@ -4,6 +4,12 @@ All **24 own/transfer comparisons** passed in **two complete independent campaig
 
 Shared-memory exponent-byte staging was sufficient. No output-count cache, prefix-width change, packing removal, decoded-weight retention, offload or fused matrix-multiplication redesign was added. CPU setup, codebooks, CPU archives, GPU payload/restart bytes, selected/compressed coverage and model arithmetic remain unchanged. The only additional production correction routes functional `MultiheadAttention.out_proj` decoding through its consuming attention module; the same adapter is applied to original-main NeuralZip and the DFloat11 control.
 
+The evidence packages are anonymized copies: private paths and archive-owner
+metadata are replaced, and CPU-record digest references point to the corresponding
+anonymized records. All timing samples, statistics, allocations, sizes, correctness
+flags and input/setup/payload/runtime-source hashes are unchanged. Checksums below
+refer to these copies; original evidence remains preserved privately.
+
 ## Matched Qwen BF16 / Packing Only follow-up
 
 A fresh comparison was run after the isolated Qwen ablation appeared
@@ -31,7 +37,7 @@ remains 1484759040/1548591104 bytes, below BF16's 1745055744/1808887808 bytes.
 The original six-model DFloat11 acceptance is unchanged.
 
 Lossless evidence: `evidence/qwen-paired-20261006/qwen-paired-metadata.tar.gz`,
-SHA256 `47d62a4c5b4ad61ff20a61f539575714cd39721eab200d6d7a3a99dedcd88a12`.
+SHA256 `d76dacb71574d89e345dd9b065a7d27c79f4c2ee8e097c27423e8b3dc395214f`.
 It contains four original GPU JSONs, the validator/launcher, the original log
 and validation report. No weights, setup pickles or credentials are archived.
 Fresh BF16 output references remain on the server; both match byte-for-byte.
@@ -75,14 +81,13 @@ Reserved allocation is retained separately. The isolated ablations have no
 DFloat11 speed requirement; the original full-method acceptance is unchanged.
 
 Lossless evidence: `evidence/ablations-20261005/ablation-records.zip`, SHA256
-`ea1ea3bfa337f170f870352139398e664e9acf09ad75d4d2c5431dc042ac805d`,
-**71 members / 9297333 decoded bytes**: 48 original GPU JSONs, 12 original
-CPU method JSONs, six input manifests, three measured harness/check sources,
-the original run log and independent validation report. No weights, setup
-pickles, dependencies or credentials are archived. Every ZIP CRC, member SHA,
-byte count and exact equality to its server original passed; independent Mac
-checks returned the identical passing report. The twelve setup pickle hashes
-match their untouched CPU records. All earlier evidence is unchanged.
+`c44d005f8de4ce400666dea57ead9412acac4d483b5efd563c3c66417480c874`,
+**71 members / 9291296 decoded bytes**: 48 GPU JSONs, 12 CPU method JSONs,
+six input manifests, three measured harness/check sources, the anonymized run
+log and independent validation report. No weights, setup pickles, dependencies
+or credentials are archived. Every ZIP CRC, member SHA and byte count passes;
+the metadata-only checker returns the identical passing report after anonymization.
+The twelve setup pickle hashes and all measurement values are unchanged.
 
 Restore into a separate ablation directory, retain the previously restored
 full-method directory and proofs, then run:
@@ -191,7 +196,7 @@ Physical GPU **0**, NVIDIA RTX A5500; driver `595.91.07`. PyTorch `2.9.1+cu128`,
 
 ## Lossless evidence and reproduction
 
-`evidence/staging-functional/campaign-records.zip` contains **75 members**: 72 original timing JSONs, both initial/final run logs and the initial small-fixture source. It decodes to **2305214 bytes**; SHA256 `438669785f919c17a4e18ef0521690f502d535f01c71389d2eabe0f63218e3dc`. Every ZIP CRC, member SHA256 and exact equality to server originals passed, independently verified again locally. No weights, setup pickles, dependencies or credentials were fetched or archived. Originals remain on the server. The prior pilot/incomplete-campaign archives and their hashes are unchanged.
+`evidence/staging-functional/campaign-records.zip` contains **75 members**: 72 byte-identical original timing JSONs, both anonymized initial/final run logs and the initial small-fixture source. It decodes to **2298839 bytes**; SHA256 `23a89fafe08ca57eca98fd9bbd07bffb7b2e9ca7a30a92c64f6461b17870d279`. Every ZIP CRC and member SHA256 passes. No weights, setup pickles, dependencies or credentials were fetched or archived. Only the two log files changed during anonymization; timing records and the prior pilot archive remain byte-identical.
 
 `campaign-records-members.json` records every exact member hash/size. `correctness.json` and `module-correctness.json` bind the proofs to the measured candidate; `acceptance.json` contains all 24 unrounded comparisons. Independent remote and local execution of the final checker returned the identical passing result. Restore only absent files before checking:
 
@@ -309,10 +314,10 @@ for all three dtypes. Lint, formatting and the acceptance checker's negative
 self-tests pass. The complete acceptance checker deliberately returns nonzero
 for the missing SigLIP cohort and all second-campaign cohorts.
 
-`evidence/staging/first-campaign-incomplete.zip` preserves the 31 original
-first-campaign JSONs, the original failure log, both untimed hook diagnostic
-logs and their exact diagnostic source. All ZIP CRCs, member byte equality
-and remote SHA256 matches were verified. The 18 pilot records remain in the
+`evidence/staging/first-campaign-incomplete.zip` preserves the 31 byte-identical
+original first-campaign JSONs, the anonymized failure log, both untimed hook
+diagnostic logs and the diagnostic source with anonymous paths. All ZIP CRCs
+and member SHA256 checks pass. The 18 pilot records remain in the
 separate, unchanged `pilot-records.zip`. Neither archive includes weights,
 setups, dependencies or credentials.
 

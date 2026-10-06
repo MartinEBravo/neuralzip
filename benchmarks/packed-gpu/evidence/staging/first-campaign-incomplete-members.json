@@ -1,5 +1,5 @@
 {
-  "archive_sha256": "a70866d01fef85982c305507e81da08f46b0a781b2bff4a2829194bb9e062b7b",
+  "archive_sha256": "6d6f56581f3491b4d2e79ba5cf62c202414496dbc198eb44fc158277116949b0",
   "members": {
     "1/dinov3-convnext-baseline-own.json": {
       "bytes": 24621,
@@ -126,20 +126,20 @@
       "sha256": "7b420de725bae8c2eb8216e7ea7dbe968e05d64849f8e52a4a240a1a1ea1c695"
     },
     "campaigns-before-siglip-control-diagnosis.log": {
-      "bytes": 38474,
-      "sha256": "59a150871be9715d0ae0f1eebd266373894a342fb10da002ca09539db962ef8c"
+      "bytes": 35630,
+      "sha256": "26a114e5c4515693d4354ea39ebdec30288f3f9b0d787d8eaa8ec8c5726ec92e"
     },
     "siglip-baseline-hook-check.log": {
-      "bytes": 1729,
-      "sha256": "3d51430bd482df40efb6158dcf8ac7abb91cbdffe6c0390f4b8ccbe4d0002c52"
+      "bytes": 1712,
+      "sha256": "0d02b2b8ca2b9e8bd55c3553c6bdbbb3670c9878db3f369219cc9af5940a9087"
     },
     "siglip-dfloat-hook-check.log": {
-      "bytes": 24138,
-      "sha256": "2507c486d02daab51809ee05c87de35b7a4eef8e585272af700f9ac0389b702b"
+      "bytes": 24104,
+      "sha256": "3acfdeba4e5d941edd82d17abaac208889d071b79fd3f324947fcc4e598337ce"
     },
     "siglip_control_debug_v3.py": {
-      "bytes": 5205,
-      "sha256": "9334c0ac3d933c489970666d7c8ee4a5a05d7a442a13f96db4a2f65fc5cd074a"
+      "bytes": 5155,
+      "sha256": "58c6e1c96fca577f08596b6d2e25f984ed4a8a0ade79ca28037063fb60dc3150"
     }
   }
 }

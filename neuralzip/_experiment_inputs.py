@@ -46,7 +46,7 @@ try:
 except ImportError:
     init_empty_weights = None
 
-RESULTS = Path(__file__).resolve().parents[1] / "results"
+RESULTS = Path(__file__).resolve().parents[1] / "scripts/results"
 NEMO_MAPPING = {
     r"encoder\.pre_encode\.conv\.": r"encoder.subsampling.layers.",
     r"encoder\.pre_encode\.out\.": r"encoder.subsampling.linear.",

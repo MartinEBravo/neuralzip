@@ -288,7 +288,7 @@ under Apache-2.0.
 
 ## Reproducing the experiments
 
-Experimental evidence is saved under [`results/`](results/README.md). There are
+Experimental evidence is saved under [`scripts/results/`](scripts/results/README.md). There are
 five entrypoints; their private helpers live in `neuralzip/_experiment_*.py`.
 
 | Script | Experiment |
@@ -308,12 +308,12 @@ python scripts/six_models_ablations.py --check
 python scripts/training_checkpoints.py --export-saved
 ```
 
-See the [experiment instructions](results/README.md) for the captured environment,
+See the [experiment instructions](scripts/results/README.md) for the captured environment,
 small fresh reruns, and their verification. Input revisions, BF16 tensor hashes,
 codebook settings and compression sizes are fixed. Fresh wall-clock timings
 depend on the machine; exporting the saved evidence reproduces the recorded
-values, not a new measurement. The [GPU report](results/packed-gpu/RESULTS.md)
-preserves both independent campaigns, sharing/packing ablations and failure history.
+values, not a new measurement. Old packed-GPU engineering campaigns,
+pilots and superseded reports are not distributed.
 
 ## Research limitations
 

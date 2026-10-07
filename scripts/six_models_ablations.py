@@ -11,7 +11,6 @@ from pathlib import Path
 from neuralzip._experiment_cpu import benchmark, configure, summarize
 from neuralzip._experiment_inputs import catalogue, evidence
 from neuralzip._experiment_results import (
-    check_archived,
     export_cpu,
     export_phases,
     saved_dfloat_cpu,
@@ -97,7 +96,7 @@ def parser(description=__doc__, models=None):
         choices=(*METHODS, "bf16", "own", "dfloat11"),
         default=list(METHODS),
     )
-    p.add_argument("--output", type=Path, default=Path("results/reruns/six"))
+    p.add_argument("--output", type=Path, default=Path("scripts/results/reruns/six"))
     p.add_argument("--cache", type=Path, default=Path(".cache/experiments/hf"))
     p.add_argument("--inputs", type=Path, default=Path(".cache/experiments/inputs"))
     p.add_argument("--setups", type=Path)
@@ -180,7 +179,6 @@ def main():
             )
             phases.append(phase)
         rows.extend(saved_dfloat_cpu(args.models, "six"))
-        check_archived()
         if args.export_saved:
             export_cpu(rows, args.output / "six-models-ablations.csv")
             export_phases(phases, args.output / "setup-phases.csv")

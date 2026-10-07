@@ -143,7 +143,7 @@ def main():
     p.add_argument(
         "--models", nargs="+", choices=catalogue()["six"], default=catalogue()["six"]
     )
-    p.add_argument("--output", type=Path, default=Path("results/reruns/preliminaries"))
+    p.add_argument("--output", type=Path, default=Path("scripts/results/reruns/preliminaries"))
     p.add_argument("--cache", type=Path, default=Path(".cache/experiments/hf"))
     p.add_argument("--inputs", type=Path, default=Path(".cache/experiments/inputs"))
     p.add_argument("--check", action="store_true")

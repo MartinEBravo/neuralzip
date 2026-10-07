@@ -1,7 +1,7 @@
 # GB10 four-machine campaign: verified snapshot
 
 This snapshot contains one complete ResNet101 GPU cohort. It supplements, and
-does not replace, `../paper/evidence.zip`. The other campaign models were still
+does not replace, `../evidence.zip`. The other campaign models were still
 running when this snapshot was saved. No CPU results changed.
 
 | Method | Inference (ms) | Live allocation (bytes) | Forward peak (bytes) |
@@ -29,7 +29,7 @@ Verify the distributed archive from the repository root:
 ```bash
 python - <<'PY'
 import hashlib, json, pathlib, zipfile
-p = pathlib.Path('results/gb10-four-20261006')
+p = pathlib.Path('scripts/results/paper/gb10-resnet101')
 members = json.loads((p / 'evidence-members.json').read_text())
 with zipfile.ZipFile(p / 'evidence.zip') as z:
     assert z.testzip() is None

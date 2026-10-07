@@ -55,7 +55,7 @@ def main():
         choices=("transfer", "zipnn"),
         default=["transfer", "zipnn"],
     )
-    p.add_argument("--output", type=Path, default=Path("results/reruns/checkpoints"))
+    p.add_argument("--output", type=Path, default=Path("scripts/results/reruns/checkpoints"))
     p.add_argument("--inputs", type=Path, default=Path(".cache/experiments/inputs"))
     p.add_argument("--cache", type=Path, default=Path(".cache/experiments/hf"))
     p.add_argument("--repetitions", type=int, default=5)

@@ -34,7 +34,7 @@ def main():
     p.add_argument(
         "--cache", type=Path, default=Path(".cache/experiments/optimizer-data")
     )
-    p.add_argument("--output", type=Path, default=Path("results/reruns/optimizers"))
+    p.add_argument("--output", type=Path, default=Path("scripts/results/reruns/optimizers"))
     p.add_argument(
         "--check",
         action="store_true",

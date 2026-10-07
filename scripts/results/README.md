@@ -1,11 +1,11 @@
 # Experimental evidence and reproduction
 
-The [new GB10 campaign snapshot](gb10-four-20261006/README.md) contains the
-independently checked ResNet101 four-method GPU cohort. It is supplemental;
-the existing saved-result exports below still use their original paper snapshot.
+The final paper's ResNet101 GB10 cohort is retained in
+[`paper/gb10-resnet101/`](paper/gb10-resnet101/README.md). The saved exports
+below retain their original snapshot and explicitly report its coverage.
 
 Run commands from the repository root. The five public scripts write new runs
-under `results/reruns/` and refuse to overwrite existing measurements. Model
+under `scripts/results/reruns/` and refuse to overwrite existing measurements. Model
 downloads and temporary BF16 inputs go under `.cache/experiments/` by default.
 Both directories are ignored by Git. No weights or setup pickles are distributed.
 
@@ -17,7 +17,8 @@ contains CPU samples, GPU trials, entropy populations and optimizer traces.
 `paper/evidence-members.json` records each distributed member's SHA256 and,
 where available, its original pre-anonymization SHA256. Only identifying paths
 and host names were normalized; numerical values and tensor hashes were retained.
-The earlier GPU acceptance archives in `packed-gpu/` are unchanged.
+Only paper measurements and their input/provenance records are distributed.
+Old packed-GPU engineering acceptance campaigns and pilots are excluded.
 
 ```bash
 python scripts/six_models_ablations.py --check
@@ -32,8 +33,6 @@ Choose a new `--output` directory for each export. This reproduces recorded
 numerical tables/plot coordinates, not fresh timings. Table 3 evidence contains
 18 CPU cohorts and 15 complete same-device GPU cohorts; the checker explicitly
 reports the other three as absent in this snapshot, not as measured or failed.
-Six-suite GPU comparisons and isolated sharing/packing controls are retained in
-the [GPU report](packed-gpu/RESULTS.md) and its raw archives.
 
 ## Captured software environment
 
@@ -92,15 +91,15 @@ when the machine does not offer those cores, and report the change.
 ```bash
 # One six-suite control, including the original same-call setup-phase profiler.
 python scripts/six_models_ablations.py --models dinov3-vit --methods new \
-  --verify-published --output results/reruns/six-vit
+  --verify-published --output scripts/results/reruns/six-vit
 
 # One Table 3 target with its declared source-only donor.
 python scripts/all_models.py --models resnet101 --methods new transfer zipnn \
-  --verify-published --output results/reruns/resnet
+  --verify-published --output scripts/results/reruns/resnet
 
 # One original training step, not a rerun of all 70 checkpoints.
 python scripts/training_checkpoints.py --families pythia-1b --steps 143000 \
-  --verify-published --output results/reruns/pythia-final
+  --verify-published --output scripts/results/reruns/pythia-final
 ```
 
 `--verify-published` requires identical input identity, compressed sizes and
@@ -130,11 +129,11 @@ new output directory, one physical GPU and one fresh process per method:
 
 ```bash
 python scripts/six_models_ablations.py --models dinov3-vit --device gpu \
-  --methods bf16 --gpu 0 --setups results/reruns/six-vit \
-  --output results/reruns/gpu-vit
+  --methods bf16 --gpu 0 --setups scripts/results/reruns/six-vit \
+  --output scripts/results/reruns/gpu-vit
 python scripts/six_models_ablations.py --models dinov3-vit --device gpu \
-  --methods own --gpu 0 --setups results/reruns/six-vit \
-  --output results/reruns/gpu-vit
+  --methods own --gpu 0 --setups scripts/results/reruns/six-vit \
+  --output scripts/results/reruns/gpu-vit
 ```
 
 Run BF16 first; other methods require its same-campaign, bitwise output reference.
@@ -158,10 +157,10 @@ checks. It is a correctness run, not an inference timing campaign.
 
 ```bash
 python scripts/preliminaries.py --models dinov3-vit --verify-published \
-  --output results/reruns/prelim-vit
+  --output scripts/results/reruns/prelim-vit
 CUDA_VISIBLE_DEVICES=0 python scripts/optimizers.py --models mlp \
   --optimizers Adam Muon --seeds 17 --steps 3 --verify-published \
-  --output results/reruns/optimizer-prefix
+  --output scripts/results/reruns/optimizer-prefix
 ```
 
 Preliminaries use full BF16 field histograms, the recorded 8 Mi-element sampling
@@ -176,9 +175,3 @@ and 1,000 updates. FP32 training is unchanged by measuring a new BF16 copy after
 each step. Raw 256-bin histograms, losses, initial/final state hashes and data
 order are saved; CSV exports include the three-seed mean and standard deviation.
 `--verify-published` can check a short prefix without training all 48 cases.
-
-The restructuring was spot-checked on one DINOv3 ViT CPU/GPU control,
-ResNet101 own/transfer/ZipNN, Pythia's final transfer/ZipNN point, DINOv3 ViT
-preliminaries and MLP Adam/Muon's first three steps. Compression archives and
-optimizer histograms matched the saved evidence; fresh timings are explicitly
-new measurements. See `paper/verification.json` for the checks and their scope.

@@ -21,7 +21,7 @@ def main():
     p.set_defaults(
         methods=["new", "transfer", "zipnn"],
         repetitions=9,
-        output=Path("results/reruns/all"),
+        output=Path("scripts/results/reruns/all"),
     )
     args = p.parse_args()
     if args.check_kernels:

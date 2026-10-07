@@ -11,12 +11,7 @@ __pycache__/
 /.DS_Store
 /build/
 /dist/
-/results/*
-!/results/README.md
-!/results/paper/
-!/results/packed-gpu/
-!/results/gb10-four-20261006/
-/results/reruns/
+/scripts/results/reruns/
 /.cache/
 *.setup.pkl
 AGENTS.md

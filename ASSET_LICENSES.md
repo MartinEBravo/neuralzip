@@ -3,7 +3,7 @@
 Verified against upstream metadata on 7 October 2026. This inventory covers the
 paper's evaluated models, source-bank donors, training checkpoints, optimizer
 datasets, and principal software dependencies. Exact input revisions, hashes,
-and donor assignments are retained in [the experimental catalogue](results/paper/catalogue.json);
+and donor assignments are retained in [the experimental catalogue](scripts/results/paper/catalogue.json);
 this document does not change them.
 
 License names below report the upstream declaration, not a new grant of rights
@@ -166,6 +166,6 @@ Their bundled notices and exact installed-version licenses remain applicable.
 | [NVIDIA CUDA Toolkit terms](https://docs.nvidia.com/cuda/eula/index.html) | Separately installed GPU toolchain/runtime; not covered by a model's or NeuralZip's license. |
 
 Dependency declarations are in [pyproject.toml](pyproject.toml). Saved experimental
-evidence under [results/](results/) records runtime versions and source hashes.
+evidence under [scripts/results/](scripts/results/) records runtime versions and source hashes.
 When reproducing a saved experiment, use its captured version and notices rather
 than assuming today's upstream branch is the measured environment.

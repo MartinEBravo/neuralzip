@@ -292,7 +292,7 @@ The outdated evidence archives have been removed; final paper evidence is not
 yet packaged in this repository. Saved-result checks and exports described below
 require that evidence and are currently unavailable. See
 [`scripts/results/`](scripts/results/README.md). There are
-five entrypoints; their private helpers live in `neuralzip/_experiment_*.py`.
+five entrypoints; their private helpers live in `scripts/_experiment_*.py`.
 
 | Script | Experiment |
 | --- | --- |

@@ -19,7 +19,7 @@ from torchvision.datasets import CIFAR10, CIFAR100, MNIST
 from torchvision.models import resnet18, vit_b_16
 from transformers import GPT2Config, GPT2LMHeadModel, GPT2TokenizerFast
 
-from neuralzip._experiment_inputs import evidence, evidence_bytes
+from _experiment_inputs import evidence, evidence_bytes
 
 MODELS = ("mlp", "resnet18", "vit", "gpt2")
 OPTIMIZERS = ("SGD", "Adam", "AdamW", "Muon")

@@ -10,8 +10,8 @@ import dfloat11_utils as dfloat
 import numpy as np
 import torch
 
-from neuralzip._experiment_cpu import configure
-from neuralzip._experiment_inputs import (
+from _experiment_cpu import configure
+from _experiment_inputs import (
     catalogue,
     evidence,
     file_sha,

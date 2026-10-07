@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import torch
 
-from neuralzip import _experiment_inputs as reference
+import _experiment_inputs as reference
 
 try:
     from dfloat11 import dfloat11 as official

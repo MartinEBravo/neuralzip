@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from scipy.spatial.distance import jensenshannon
 
-from neuralzip._experiment_inputs import (
+from _experiment_inputs import (
     catalogue,
     evidence,
     prepare,

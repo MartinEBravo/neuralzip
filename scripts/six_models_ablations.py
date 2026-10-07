@@ -8,9 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from neuralzip._experiment_cpu import benchmark, configure, summarize
-from neuralzip._experiment_inputs import catalogue, evidence
-from neuralzip._experiment_results import (
+from _experiment_cpu import benchmark, configure, summarize
+from _experiment_inputs import catalogue, evidence
+from _experiment_results import (
     export_cpu,
     export_phases,
     saved_dfloat_cpu,
@@ -38,8 +38,7 @@ def run_gpu(args, key, method):
     # One fresh process per method preserves cold runtime initialization/allocator.
     command = [
         sys.executable,
-        "-m",
-        "neuralzip._experiment_gpu",
+        str(Path(__file__).with_name("_experiment_gpu.py")),
         "--model",
         key,
         "--method",
@@ -65,8 +64,7 @@ def run_gpu(args, key, method):
 def run_dfloat(args, key, reference=None):
     command = [
         sys.executable,
-        "-m",
-        "neuralzip._experiment_dfloat",
+        str(Path(__file__).with_name("_experiment_dfloat.py")),
         "--model",
         key,
         "--output",
@@ -148,7 +146,7 @@ def main():
         for module in ("_experiment_kernel_checks", "_experiment_module_checks"):
             extra = ["--cuda"] if module == "_experiment_module_checks" else []
             subprocess.run(
-                [sys.executable, "-m", "neuralzip." + module, *extra],
+                [sys.executable, str(Path(__file__).with_name(module + ".py")), *extra],
                 env=env,
                 check=True,
             )

@@ -26,7 +26,7 @@ except ImportError:
     ZipNN = None
 
 from neuralzip import huff0
-from neuralzip._experiment_inputs import (
+from _experiment_inputs import (
     catalogue,
     evidence,
     exact,
@@ -35,7 +35,7 @@ from neuralzip._experiment_inputs import (
     tensor_manifest,
     write_new,
 )
-from neuralzip._experiment_transfer import BankCompressor, build_bank, exponents
+from _experiment_transfer import BankCompressor, build_bank, exponents
 from neuralzip.compressor import NeuralZipCompressor
 from neuralzip.payloads import CHUNK_METADATA_BYTES, CodebookPayload
 from neuralzip.setup import NeuralZipSetup

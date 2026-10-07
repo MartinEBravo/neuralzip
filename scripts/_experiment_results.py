@@ -4,7 +4,7 @@ import csv
 import json
 from statistics import median
 
-from neuralzip._experiment_inputs import RESULTS, catalogue, evidence
+from _experiment_inputs import RESULTS, catalogue, evidence
 
 
 def export_cpu(rows, path):

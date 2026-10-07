@@ -6,9 +6,9 @@ from pathlib import Path
 
 from six_models_ablations import check_cpu_row, parser, run_dfloat, run_gpu
 
-from neuralzip._experiment_cpu import benchmark, configure
-from neuralzip._experiment_inputs import catalogue, evidence
-from neuralzip._experiment_results import (
+from _experiment_cpu import benchmark, configure
+from _experiment_inputs import catalogue, evidence
+from _experiment_results import (
     check_catalogue_gpu,
     export_cpu,
     export_gpu,

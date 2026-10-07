@@ -7,8 +7,8 @@ from pathlib import Path
 
 from six_models_ablations import check_cpu_row
 
-from neuralzip._experiment_cpu import benchmark, configure
-from neuralzip._experiment_inputs import catalogue, evidence
+from _experiment_cpu import benchmark, configure
+from _experiment_inputs import catalogue, evidence
 
 FAMILIES = ("olmo2-1b", "tri-1.9b", "pythia-1b", "gaperon-1.5b")
 

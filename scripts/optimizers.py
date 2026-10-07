@@ -7,8 +7,8 @@ from pathlib import Path
 
 import torch
 
-from neuralzip._experiment_inputs import write_new
-from neuralzip._experiment_optimizers import (
+from _experiment_inputs import write_new
+from _experiment_optimizers import (
     MODELS,
     OPTIMIZERS,
     check_saved,

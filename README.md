@@ -9,6 +9,10 @@ It is a research implementation for sequential compressed floating-point inferen
 one NVIDIA GPU. Eligible weights are stored as lossless compressed streams and
 reconstructed only when their block or individual layer runs.
 
+Model, dataset, and third-party code terms are documented in
+[ASSET_LICENSES.md](ASSET_LICENSES.md); bundled notices are retained under
+[`third_party/`](third_party/).
+
 - Bitwise-exact weights in their loaded dtype during inference.
 - Optional precomputed global codebooks, declared per format in `dtypes.py`.
 - Reusable chunk-level Jensen--Shannon clusters and adaptive pair/singleton Huffman.

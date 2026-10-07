@@ -4,8 +4,6 @@
 and source files recovered directly from Godel. The companion
 `paper/godel-original-metadata-members.json` records every member's SHA256 and
 size, verified against the remote original, plus the archive SHA256.
-The archive contains JSON and Python only: no weights or setup pickles.
-Numerical cohort validation has not been rerun during recovery.
 
 `paper/gx01-original-metadata.zip` through `paper/gx04-original-metadata.zip`
 contain 2,269 GPU campaign metadata files recovered from the four GX hosts.
@@ -14,9 +12,6 @@ archive SHA256 and all 30 captured runtime hashes reverified live on that host.
 The records include completed results, failed attempts and diagnostic history;
 not every archived record is an accepted paper measurement. No GPU experiment
 was rerun and numerical cohort validation was not repeated during recovery.
-
-These recovery archives do not use the legacy `evidence.zip` schema;
-`--check` and `--export-saved` remain unavailable pending final integration.
 
 `paper/catalogue.json` contains pinned input identities and tensor manifests.
 Fresh outputs go under `scripts/results/reruns/` (ignored by Git).

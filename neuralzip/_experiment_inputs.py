@@ -115,6 +115,8 @@ def catalogue():
 
 
 def evidence_bytes(name):
+    if not (RESULTS / "paper/evidence.zip").is_file():
+        raise FileNotFoundError("The outdated saved-results archive was removed; final paper evidence is not yet packaged here.")
     with zipfile.ZipFile(RESULTS / "paper/evidence.zip") as archive:
         data = archive.read(name)
     manifest = json.loads((RESULTS / "paper/evidence-members.json").read_text())

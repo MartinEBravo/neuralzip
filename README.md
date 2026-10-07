@@ -17,16 +17,13 @@ Model, dataset, and third-party code terms are documented in
 - Optional precomputed global codebooks, declared per format in `dtypes.py`.
 - Reusable chunk-level Jensen--Shannon clusters and adaptive pair/singleton Huffman.
 - Standard Hugging Face directories and Safetensors shards.
-- No NeuralZip-specific model loader or checkpoint export command.
 
 ## Installation
 
-Use the source archive supplied with the submission, or set
-`ANONYMOUS_REPOSITORY_URL` to the anonymous review repository URL before cloning:
+After cloning the repository:
 
 ```bash
-git clone "$ANONYMOUS_REPOSITORY_URL" nzip
-cd nzip
+cd <repo>
 python -m pip install -e .
 ```
 
@@ -318,25 +315,15 @@ depend on the machine; exporting the saved evidence reproduces the recorded
 values, not a new measurement. Old packed-GPU engineering campaigns,
 pilots and superseded reports are not distributed.
 
-## Research limitations
+## Limitations/TODO
 
 - GPU weight modules: untied `Linear`, `Conv2d`, and Transformers `Conv1D`.
   `Sequential` and standalone layers use per-layer hooks; existing transformer
   blocks retain batched reconstruction.
 - One NVIDIA CUDA device supporting the model's arithmetic and decode layout.
-- Sequential, inference-only execution.
-- Eligible weights in registered formats are compressed; other state remains
-  resident.
-- Models without compatible weight modules still use the lossless
-  storage format, but load as ordinary models without a compressed GPU runtime.
 - No concurrent forwards, training, device changes after loading, or
   `torch.compile`.
-- Weights use a temporary workspace; this is not a fused compressed
-  matrix-multiplication kernel.
 - Decode shared-memory requirements depend on the layout and encoded stream;
   groups exceeding the device limit are rejected before removing model weights.
-- Compressed checkpoints require Safetensors.
 - Loading a compressed checkpoint still constructs its architecture on CPU,
   so peak host memory is higher than the final resident model.
-- Activation is process-wide and affects subsequent compatible Transformers
-  model loads and saves.
